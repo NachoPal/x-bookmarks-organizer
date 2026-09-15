@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>X Bookmarks Organizer</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#bookmarks">Skip to bookmarks</a>
+    <header class="app-header">
+      <h1 class="app-title">X Bookmarks</h1>
+      <p class="app-subtitle">Browse your bookmarks by topic. Opening one marks it read.</p>
+    </header>
+
+    <main class="layout">
+      <nav class="sidebar" aria-label="Category tree">
+        <h2 class="sidebar-heading">Categories</h2>
+        <div id="tree" class="tree">
+          <p class="state state-loading" role="status">Loading categories…</p>
+        </div>
+      </nav>
+
+      <section id="bookmarks" class="content" aria-label="Bookmarks" tabindex="-1">
+        <div class="content-header">
+          <h2 id="content-title" class="content-title">Select a category</h2>
+          <p id="content-count" class="content-count" aria-live="polite"></p>
+        </div>
+        <div id="bookmark-list" class="bookmark-list" aria-live="polite">
+          <p class="state state-empty">Choose a category on the left to see its bookmarks.</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://platform.twitter.com/widgets.js" async></script>
+    <script src="app.js" defer></script>
+  </body>
+</html>
