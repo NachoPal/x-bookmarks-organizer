@@ -23,8 +23,9 @@ keeping the data fully owned, local, and free of subscription lock-in.
   seen bookmarks are never re-fetched or re-categorized. Checkable: re-running immediately after a
   run processes 0 items.
 - **Everything gets filed.** 100% of newly ingested bookmarks land in at least one category.
-- **Cheap to run.** A run over a few hundred bookmarks costs on the order of ~$1-2 total
-  (X API reads + LLM categorization), with no subscription or minimum spend.
+- **Cheap to run.** A run over a few hundred bookmarks costs only the X API bookmark reads
+  (~$0.50 at ~$0.001 each), with no minimum spend. Categorization runs on Ignacio's existing
+  Claude subscription, so it adds no per-run dollar cost (only subscription usage).
 - **Zero manual data handling.** From "run finished" to "browsing categorized bookmarks in the web
   viewer" there are no manual import/export steps.
 - **Owned and portable.** All data lives in a single local file fully owned by Ignacio, movable
@@ -108,7 +109,13 @@ Detailed screen design belongs in the plan; the flows above are the contract.
 
 - **X API:** pay-per-use account with a small credit balance; `bookmark.read` scope; OAuth 2.0
   user-context auth. Bookmark reads bill as "owned reads" (~$0.001 each), no minimum spend.
-- **LLM API** for categorization (cost on the order of ~$1 per few-hundred-bookmark run).
+- **Claude subscription** for categorization: the categorization step runs on Ignacio's existing
+  Claude subscription (via the Claude Agent SDK / `claude` headless with a `claude setup-token`
+  credential), not the pay-per-use Anthropic API, so it adds no per-call dollar cost. It is subject
+  to the subscription's usage limits rather than API billing, so runs batch multiple bookmarks per
+  request to stay efficient. No `ANTHROPIC_API_KEY` is used.
+- **Secrets** (X OAuth 2.0 Client ID/Secret, Claude token) are held in a local secrets manager
+  (Automic Vault) and injected into the process environment at run time, never written to disk.
 - **Local runtime:** runs on Ignacio's machine, invoked manually/occasionally. No always-on server
   beyond the local web viewer when browsing.
 - **Free-forever tooling only:** SQLite and a local web stack; nothing with a revocable free tier.
