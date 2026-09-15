@@ -51,6 +51,21 @@ describe('web server API', () => {
     expect(body.bookmarks.every((b) => b.read === false)).toBe(true);
   });
 
+  it('GET /api/categories/:id/bookmarks on a parent returns descendants deduplicated', async () => {
+    // AI has bookmarks only in its child Evals; the parent must still list them
+    // and its badge (rolled-up total) must match that list.
+    const ai = db.getAllCategories().find((c) => c.name === 'AI')!;
+    const res = await app.inject({ method: 'GET', url: `/api/categories/${ai.id}/bookmarks` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { bookmarks: { postId: string }[] };
+    expect(body.bookmarks.map((b) => b.postId).sort()).toEqual(['1', '2']);
+
+    const tree = (await app.inject({ method: 'GET', url: '/api/tree' })).json() as {
+      tree: { name: string; total: number }[];
+    };
+    expect(tree.tree.find((n) => n.name === 'AI')!.total).toBe(body.bookmarks.length);
+  });
+
   it('POST /api/bookmarks/:id/read marks it read and reflects in the tree count', async () => {
     const b1 = db.getBookmarkByPostId('1')!;
     const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/read` });

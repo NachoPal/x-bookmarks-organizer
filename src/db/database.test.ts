@@ -88,7 +88,9 @@ describe('Database', () => {
 
       expect(db.getKnownPostIds()).toEqual(new Set(['1', '2']));
       expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId).sort()).toEqual(['1', '2']);
-      expect(db.getBookmarksForCategory(ai.id).map((b) => b.postId)).toEqual(['1']);
+      // The parent surfaces its own direct bookmark plus its descendants',
+      // deduplicated: bm '1' is linked to both AI and Evals but appears once.
+      expect(db.getBookmarksForCategory(ai.id).map((b) => b.postId).sort()).toEqual(['1', '2']);
     });
 
     it('does not duplicate a bookmark that is already stored', () => {
@@ -111,17 +113,35 @@ describe('Database', () => {
     });
   });
 
-  describe('getDirectCounts', () => {
-    it('counts direct total and unread per node', () => {
+  describe('getDirectMembership', () => {
+    it('lists the direct bookmarks of a node with their read flags', () => {
       const when = new Date().toISOString();
       const cat = db.getOrCreateCategory('X', null, when);
       db.storeCategorizedBatch([bookmark('1'), bookmark('2')], () => [cat.id]);
       const b1 = db.getBookmarkByPostId('1')!;
       db.markRead(b1.id);
 
-      const counts = db.getDirectCounts().get(cat.id)!;
-      expect(counts.total).toBe(2);
-      expect(counts.unread).toBe(1);
+      const members = db.getDirectMembership().get(cat.id)!;
+      expect(members).toHaveLength(2);
+      expect(members.find((m) => m.id === b1.id)!.read).toBe(true);
+      const b2 = db.getBookmarkByPostId('2')!;
+      expect(members.find((m) => m.id === b2.id)!.read).toBe(false);
+    });
+  });
+
+  describe('getBookmarksForCategory across a subtree', () => {
+    it('returns a node and its descendants, deduplicated by bookmark id', () => {
+      const when = new Date().toISOString();
+      const ai = db.getOrCreateCategory('AI', null, when);
+      const evals = db.getOrCreateCategory('Evals', ai.id, when);
+      const harnesses = db.getOrCreateCategory('Harnesses', ai.id, when);
+      // bm '1' lives in two sibling branches under AI; it must appear once.
+      db.storeCategorizedBatch([bookmark('1'), bookmark('2')], (bm) =>
+        bm.postId === '1' ? [evals.id, harnesses.id] : [harnesses.id],
+      );
+
+      expect(db.getBookmarksForCategory(ai.id).map((b) => b.postId).sort()).toEqual(['1', '2']);
+      expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['1']);
     });
   });
 });

@@ -91,13 +91,24 @@ export class Database {
     return row ? toStoredBookmark(row) : undefined;
   }
 
-  /** Direct bookmarks of a category, newest-ingested first. */
+  /**
+   * Bookmarks filed at a category node OR any of its descendants, deduplicated
+   * by bookmark id and newest-ingested first. Multi-category safe: a bookmark
+   * linked to several nodes in the subtree appears once.
+   */
   getBookmarksForCategory(categoryId: number): StoredBookmark[] {
     const rows = this.db
       .prepare(
-        `SELECT b.* FROM bookmarks b
-         JOIN bookmark_categories bc ON bc.bookmark_id = b.id
-         WHERE bc.category_id = ?
+        `WITH RECURSIVE subtree(id) AS (
+           SELECT ?
+           UNION
+           SELECT c.id FROM categories c JOIN subtree s ON c.parent_id = s.id
+         )
+         SELECT b.* FROM bookmarks b
+         WHERE b.id IN (
+           SELECT bc.bookmark_id FROM bookmark_categories bc
+           JOIN subtree s ON s.id = bc.category_id
+         )
          ORDER BY b.ingested_at DESC, b.id DESC`,
       )
       .all(categoryId) as BookmarkRow[];
@@ -239,21 +250,26 @@ export class Database {
 
   // --- Counts (raw, per node) -------------------------------------------
 
-  /** Map of category id -> { direct total, direct unread } for that node only. */
-  getDirectCounts(): Map<number, { total: number; unread: number }> {
+  /**
+   * Map of category id -> the bookmarks linked directly to that node (id +
+   * read flag). The tree builder rolls these up into distinct-bookmark totals
+   * across each subtree, so a bookmark linked to several nodes under a shared
+   * ancestor is counted once at that ancestor.
+   */
+  getDirectMembership(): Map<number, { id: number; read: boolean }[]> {
     const rows = this.db
       .prepare(
-        `SELECT bc.category_id AS category_id,
-                COUNT(*) AS total,
-                SUM(CASE WHEN b.read = 0 THEN 1 ELSE 0 END) AS unread
+        `SELECT bc.category_id AS category_id, b.id AS bookmark_id, b.read AS read
          FROM bookmark_categories bc
-         JOIN bookmarks b ON b.id = bc.bookmark_id
-         GROUP BY bc.category_id`,
+         JOIN bookmarks b ON b.id = bc.bookmark_id`,
       )
-      .all() as { category_id: number; total: number; unread: number }[];
-    const map = new Map<number, { total: number; unread: number }>();
+      .all() as { category_id: number; bookmark_id: number; read: number }[];
+    const map = new Map<number, { id: number; read: boolean }[]>();
     for (const r of rows) {
-      map.set(r.category_id, { total: r.total, unread: r.unread });
+      const list = map.get(r.category_id);
+      const entry = { id: r.bookmark_id, read: r.read === 1 };
+      if (list) list.push(entry);
+      else map.set(r.category_id, [entry]);
     }
     return map;
   }

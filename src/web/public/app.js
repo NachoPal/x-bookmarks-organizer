@@ -14,6 +14,9 @@
 
   let selectedCategoryId = null;
   let selectedButton = null;
+  // Manual expand/collapse state (category id -> expanded), preserved across
+  // sidebar refreshes so mark-read never resets the user's browsing context.
+  let expansionState = new Map();
 
   // ---- helpers -----------------------------------------------------------
 
@@ -51,6 +54,10 @@
   // ---- category tree -----------------------------------------------------
 
   async function loadTree() {
+    // Snapshot the user's manual expand/collapse state before the loading
+    // placeholder replaces the tree, so a refresh (e.g. after mark-read) does
+    // not reset it to the depth default.
+    captureExpansionState();
     stateMessage(treeEl, "loading", "Loading categories…");
     let data;
     try {
@@ -75,7 +82,37 @@
       if (btn) {
         btn.setAttribute("aria-current", "true");
         selectedButton = btn;
+        expandAncestors(btn); // keep the selected node visible
       }
+    }
+  }
+
+  /** Record which expandable nodes are currently open, keyed by category id. */
+  function captureExpansionState() {
+    treeEl.querySelectorAll(".tree-row").forEach((row) => {
+      const btn = row.querySelector(".tree-node");
+      const toggle = row.querySelector(".tree-toggle");
+      if (btn && toggle && !toggle.classList.contains("is-leaf")) {
+        expansionState.set(btn.dataset.categoryId, toggle.getAttribute("aria-expanded") === "true");
+      }
+    });
+  }
+
+  /** Expand every ancestor list of a node so it can never be hidden. */
+  function expandAncestors(btn) {
+    let li = btn.closest("li");
+    while (li) {
+      const parentUl = li.parentElement;
+      if (!parentUl || parentUl.tagName !== "UL") break;
+      const parentLi = parentUl.parentElement;
+      const toggle = parentLi && parentLi.querySelector(":scope > .tree-row > .tree-toggle");
+      if (toggle && !toggle.classList.contains("is-leaf")) {
+        parentUl.hidden = false;
+        toggle.setAttribute("aria-expanded", "true");
+        const nodeBtn = parentLi.querySelector(":scope > .tree-row > .tree-node");
+        if (nodeBtn) expansionState.set(nodeBtn.dataset.categoryId, true);
+      }
+      li = parentLi;
     }
   }
 
@@ -116,7 +153,8 @@
 
     if (hasChildren) {
       const childList = renderNodeList(node.children, depth + 1);
-      const expanded = depth < 1; // top levels open by default
+      const saved = expansionState.get(String(node.id));
+      const expanded = saved !== undefined ? saved : depth < 1; // top levels open by default
       childList.hidden = !expanded;
       toggle.setAttribute("aria-expanded", String(expanded));
       toggle.setAttribute("aria-label", `Toggle ${node.name}`);
@@ -124,6 +162,7 @@
         const now = toggle.getAttribute("aria-expanded") !== "true";
         toggle.setAttribute("aria-expanded", String(now));
         childList.hidden = !now;
+        expansionState.set(String(node.id), now);
       });
       row.append(toggle, button);
       li.append(row, childList);
@@ -162,7 +201,7 @@
   function renderBookmarks(bookmarks) {
     if (bookmarks.length === 0) {
       countEl.textContent = "";
-      stateMessage(listEl, "empty", "No bookmarks are filed directly under this category.");
+      stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
       return;
     }
     const unread = bookmarks.filter((b) => !b.read).length;
@@ -233,15 +272,41 @@
     fallback.appendChild(link);
     slot.appendChild(fallback);
 
-    if (!window.twttr || !window.twttr.widgets || !window.twttr.widgets.createTweet) return;
-    window.twttr.widgets
-      .createTweet(bm.postId, slot, { theme: isDarkTheme() ? "dark" : "light", conversation: "none" })
-      .then((embedded) => {
-        if (embedded) fallback.remove(); // embed succeeded; drop the fallback
-      })
-      .catch(() => {
-        /* keep fallback */
-      });
+    // widgets.js loads async, so on the first card it may not be ready yet.
+    // Wait for it (rather than committing to the fallback) so embeds appear.
+    whenWidgetsReady().then((twttr) => {
+      if (!twttr || !slot.isConnected) return; // gave up, or card replaced
+      twttr.widgets
+        .createTweet(bm.postId, slot, { theme: isDarkTheme() ? "dark" : "light", conversation: "none" })
+        .then((embedded) => {
+          if (embedded) fallback.remove(); // embed succeeded; drop the fallback
+        })
+        .catch(() => {
+          /* keep fallback */
+        });
+    });
+  }
+
+  // Resolves with window.twttr once the widget factory is usable, or null if it
+  // never loads. Memoized so every card shares one wait.
+  let widgetsReadyPromise = null;
+  function whenWidgetsReady() {
+    if (widgetsReadyPromise) return widgetsReadyPromise;
+    widgetsReadyPromise = new Promise((resolve) => {
+      const usable = () => window.twttr && window.twttr.widgets && window.twttr.widgets.createTweet;
+      if (usable()) return resolve(window.twttr);
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (usable()) {
+          clearInterval(timer);
+          resolve(window.twttr);
+        } else if (Date.now() - start > 15000) {
+          clearInterval(timer);
+          resolve(null); // widgets.js unavailable; fallbacks stay
+        }
+      }, 150);
+    });
+    return widgetsReadyPromise;
   }
 
   // ---- read tracking -----------------------------------------------------

@@ -9,20 +9,49 @@ const cats: CategoryNode[] = [
   { id: 4, parentId: null, name: 'Game Dev', createdAt: '' },
 ];
 
+const read = (id: number) => ({ id, read: true });
+const unread = (id: number) => ({ id, read: false });
+
 describe('assembleTree', () => {
   it('rolls up total/unread counts from descendants to ancestors', () => {
-    const direct = new Map([
-      [2, { total: 3, unread: 1 }],
-      [3, { total: 2, unread: 2 }],
-      [1, { total: 1, unread: 0 }],
+    const membership = new Map([
+      [2, [unread(10), read(11), read(12)]], // Harnesses: 3 total, 1 unread
+      [3, [unread(20), unread(21)]], // Evals: 2 total, 2 unread
+      [1, [read(30)]], // AI direct: 1 total, 0 unread
     ]);
-    const roots = assembleTree(cats, direct);
+    const roots = assembleTree(cats, membership);
     const ai = roots.find((r) => r.name === 'AI')!;
-    expect(ai.total).toBe(6); // 1 direct + 3 + 2
+    expect(ai.total).toBe(6); // 1 direct + 3 + 2, all distinct ids
     expect(ai.unread).toBe(3); // 0 + 1 + 2
     expect(ai.directTotal).toBe(1);
     const gameDev = roots.find((r) => r.name === 'Game Dev')!;
     expect(gameDev.total).toBe(0);
+  });
+
+  it('counts a bookmark in several branches once at the shared ancestor', () => {
+    // Bookmark 99 is filed under both Harnesses and Evals (siblings under AI),
+    // and directly under AI. The AI rollup must count it once.
+    const membership = new Map([
+      [2, [unread(99)]], // Harnesses
+      [3, [unread(99)]], // Evals
+      [1, [unread(99)]], // AI directly
+    ]);
+    const roots = assembleTree(cats, membership);
+    const ai = roots.find((r) => r.name === 'AI')!;
+    expect(ai.total).toBe(1);
+    expect(ai.unread).toBe(1);
+    expect(ai.directTotal).toBe(1);
+  });
+
+  it('keeps read/unread rollup correct when the same id repeats across the subtree', () => {
+    const membership = new Map([
+      [2, [read(1), unread(2)]], // Harnesses
+      [3, [read(1), unread(3)]], // Evals shares bookmark 1
+    ]);
+    const roots = assembleTree(cats, membership);
+    const ai = roots.find((r) => r.name === 'AI')!;
+    expect(ai.total).toBe(3); // distinct ids 1, 2, 3
+    expect(ai.unread).toBe(2); // 2 and 3; 1 is read
   });
 
   it('assigns full paths from root to each node', () => {

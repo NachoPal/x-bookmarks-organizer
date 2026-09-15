@@ -8,18 +8,24 @@ import type { CategoryNode, CategoryTreeNode } from '../types';
  */
 export function buildCategoryTree(db: Database): CategoryTreeNode[] {
   const categories = db.getAllCategories();
-  const direct = db.getDirectCounts();
-  return assembleTree(categories, direct);
+  const membership = db.getDirectMembership();
+  return assembleTree(categories, membership);
 }
 
-/** Pure assembly of the counted tree, separated for testability. */
+/**
+ * Pure assembly of the counted tree, separated for testability.
+ *
+ * `directMembership` maps a category id to the bookmarks linked directly to it
+ * (id + read flag). Rolled-up `total`/`unread` count DISTINCT bookmark ids
+ * across the node and all descendants, so a bookmark placed in several branches
+ * under a shared ancestor is counted once there.
+ */
 export function assembleTree(
   categories: CategoryNode[],
-  directCounts: Map<number, { total: number; unread: number }>,
+  directMembership: Map<number, { id: number; read: boolean }[]>,
 ): CategoryTreeNode[] {
   const nodes = new Map<number, CategoryTreeNode>();
   for (const c of categories) {
-    const d = directCounts.get(c.id) ?? { total: 0, unread: 0 };
     nodes.set(c.id, {
       id: c.id,
       parentId: c.parentId,
@@ -27,7 +33,7 @@ export function assembleTree(
       path: [],
       total: 0,
       unread: 0,
-      directTotal: d.total,
+      directTotal: directMembership.get(c.id)?.length ?? 0,
       children: [],
     });
   }
@@ -45,20 +51,24 @@ export function assembleTree(
 
   const byName = (a: CategoryTreeNode, b: CategoryTreeNode) => a.name.localeCompare(b.name);
 
-  // Compute paths and rolled-up counts via post-order traversal.
-  const visit = (node: CategoryTreeNode, parentPath: string[]): { total: number; unread: number } => {
+  // Compute paths and rolled-up counts via post-order traversal, unioning
+  // bookmark ids so each distinct bookmark is counted once per subtree.
+  const visit = (node: CategoryTreeNode, parentPath: string[]): { total: Set<number>; unread: Set<number> } => {
     node.path = [...parentPath, node.name];
     node.children.sort(byName);
-    const own = directCounts.get(node.id) ?? { total: 0, unread: 0 };
-    let total = own.total;
-    let unread = own.unread;
+    const total = new Set<number>();
+    const unread = new Set<number>();
+    for (const b of directMembership.get(node.id) ?? []) {
+      total.add(b.id);
+      if (!b.read) unread.add(b.id);
+    }
     for (const child of node.children) {
       const c = visit(child, node.path);
-      total += c.total;
-      unread += c.unread;
+      for (const id of c.total) total.add(id);
+      for (const id of c.unread) unread.add(id);
     }
-    node.total = total;
-    node.unread = unread;
+    node.total = total.size;
+    node.unread = unread.size;
     return { total, unread };
   };
 
