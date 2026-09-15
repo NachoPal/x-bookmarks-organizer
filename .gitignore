@@ -1,0 +1,30 @@
+# Secrets / credentials - never commit API keys or tokens
+.env
+.env.*
+*.pem
+*_token
+*.secret
+
+# Local bookmark database (personal data, owned locally, not versioned)
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+data/*.sqlite*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Common language/tooling artifacts (stack finalized during build)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+dist/
+build/
+*.log
