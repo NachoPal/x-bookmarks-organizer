@@ -25,6 +25,7 @@
   --color-danger: #b42318;
   --color-danger-soft: #fdeceb;
   --color-focus: #1868d6;
+  --color-backdrop: rgba(20, 24, 31, 0.44);
 
   /* Spacing scale (4px base) */
   --space-1: 0.25rem;
@@ -42,6 +43,7 @@
   /* Elevation */
   --shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.06), 0 1px 3px rgba(20, 24, 31, 0.08);
   --shadow-md: 0 4px 12px rgba(20, 24, 31, 0.1);
+  --shadow-lg: 0 12px 32px rgba(20, 24, 31, 0.18);
 
   /* Type */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -54,11 +56,18 @@
   /* Motion */
   --motion-fast: 120ms;
   --motion-med: 200ms;
+  --motion-slow: 260ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Layout */
-  --sidebar-width: clamp(15rem, 26vw, 22rem);
-  --content-measure: 42rem;
+  --header-height: 4.25rem;
+  --sidebar-width: clamp(17rem, 24vw, 21rem);
+  --content-measure: 44rem;
+
+  /* Stacking */
+  --z-header: 30;
+  --z-backdrop: 40;
+  --z-sidebar: 50;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -81,10 +90,38 @@
     --color-danger: #ff7b6f;
     --color-danger-soft: #331a17;
     --color-focus: #77b3ff;
+    --color-backdrop: rgba(0, 0, 0, 0.62);
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
     --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.55);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.66);
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-bg: #0e1116;
+  --color-surface: #171b22;
+  --color-surface-2: #21262f;
+  --color-border: #2c333d;
+  --color-border-strong: #414b58;
+  --color-text: #eaeef4;
+  --color-text-muted: #9aa5b4;
+
+  --color-accent: #4d9bff;
+  --color-accent-hover: #77b3ff;
+  --color-accent-contrast: #08121f;
+  --color-accent-soft: #16273d;
+
+  --color-unread: #4d9bff;
+  --color-danger: #ff7b6f;
+  --color-danger-soft: #331a17;
+  --color-focus: #77b3ff;
+  --color-backdrop: rgba(0, 0, 0, 0.62);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.66);
 }
 
 /* ============================================================
@@ -111,8 +148,11 @@ body {
   line-height: var(--leading-body);
   color: var(--color-text);
   background: var(--color-bg);
-  padding-top: env(safe-area-inset-top, 0px);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  /* App shell: header + a single body row that owns all scrolling. */
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 :focus-visible {
@@ -125,7 +165,7 @@ body {
   position: absolute;
   left: var(--space-3);
   top: var(--space-3);
-  z-index: 10;
+  z-index: 100;
   background: var(--color-surface);
   color: var(--color-text);
   padding: var(--space-2) var(--space-4);
@@ -143,74 +183,232 @@ body {
    Header
    ============================================================ */
 .app-header {
-  padding: var(--space-5) var(--space-6) var(--space-4);
+  flex: 0 0 auto;
+  z-index: var(--z-header);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--header-height);
+  padding: var(--space-3) var(--space-5);
+  padding-top: max(var(--space-3), env(safe-area-inset-top, 0px));
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
+}
+.app-heading {
+  min-width: 0;
 }
 .app-title {
   margin: 0;
   font-size: var(--text-title);
   letter-spacing: -0.01em;
+  line-height: 1.15;
 }
 .app-subtitle {
-  margin: var(--space-1) 0 0;
+  margin: 2px 0 0;
   color: var(--color-text-muted);
   font-size: var(--text-small);
 }
 
 /* ============================================================
-   Layout
+   Icon buttons
    ============================================================ */
-.layout {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-5);
-  max-width: 80rem;
-  margin: 0 auto;
-  padding: var(--space-5) var(--space-6);
+.icon-btn {
+  flex: 0 0 auto;
+  width: 2.75rem;
+  height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.icon-btn:hover {
+  background: var(--color-surface-2);
+}
+.icon-btn:active {
+  background: var(--color-border);
+}
+
+/* Hamburger drawn with currentColor bars so it inherits button color. */
+.icon-bars,
+.icon-bars::before,
+.icon-bars::after {
+  display: block;
+  width: 1.15rem;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.icon-bars {
+  position: relative;
+}
+.icon-bars::before,
+.icon-bars::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+.icon-bars::before {
+  top: -6px;
+}
+.icon-bars::after {
+  top: 6px;
+}
+
+.icon-x {
+  position: relative;
+  display: block;
+  width: 1.15rem;
+  height: 1.15rem;
+}
+.icon-x::before,
+.icon-x::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.icon-x::before {
+  transform: rotate(45deg);
+}
+.icon-x::after {
+  transform: rotate(-45deg);
+}
+
+/* The in-sidebar close button only exists in drawer (narrow) mode. */
+.sidebar-close {
+  display: none;
+}
+
+/* ============================================================
+   App body / responsive shell
+   ============================================================ */
+.app-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  transition: grid-template-columns var(--motion-slow) var(--ease);
+}
+body[data-sidebar="collapsed"] .app-body {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.sidebar-backdrop {
+  display: none;
 }
 
 .sidebar {
-  flex: 0 0 var(--sidebar-width);
-  position: sticky;
-  top: var(--space-5);
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
-.sidebar-heading,
-.content-title {
+.sidebar-inner {
+  height: 100%;
+  width: var(--sidebar-width);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.sidebar-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.sidebar-heading {
+  margin: 0;
   font-size: var(--text-h2);
-  margin: 0 0 var(--space-3);
+  letter-spacing: -0.005em;
 }
 
 .content {
-  flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .content:focus {
   outline: none;
 }
+.content-inner {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-6) var(--space-6);
+}
 .content-header {
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+.content-title {
+  margin: 0;
+  font-size: var(--text-title);
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
 .content-count {
-  margin: var(--space-1) 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--color-text-muted);
   font-size: var(--text-small);
 }
 
-@media (max-width: 720px) {
-  .layout {
-    flex-direction: column;
-    padding: var(--space-4);
-    gap: var(--space-4);
+/* --- Narrow: sidebar becomes an overlay drawer ------------------------ */
+@media (max-width: 820px) {
+  .app-body {
+    grid-template-columns: minmax(0, 1fr);
+    transition: none;
   }
+  body[data-sidebar="collapsed"] .app-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .sidebar {
-    position: static;
-    flex-basis: auto;
+    position: fixed;
+    inset: var(--header-height) auto 0 0;
+    top: var(--header-height);
+    width: min(88vw, var(--sidebar-width));
+    z-index: var(--z-sidebar);
+    border-right: 1px solid var(--color-border);
+    box-shadow: var(--shadow-lg);
+    transform: translateX(-100%);
+    transition: transform var(--motion-slow) var(--ease);
+  }
+  .sidebar-inner {
     width: 100%;
   }
-  .app-header {
-    padding: var(--space-4);
+  body:not([data-sidebar="collapsed"]) .sidebar {
+    transform: translateX(0);
+  }
+
+  .sidebar-close {
+    display: inline-flex;
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: var(--header-height) 0 0 0;
+    z-index: var(--z-backdrop);
+    background: var(--color-backdrop);
+    opacity: 0;
+    transition: opacity var(--motion-slow) var(--ease);
+  }
+  .content-inner {
+    padding: var(--space-4) var(--space-4) var(--space-5);
   }
 }
 
@@ -218,29 +416,28 @@ body {
    Category tree
    ============================================================ */
 .tree {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-2);
-  box-shadow: var(--shadow-sm);
+  min-width: 0;
 }
 .tree ul {
   list-style: none;
   margin: 0;
-  padding: 0 0 0 var(--space-4);
+  padding: 0;
 }
-.tree > ul {
-  padding-left: 0;
+/* Nested lists indent with a subtle guide line. */
+.tree ul ul {
+  margin-left: 0.6rem;
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--color-border);
 }
 .tree-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-1);
 }
 .tree-toggle {
   flex: 0 0 auto;
   width: 1.75rem;
-  height: 1.75rem;
+  height: 2.25rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -250,8 +447,8 @@ body {
   color: var(--color-text-muted);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.85em;
-  transition: transform var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease);
+  font-size: 0.7rem;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
 }
 .tree-toggle:hover {
   background: var(--color-surface-2);
@@ -270,12 +467,13 @@ body {
 
 .tree-node {
   flex: 1 1 auto;
+  min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-2);
   min-height: 2.25rem;
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   border: 0;
   background: transparent;
   color: var(--color-text);
@@ -297,15 +495,16 @@ body {
   font-weight: 600;
 }
 .tree-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-top: 1px;
 }
 .tree-counts {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  padding-top: 1px;
 }
 .count-total {
   color: var(--color-text-muted);
@@ -316,8 +515,8 @@ body {
   color: var(--color-accent);
 }
 .badge-unread {
-  min-width: 1.5rem;
-  height: 1.5rem;
+  min-width: 1.4rem;
+  height: 1.4rem;
   padding: 0 var(--space-2);
   display: inline-flex;
   align-items: center;
@@ -340,6 +539,7 @@ body {
   max-width: var(--content-measure);
 }
 .bookmark-card {
+  min-width: 0;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-left: 3px solid var(--color-border);
@@ -380,6 +580,7 @@ body {
   border: 1px solid var(--color-border);
   color: var(--color-text-muted);
   background: var(--color-surface-2);
+  white-space: nowrap;
 }
 .read-pill.is-unread {
   color: var(--color-accent);
@@ -394,9 +595,17 @@ body {
 }
 
 .embed-slot {
+  min-width: 0;
   min-height: 2rem;
 }
+/* Contain the official X embed so its iframe never overflows the card. */
+.embed-slot :where(iframe, .twitter-tweet, .twitter-tweet-rendered) {
+  max-width: 100% !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
 .embed-fallback {
+  min-width: 0;
   background: var(--color-surface-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -501,6 +710,27 @@ body {
   background: var(--color-danger-soft);
   border-style: solid;
   border-color: var(--color-danger);
+}
+/* Rich empty / welcome state in the content area. */
+.state-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-6) var(--space-5);
+}
+.state-icon {
+  font-size: 2.25rem;
+  line-height: 1;
+  margin-bottom: var(--space-2);
+}
+.state-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.state-body {
+  margin: 0;
 }
 .skeleton {
   height: 8rem;

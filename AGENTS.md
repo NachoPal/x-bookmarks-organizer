@@ -50,7 +50,15 @@ Before editing anything under `src/web/public/`, follow the `building-frontends`
 checker pass:
 `python3 ~/.claude/skills/building-frontends/scripts/check_frontend.py src/web/public/*` must be PASS.
 All colors/spacing are CSS custom properties in `styles.css`; consume `var(--token)`, never raw
-literals in component rules.
+literals in component rules. The viewer is an app shell: a fixed header, a **collapsible** category
+sidebar (grid-collapse on desktop, `transform` overlay drawer under 820px; state in `localStorage`),
+and an independently scrolling content pane; keep tree labels wrapping inside the sidebar (flex
+children need `min-width: 0`) so counts never overflow.
+
+To iterate on the viewer without the owner's private DB, seed a throwaway one and serve it:
+`npm run build && npm run seed:dev && XBOOKMARKS_DB_PATH=data/dev-seed.db node dist/index.js serve`
+(`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit
+real data).
 
 ## Live vs. tested
 

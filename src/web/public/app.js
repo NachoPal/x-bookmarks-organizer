@@ -18,6 +18,85 @@
   // sidebar refreshes so mark-read never resets the user's browsing context.
   let expansionState = new Map();
 
+  // ---- sidebar (collapsible) --------------------------------------------
+
+  const bodyEl = document.body;
+  const sidebarEl = document.getElementById("sidebar");
+  const toggleBtn = document.getElementById("sidebar-toggle");
+  const closeBtn = document.getElementById("sidebar-close");
+  const backdropEl = document.getElementById("sidebar-backdrop");
+  const drawerQuery = window.matchMedia("(max-width: 820px)");
+  const SIDEBAR_KEY = "xbo:sidebar-collapsed";
+
+  function readStoredCollapsed() {
+    try {
+      return window.localStorage.getItem(SIDEBAR_KEY) === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+  function storeCollapsed(collapsed) {
+    try {
+      window.localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0");
+    } catch (_) {
+      /* private mode / blocked storage: ignore */
+    }
+  }
+
+  function isCollapsed() {
+    return bodyEl.getAttribute("data-sidebar") === "collapsed";
+  }
+
+  function setCollapsed(collapsed, opts) {
+    const options = opts || {};
+    if (collapsed) bodyEl.setAttribute("data-sidebar", "collapsed");
+    else bodyEl.removeAttribute("data-sidebar");
+
+    const visible = !collapsed;
+    toggleBtn.setAttribute("aria-expanded", String(visible));
+    toggleBtn.setAttribute("aria-label", visible ? "Hide categories" : "Show categories");
+    // The backdrop only participates in drawer (narrow) mode.
+    backdropEl.hidden = !(drawerQuery.matches && visible);
+
+    // Desktop preference persists; drawer open/close is transient per session.
+    if (!drawerQuery.matches) storeCollapsed(collapsed);
+
+    // In drawer mode, move focus with the overlay for a keyboard-friendly flow.
+    if (drawerQuery.matches && !options.silent) {
+      if (visible) {
+        const firstNode = treeEl.querySelector(".tree-node");
+        if (firstNode) firstNode.focus();
+      } else if (options.returnFocus !== false) {
+        toggleBtn.focus();
+      }
+    }
+  }
+
+  function initSidebar() {
+    // Narrow viewports start with the drawer closed; wide ones honor the
+    // remembered preference (open by default).
+    const start = drawerQuery.matches ? true : readStoredCollapsed();
+    setCollapsed(start, { silent: true });
+
+    toggleBtn.addEventListener("click", () => setCollapsed(!isCollapsed()));
+    closeBtn.addEventListener("click", () => setCollapsed(true));
+    backdropEl.addEventListener("click", () => setCollapsed(true));
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && drawerQuery.matches && !isCollapsed()) {
+        setCollapsed(true);
+      }
+    });
+
+    // When crossing the drawer/desktop boundary, re-apply the correct default
+    // so the layout never gets stuck in an odd hybrid state.
+    const onModeChange = () => setCollapsed(drawerQuery.matches ? true : readStoredCollapsed(), {
+      silent: true,
+    });
+    if (drawerQuery.addEventListener) drawerQuery.addEventListener("change", onModeChange);
+    else if (drawerQuery.addListener) drawerQuery.addListener(onModeChange);
+  }
+
   // ---- helpers -----------------------------------------------------------
 
   function el(tag, className, text) {
@@ -188,6 +267,10 @@
     countEl.textContent = "";
     stateMessage(listEl, "loading", "Loading bookmarks…");
 
+    // On narrow screens the sidebar is an overlay; picking a category should
+    // reveal the content it covers.
+    if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
+
     let data;
     try {
       data = await getJSON(`/api/categories/${node.id}/bookmarks`);
@@ -355,5 +438,6 @@
   }
 
   // ---- init --------------------------------------------------------------
+  initSidebar();
   loadTree();
 })();
