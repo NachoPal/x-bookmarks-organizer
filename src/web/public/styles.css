@@ -407,6 +407,9 @@ body[data-sidebar="collapsed"] .app-body {
     opacity: 0;
     transition: opacity var(--motion-slow) var(--ease);
   }
+  body:not([data-sidebar="collapsed"]) .sidebar-backdrop {
+    opacity: 1;
+  }
   .content-inner {
     padding: var(--space-4) var(--space-4) var(--space-5);
   }
