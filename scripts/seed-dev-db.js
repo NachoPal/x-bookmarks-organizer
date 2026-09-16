@@ -173,6 +173,26 @@ for (const leafKey of leafPaths) {
   });
 }
 
+// Give one leaf a large batch so the viewer's lazy-load / infinite-scroll path
+// (batches of 20) is exercisable in dev - mirrors a real, busy category like
+// "Agentic Workflows & Tool Use".
+const denseKey =
+  'Artificial Intelligence & Machine Learning › Large Language Models › Agentic Workflows & Tool Use';
+if (idByPath.has(denseKey)) {
+  const denseCount = 47; // comfortably more than two batches of 20
+  const denseItems = [];
+  const denseLinks = [];
+  for (let i = 0; i < denseCount; i += 1) {
+    const { raw, leafId } = makeBookmark(denseKey);
+    denseItems.push(raw);
+    denseLinks.push(leafId);
+  }
+  db.storeCategorizedBatch(denseItems, (bm) => {
+    const idx = denseItems.indexOf(bm);
+    return [denseLinks[idx]];
+  });
+}
+
 // Mark a spread of bookmarks read so read/unread states both render.
 const all = db.getAllBookmarks();
 all.forEach((bm, i) => {

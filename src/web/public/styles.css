@@ -898,6 +898,35 @@ body[data-sidebar="collapsed"] .app-body {
   animation: shimmer 1.4s ease-in-out infinite;
 }
 
+/* --- Lazy-load tail: scroll sentinel + end-of-list marker ------------- */
+/* The sentinel is an IntersectionObserver target that triggers the next
+   batch; it reserves a little height so it stays observable, and only shows
+   the spinner while a batch is loading. */
+.list-sentinel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--space-6);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.list-spinner {
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.list-end {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

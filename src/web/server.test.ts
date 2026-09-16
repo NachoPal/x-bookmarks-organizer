@@ -85,3 +85,94 @@ describe('web server API', () => {
     expect((await app.inject({ method: 'POST', url: '/api/bookmarks/abc/read' })).statusCode).toBe(400);
   });
 });
+
+describe('web server bookmark paging & filtering', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let evalsId: number;
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    const when = new Date().toISOString();
+    const ai = db.getOrCreateCategory('AI', null, when);
+    const evals = db.getOrCreateCategory('Evals', ai.id, when);
+    evalsId = evals.id;
+    // 25 bookmarks; mark 10 of them read to exercise the read-state filter.
+    const batch = Array.from({ length: 25 }, (_, i) => bm(String(i + 1)));
+    db.storeCategorizedBatch(batch, () => [evals.id]);
+    for (let i = 1; i <= 10; i++) db.markRead(db.getBookmarkByPostId(String(i))!.id);
+    app = buildServer(db, { pageSize: 20 });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it('returns a first page capped at the page size with paging metadata', async () => {
+    const res = await app.inject({ method: 'GET', url: `/api/categories/${evalsId}/bookmarks` });
+    const body = res.json() as {
+      bookmarks: unknown[];
+      counts: { total: number; unread: number };
+      total: number;
+      hasMore: boolean;
+      offset: number;
+      limit: number;
+    };
+    expect(body.bookmarks).toHaveLength(20);
+    expect(body.counts).toEqual({ total: 25, unread: 15 });
+    expect(body.total).toBe(25);
+    expect(body.hasMore).toBe(true);
+    expect(body.offset).toBe(0);
+    expect(body.limit).toBe(20);
+  });
+
+  it('serves the next page at an offset and reports the end of the list', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/categories/${evalsId}/bookmarks?offset=20`,
+    });
+    const body = res.json() as { bookmarks: unknown[]; hasMore: boolean; offset: number };
+    expect(body.bookmarks).toHaveLength(5);
+    expect(body.hasMore).toBe(false);
+    expect(body.offset).toBe(20);
+  });
+
+  it('pages the read-state-filtered set (unread) with a matching total', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/categories/${evalsId}/bookmarks?filter=unread`,
+    });
+    const body = res.json() as {
+      bookmarks: { read: boolean }[];
+      total: number;
+      hasMore: boolean;
+    };
+    expect(body.total).toBe(15);
+    expect(body.bookmarks).toHaveLength(15);
+    expect(body.bookmarks.every((b) => b.read === false)).toBe(true);
+    expect(body.hasMore).toBe(false);
+  });
+
+  it('pages the read-state-filtered set (read)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/categories/${evalsId}/bookmarks?filter=read`,
+    });
+    const body = res.json() as { bookmarks: { read: boolean }[]; total: number };
+    expect(body.total).toBe(10);
+    expect(body.bookmarks).toHaveLength(10);
+    expect(body.bookmarks.every((b) => b.read === true)).toBe(true);
+  });
+
+  it('clamps a client-supplied limit to the configured page size', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/categories/${evalsId}/bookmarks?limit=1000`,
+    });
+    const body = res.json() as { bookmarks: unknown[]; limit: number };
+    expect(body.limit).toBe(20);
+    expect(body.bookmarks).toHaveLength(20);
+  });
+});

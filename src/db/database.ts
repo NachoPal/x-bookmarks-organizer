@@ -4,6 +4,16 @@ import BetterSqlite3 from 'better-sqlite3';
 import { SCHEMA_SQL } from './schema';
 import type { CategoryNode, RawBookmark, StoredBookmark } from '../types';
 
+/** Read-state filter for the viewer's paged bookmark list. */
+export type ReadFilter = 'all' | 'unread' | 'read';
+
+/** Paging + filtering options for {@link Database.getBookmarksForCategory}. */
+export interface BookmarkPageOptions {
+  filter?: ReadFilter;
+  offset?: number;
+  limit?: number;
+}
+
 interface BookmarkRow {
   id: number;
   post_id: string;
@@ -103,24 +113,62 @@ export class Database {
    * Bookmarks filed at a category node OR any of its descendants, deduplicated
    * by bookmark id and newest-ingested first. Multi-category safe: a bookmark
    * linked to several nodes in the subtree appears once.
+   *
+   * With no options the whole subtree is returned (used by ingestion/tests).
+   * The viewer passes {@link opts} to page the read-state-filtered set so a
+   * large category is never shipped to the client all at once.
    */
-  getBookmarksForCategory(categoryId: number): StoredBookmark[] {
-    const rows = this.db
+  getBookmarksForCategory(categoryId: number, opts: BookmarkPageOptions = {}): StoredBookmark[] {
+    const where: string[] = [
+      `b.id IN (
+         SELECT bc.bookmark_id FROM bookmark_categories bc
+         JOIN subtree s ON s.id = bc.category_id
+       )`,
+    ];
+    if (opts.filter === 'unread') where.push('b.read = 0');
+    else if (opts.filter === 'read') where.push('b.read = 1');
+
+    let sql = `WITH RECURSIVE subtree(id) AS (
+         SELECT ?
+         UNION
+         SELECT c.id FROM categories c JOIN subtree s ON c.parent_id = s.id
+       )
+       SELECT b.* FROM bookmarks b
+       WHERE ${where.join(' AND ')}
+       ORDER BY b.ingested_at DESC, b.id DESC`;
+    const params: (number | string)[] = [categoryId];
+    if (opts.limit != null) {
+      sql += ' LIMIT ? OFFSET ?';
+      params.push(opts.limit, opts.offset ?? 0);
+    }
+    const rows = this.db.prepare(sql).all(...params) as BookmarkRow[];
+    return rows.map(toStoredBookmark);
+  }
+
+  /**
+   * Rolled-up counts for a category subtree: total bookmarks and how many are
+   * unread. Lets the viewer show accurate totals and page the filtered set
+   * without downloading every row.
+   */
+  getCategoryBookmarkCounts(categoryId: number): { total: number; unread: number } {
+    const row = this.db
       .prepare(
         `WITH RECURSIVE subtree(id) AS (
            SELECT ?
            UNION
            SELECT c.id FROM categories c JOIN subtree s ON c.parent_id = s.id
          )
-         SELECT b.* FROM bookmarks b
+         SELECT
+           COUNT(*) AS total,
+           COALESCE(SUM(CASE WHEN b.read = 0 THEN 1 ELSE 0 END), 0) AS unread
+         FROM bookmarks b
          WHERE b.id IN (
            SELECT bc.bookmark_id FROM bookmark_categories bc
            JOIN subtree s ON s.id = bc.category_id
-         )
-         ORDER BY b.ingested_at DESC, b.id DESC`,
+         )`,
       )
-      .all(categoryId) as BookmarkRow[];
-    return rows.map(toStoredBookmark);
+      .get(categoryId) as { total: number; unread: number };
+    return { total: row.total, unread: row.unread };
   }
 
   /**

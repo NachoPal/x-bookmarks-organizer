@@ -144,4 +144,47 @@ describe('Database', () => {
       expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['1']);
     });
   });
+
+  describe('paging and counts for the viewer', () => {
+    function seedEvals(count: number, readCount = 0) {
+      const when = new Date().toISOString();
+      const ai = db.getOrCreateCategory('AI', null, when);
+      const evals = db.getOrCreateCategory('Evals', ai.id, when);
+      const batch = Array.from({ length: count }, (_, i) => bookmark(String(i + 1)));
+      db.storeCategorizedBatch(batch, () => [evals.id]);
+      for (let i = 1; i <= readCount; i++) db.markRead(db.getBookmarkByPostId(String(i))!.id);
+      return evals.id;
+    }
+
+    it('limits and offsets a subtree page without shipping everything', () => {
+      const id = seedEvals(25);
+      const first = db.getBookmarksForCategory(id, { limit: 20, offset: 0 });
+      const second = db.getBookmarksForCategory(id, { limit: 20, offset: 20 });
+      expect(first).toHaveLength(20);
+      expect(second).toHaveLength(5);
+      // Pages are disjoint and together cover the whole set.
+      const ids = new Set([...first, ...second].map((b) => b.id));
+      expect(ids.size).toBe(25);
+    });
+
+    it('filters a page by read state', () => {
+      const id = seedEvals(25, 10);
+      const unread = db.getBookmarksForCategory(id, { filter: 'unread', limit: 100 });
+      const read = db.getBookmarksForCategory(id, { filter: 'read', limit: 100 });
+      expect(unread).toHaveLength(15);
+      expect(unread.every((b) => b.read === false)).toBe(true);
+      expect(read).toHaveLength(10);
+      expect(read.every((b) => b.read === true)).toBe(true);
+    });
+
+    it('reports rolled-up total and unread counts for a subtree', () => {
+      const id = seedEvals(25, 10);
+      expect(db.getCategoryBookmarkCounts(id)).toEqual({ total: 25, unread: 15 });
+    });
+
+    it('with no options still returns the whole subtree (back-compat)', () => {
+      const id = seedEvals(3);
+      expect(db.getBookmarksForCategory(id)).toHaveLength(3);
+    });
+  });
 });

@@ -55,6 +55,13 @@ sidebar (grid-collapse on desktop, `transform` overlay drawer under 820px; state
 and an independently scrolling content pane; keep tree labels wrapping inside the sidebar (flex
 children need `min-width: 0`) so counts never overflow.
 
+A category's posts load lazily in batches (`XBOOKMARKS_PAGE_SIZE`, default 20) via infinite
+scroll: `GET /api/categories/:id/bookmarks` takes `filter`/`offset`/`limit` and pages the
+read-state-filtered set server-side (`db.getBookmarksForCategory` + `getCategoryBookmarkCounts`),
+so a large category is never shipped or embedded all at once. The client (`app.js`) drives it with
+an IntersectionObserver sentinel against the content pane; changing the filter re-pages from the
+top. The dense-category seed leaf exists to exercise this.
+
 To iterate on the viewer without the owner's private DB, seed a throwaway one and serve it:
 `npm run build && npm run seed:dev && XBOOKMARKS_DB_PATH=data/dev-seed.db node dist/index.js serve`
 (`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit

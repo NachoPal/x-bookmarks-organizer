@@ -40,7 +40,10 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
   bookmarks, each shown as an embedded X post (link fallback where the post is not embeddable).
   Opening a bookmark marks it read and records the date, reflected live in the UI. Filter the tree
   by category name from the sidebar search box, and filter a node's bookmarks by read state
-  (Unread / Read / All).
+  (Unread / Read / All). A category's posts load lazily in batches of 20 as you scroll (infinite
+  scroll), so a large category never renders every post - or every X embed - at once; paging
+  follows the active read-state filter and resets to the top when you change it
+  (`XBOOKMARKS_PAGE_SIZE`, default 20).
 
 ## Prerequisites
 
@@ -121,6 +124,7 @@ node dist/index.js serve
 | `XBOOKMARKS_BATCH_SIZE`  | `15`                   | Bookmarks per assignment request         |
 | `XBOOKMARKS_MIN_DEPTH`   | `3`                    | Target minimum nesting depth (best-effort) |
 | `XBOOKMARKS_MAX_DEPTH`   | `4`                    | Maximum category tree depth              |
+| `XBOOKMARKS_PAGE_SIZE`   | `20`                   | Viewer lazy-load batch size per scroll   |
 
 ## Development
 
