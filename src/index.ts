@@ -98,7 +98,7 @@ async function cmdRecategorize(config: Config, db: Database): Promise<void> {
 }
 
 async function cmdServe(config: Config, db: Database): Promise<void> {
-  const app = await startServer(db, config.webPort);
+  const app = await startServer(db, config.webPort, '127.0.0.1', { pageSize: config.pageSize });
   console.log(`Web viewer running at http://127.0.0.1:${config.webPort}`);
   console.log('Press Ctrl+C to stop.');
   const shutdown = () => {

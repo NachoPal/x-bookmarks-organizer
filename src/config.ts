@@ -38,6 +38,12 @@ export interface Config {
   minCategoryDepth: number;
   /** Maximum category tree depth the LLM is allowed to create. */
   maxCategoryDepth: number;
+  /**
+   * How many bookmarks the viewer loads per batch as the owner scrolls a
+   * category (env: XBOOKMARKS_PAGE_SIZE). Keeps large categories from rendering
+   * every post - and every X embed - at once.
+   */
+  pageSize: number;
 }
 
 const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:3000/callback';
@@ -49,6 +55,7 @@ const DEFAULT_TAXONOMY_EFFORT = 'high';
 const DEFAULT_BATCH_SIZE = 15;
 const DEFAULT_MIN_DEPTH = 3;
 const DEFAULT_MAX_DEPTH = 4;
+const DEFAULT_PAGE_SIZE = 20;
 
 /** Effort levels the `claude` CLI accepts for `--effort`. */
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -92,6 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     batchSize: intFromEnv('XBOOKMARKS_BATCH_SIZE', DEFAULT_BATCH_SIZE),
     minCategoryDepth: intFromEnv('XBOOKMARKS_MIN_DEPTH', DEFAULT_MIN_DEPTH),
     maxCategoryDepth: intFromEnv('XBOOKMARKS_MAX_DEPTH', DEFAULT_MAX_DEPTH),
+    pageSize: intFromEnv('XBOOKMARKS_PAGE_SIZE', DEFAULT_PAGE_SIZE),
   };
 }
 

@@ -23,14 +23,26 @@
   // Full category tree (roots) kept in memory so the search filter can
   // re-render from source without re-fetching.
   let treeRoots = [];
-  // Bookmarks of the selected category, kept so the read-state filter can
-  // re-render client-side without re-fetching.
-  let currentBookmarks = [];
   let readFilter = "all"; // "all" | "unread" | "read"
+
+  // ---- lazy loading (paged, filtered, infinite scroll) ------------------
+  // The selected category is loaded one batch at a time as the owner scrolls,
+  // so a large category never renders (or embeds) every post up front. Counts
+  // come from the server so totals stay accurate without downloading each row.
+  let categoryCounts = { total: 0, unread: 0 };
+  let pageOffset = 0; // rows fetched so far for the current category+filter
+  let pageHasMore = false;
+  let pageLoading = false;
+  // Bumped on every category select / filter change so a slow in-flight batch
+  // from a previous view can be discarded instead of polluting the new one.
+  let requestSeq = 0;
+  let observer = null;
+  let sentinelEl = null;
 
   // ---- sidebar (collapsible) --------------------------------------------
 
   const bodyEl = document.body;
+  const contentEl = document.getElementById("bookmarks"); // the scrolling pane
   const sidebarEl = document.getElementById("sidebar");
   const toggleBtn = document.getElementById("sidebar-toggle");
   const closeBtn = document.getElementById("sidebar-close");
@@ -338,60 +350,29 @@
     selectedCategoryId = node.id;
 
     titleEl.textContent = node.path.join(" › ");
-    countEl.textContent = "";
-    stateMessage(listEl, "loading", "Loading bookmarks…");
 
     // On narrow screens the sidebar is an overlay; picking a category should
     // reveal the content it covers.
     if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
 
-    let data;
-    try {
-      data = await getJSON(`/api/categories/${node.id}/bookmarks`);
-    } catch (err) {
-      readFilterEl.hidden = true;
-      stateMessage(listEl, "error", "Could not load bookmarks for this category.");
-      return;
-    }
-    currentBookmarks = data.bookmarks || [];
-    renderBookmarks();
+    await loadFirstPage();
   }
 
-  /** Does a bookmark belong in the view under the active read-state filter? */
-  function matchesFilter(bm) {
-    if (readFilter === "unread") return !bm.read;
-    if (readFilter === "read") return Boolean(bm.read);
-    return true;
-  }
-
-  /** Render the selected category's bookmarks, filtered by read state. */
-  function renderBookmarks() {
-    const all = currentBookmarks;
-    // The filter bar only makes sense once a category has bookmarks.
-    readFilterEl.hidden = all.length === 0;
-    if (all.length === 0) {
-      countEl.textContent = "";
-      stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
-      return;
-    }
-    const shown = all.filter(matchesFilter);
-    updateCount(all, shown);
-    if (shown.length === 0) {
-      stateMessage(listEl, "empty", emptyFilterMessage());
-      return;
-    }
-    listEl.replaceChildren();
-    for (const bm of shown) listEl.appendChild(renderCard(bm));
+  /** How many bookmarks match the active read-state filter in this category. */
+  function filteredTotal() {
+    if (readFilter === "unread") return categoryCounts.unread;
+    if (readFilter === "read") return categoryCounts.total - categoryCounts.unread;
+    return categoryCounts.total;
   }
 
   /** Count line reflecting the active filter: total when All, filtered vs total otherwise. */
-  function updateCount(all, shown) {
-    const unread = all.filter((b) => !b.read).length;
+  function renderCountLine() {
+    const total = categoryCounts.total;
     if (readFilter === "all") {
-      countEl.textContent = `${all.length} bookmark${all.length === 1 ? "" : "s"} · ${unread} unread`;
+      countEl.textContent = `${total} bookmark${total === 1 ? "" : "s"} · ${categoryCounts.unread} unread`;
     } else {
       const noun = readFilter === "unread" ? "unread" : "read";
-      countEl.textContent = `${shown.length} ${noun} · ${all.length} total`;
+      countEl.textContent = `${filteredTotal()} ${noun} · ${total} total`;
     }
   }
 
@@ -399,6 +380,180 @@
     if (readFilter === "unread") return "No unread bookmarks in this category.";
     if (readFilter === "read") return "No read bookmarks in this category yet.";
     return "No bookmarks are filed under this category.";
+  }
+
+  /** Fetch one page of the current category under the active filter. */
+  function fetchPage(offset) {
+    const url =
+      `/api/categories/${selectedCategoryId}/bookmarks` +
+      `?filter=${encodeURIComponent(readFilter)}&offset=${offset}`;
+    return getJSON(url);
+  }
+
+  /**
+   * Load the first batch of the selected category, resetting all paging state.
+   * Called on category select AND on filter change (which pages from the top).
+   */
+  async function loadFirstPage() {
+    const seq = ++requestSeq;
+    teardownObserver();
+    pageLoading = false;
+    pageOffset = 0;
+    pageHasMore = false;
+    countEl.textContent = "";
+    readFilterEl.hidden = true;
+    stateMessage(listEl, "loading", "Loading bookmarks…");
+
+    let data;
+    try {
+      data = await fetchPage(0);
+    } catch (err) {
+      if (seq !== requestSeq) return; // a newer view took over
+      readFilterEl.hidden = true;
+      stateMessage(listEl, "error", "Could not load bookmarks for this category.");
+      return;
+    }
+    if (seq !== requestSeq) return; // superseded while awaiting
+
+    categoryCounts = data.counts || { total: 0, unread: 0 };
+    pageOffset = data.offset + data.bookmarks.length;
+    pageHasMore = Boolean(data.hasMore);
+
+    // The filter bar only makes sense once a category has bookmarks at all.
+    readFilterEl.hidden = categoryCounts.total === 0;
+
+    listEl.replaceChildren();
+    if (categoryCounts.total === 0) {
+      countEl.textContent = "";
+      stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
+      return;
+    }
+    renderCountLine();
+    if (data.bookmarks.length === 0) {
+      stateMessage(listEl, "empty", emptyFilterMessage());
+      return;
+    }
+    for (const bm of data.bookmarks) listEl.appendChild(renderCard(bm));
+    updateTail();
+  }
+
+  /** Fetch and append the next batch; a no-op while one is in flight or at end. */
+  async function loadMore() {
+    if (pageLoading || !pageHasMore) return;
+    pageLoading = true;
+    const seq = requestSeq;
+    setSentinelLoading(true);
+
+    let data;
+    try {
+      data = await fetchPage(pageOffset);
+    } catch (err) {
+      if (seq === requestSeq) {
+        pageLoading = false;
+        showLoadMoreError(); // surface an inline error with an explicit Retry
+      }
+      return;
+    }
+    if (seq !== requestSeq) return; // category/filter changed mid-flight
+
+    pageLoading = false;
+    pageOffset = data.offset + data.bookmarks.length;
+    pageHasMore = Boolean(data.hasMore);
+    if (data.counts) categoryCounts = data.counts;
+
+    removeTail();
+    for (const bm of data.bookmarks) listEl.appendChild(renderCard(bm));
+    renderCountLine();
+    updateTail();
+  }
+
+  // ---- infinite-scroll tail (sentinel + end-of-list marker) --------------
+
+  function ensureObserver() {
+    if (observer) return;
+    observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            loadMore();
+            break;
+          }
+        }
+      },
+      // Preload before the owner hits the bottom so scrolling stays smooth.
+      { root: contentEl, rootMargin: "400px 0px" },
+    );
+  }
+
+  function teardownObserver() {
+    if (observer) observer.disconnect();
+    sentinelEl = null;
+  }
+
+  /** Drop the sentinel and end marker, if present, before re-deriving the tail. */
+  function removeTail() {
+    if (observer && sentinelEl) observer.unobserve(sentinelEl);
+    if (sentinelEl) {
+      sentinelEl.remove();
+      sentinelEl = null;
+    }
+    const end = listEl.querySelector(".list-end");
+    if (end) end.remove();
+  }
+
+  /**
+   * Append the correct tail after the loaded cards: an observed sentinel while
+   * more pages remain, otherwise a clear end-of-list marker.
+   */
+  function updateTail() {
+    removeTail();
+    if (pageHasMore) {
+      sentinelEl = el("div", "list-sentinel");
+      sentinelEl.setAttribute("role", "status");
+      sentinelEl.setAttribute("aria-live", "polite");
+      listEl.appendChild(sentinelEl);
+      ensureObserver();
+      observer.observe(sentinelEl);
+    } else if (listEl.querySelector(".bookmark-card")) {
+      const end = el("p", "list-end");
+      end.setAttribute("role", "status");
+      end.textContent = `You've reached the end · ${filteredTotal()} shown`;
+      listEl.appendChild(end);
+    }
+  }
+
+  /**
+   * Replace the tail with an inline error + Retry when a batch fails to load.
+   * An IntersectionObserver only re-fires on an intersection change, so a user
+   * parked at the bottom would otherwise see a silent, stuck end-of-list; the
+   * button re-attempts the fetch on demand and restores normal paging.
+   */
+  function showLoadMoreError() {
+    removeTail();
+    const box = el("div", "list-error");
+    box.setAttribute("role", "alert");
+    box.appendChild(el("p", "list-error-msg", "Couldn't load more posts."));
+    const retry = el("button", "btn btn-secondary list-retry", "Retry");
+    retry.type = "button";
+    retry.addEventListener("click", () => {
+      box.remove();
+      updateTail(); // re-add the observed sentinel
+      loadMore(); // and fetch immediately rather than waiting for a scroll
+    });
+    box.appendChild(retry);
+    listEl.appendChild(box);
+  }
+
+  /** Show or clear the "Loading more…" spinner inside the sentinel. */
+  function setSentinelLoading(loading) {
+    if (!sentinelEl) return;
+    sentinelEl.classList.toggle("is-loading", loading);
+    sentinelEl.replaceChildren();
+    if (loading) {
+      const spinner = el("span", "list-spinner");
+      spinner.setAttribute("aria-hidden", "true");
+      sentinelEl.append(spinner, el("span", "list-sentinel-label", "Loading more…"));
+    }
   }
 
   function renderCard(bm) {
@@ -513,16 +668,26 @@
       const updated = data.bookmark;
       bm.read = true;
       bm.readAt = updated.readAt;
-      // Refresh sidebar counts so the unread badge stays accurate (preserves
-      // the active search query).
+      // Keep local counts in step, then refresh the sidebar unread badges
+      // (preserving the active search query).
+      if (categoryCounts.unread > 0) categoryCounts.unread -= 1;
       loadTree();
       if (readFilter === "unread") {
-        // The card no longer belongs in the filtered view: drop it out.
+        // The card no longer belongs in the filtered view: drop it out. That
+        // row also leaves the server-side unread set, so shift the offset back
+        // by one to keep the next batch aligned.
         card.remove();
+        pageOffset = Math.max(0, pageOffset - 1);
         if (listEl.querySelector(".bookmark-card")) {
-          updateCount(currentBookmarks, currentBookmarks.filter(matchesFilter));
+          renderCountLine();
+        } else if (pageHasMore) {
+          // Emptied the visible view but more remain: pull the next batch in.
+          renderCountLine();
+          loadMore();
         } else {
-          renderBookmarks(); // now-empty filtered view + its empty state/count
+          removeTail();
+          renderCountLine();
+          stateMessage(listEl, "empty", emptyFilterMessage());
         }
       } else {
         card.classList.remove("is-unread");
@@ -531,7 +696,7 @@
         if (oldPill) oldPill.replaceWith(renderPill(bm));
         const btn = card.querySelector(".mark-read-btn");
         if (btn) btn.hidden = true;
-        updateCount(currentBookmarks, currentBookmarks.filter(matchesFilter));
+        renderCountLine();
       }
     } catch (err) {
       if (button) {
@@ -581,7 +746,8 @@
       input.addEventListener("change", () => {
         if (!input.checked) return;
         readFilter = input.value;
-        if (selectedCategoryId != null) renderBookmarks();
+        // Changing the filter re-pages the category from the top.
+        if (selectedCategoryId != null) loadFirstPage();
       });
     });
   }
