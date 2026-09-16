@@ -15,11 +15,21 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
   user context). Incremental: it pages the bookmark timeline newest-first and stops as soon as it
   reaches a bookmark it has already stored, so previously seen bookmarks are never re-fetched or
   re-categorized.
-- **Categorization** - each new bookmark is sorted into a nested topic tree by an LLM running on
-  your **Claude subscription** (via the `claude` CLI in headless mode with `CLAUDE_CODE_OAUTH_TOKEN`),
-  **not** the pay-per-use Anthropic API - so it adds no per-call dollar cost. Bookmarks are batched
-  per request; the model is biased to reuse existing tree nodes and only creates a node when nothing
-  fits. A bookmark may be filed under several branches at once.
+- **Categorization** - runs on your **Claude subscription** (via the `claude` CLI in headless mode
+  with `CLAUDE_CODE_OAUTH_TOKEN`), **not** the pay-per-use Anthropic API - so it adds no per-call
+  dollar cost. It works in **two passes**:
+  1. **Taxonomy design (holistic).** All newly-collected bookmarks are shown to the model at once,
+     as a compact list, and it designs one coherent, genuinely nested category tree with complete
+     freedom over the labels and structure, targeting a minimum nesting depth
+     (`XBOOKMARKS_MIN_DEPTH`, default 3). This is the hard, large-context step, so it runs on an
+     Opus-class model at high effort (`XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT`).
+     On incremental runs it is seeded with the existing tree and extends it rather than rebuilding.
+  2. **Assignment.** Each bookmark is filed into that finished tree by a Haiku-class model
+     (`XBOOKMARKS_MODEL`) to conserve subscription quota. A bookmark may be filed under several
+     branches at once; anything that fits nothing lands in `Uncategorized`.
+
+  This replaces an older cold-start scheme that categorized bookmarks in isolated batches and tended
+  to collapse into a couple of broad, shallow buckets.
 - **Storage** - a single local SQLite file (`data/bookmarks.db` by default), fully owned and
   portable. Gitignored.
 - **Viewer** - a small local web app: the category tree with counts, drill into a node to list its
@@ -74,6 +84,16 @@ av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOK
 
 It prints a summary: how many new bookmarks, how many batches, how many new categories.
 
+**Re-categorize** (optional) - rebuild the taxonomy and reassign **all** already-stored bookmarks
+from scratch, without re-fetching from X. Use this to redo a shallow earlier run, or after changing
+the taxonomy model / depth settings. Read state and read dates are preserved:
+
+```bash
+av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js recategorize
+```
+
+(X credentials are not needed for `recategorize` - it only re-reads the local database.)
+
 **3. Browse** (the web viewer does not need any secrets):
 
 ```bash
@@ -89,8 +109,11 @@ node dist/index.js serve
 | `XBOOKMARKS_WEB_PORT`    | `5173`                 | Web viewer port                          |
 | `XBOOKMARKS_AUTH_PORT`   | `3000`                 | One-time OAuth callback port             |
 | `XBOOKMARKS_REDIRECT_URI`| `http://127.0.0.1:3000/callback` | OAuth redirect (must match the X app) |
-| `XBOOKMARKS_MODEL`       | `claude-haiku-4-5`     | Categorization model (Haiku-class)       |
-| `XBOOKMARKS_BATCH_SIZE`  | `15`                   | Bookmarks per LLM request                |
+| `XBOOKMARKS_MODEL`       | `claude-haiku-4-5`     | Assignment-pass model (Haiku-class)      |
+| `XBOOKMARKS_TAXONOMY_MODEL` | `claude-opus-4-8`   | Taxonomy-design-pass model (Opus-class)  |
+| `XBOOKMARKS_TAXONOMY_EFFORT` | `high`             | Taxonomy-pass effort (low/medium/high/xhigh/max) |
+| `XBOOKMARKS_BATCH_SIZE`  | `15`                   | Bookmarks per assignment request         |
+| `XBOOKMARKS_MIN_DEPTH`   | `3`                    | Target minimum nesting depth (best-effort) |
 | `XBOOKMARKS_MAX_DEPTH`   | `4`                    | Maximum category tree depth              |
 
 ## Development

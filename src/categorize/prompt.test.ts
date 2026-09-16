@@ -18,8 +18,13 @@ describe('buildPrompt', () => {
     expect(prompt).toContain('  - Evals');
     expect(prompt).toContain('post_id: 123');
     expect(prompt).toContain('a tweet about evals');
-    expect(prompt).toContain('at most 4 levels deep');
     expect(prompt).toContain('"assignments"');
+  });
+
+  it('instructs the model to file into the fixed tree without inventing nodes', () => {
+    const prompt = buildPrompt([bm('1')], '- AI', 4);
+    expect(prompt).toContain('do not invent new categories');
+    expect(prompt).toContain('never be longer than 4 levels');
   });
 });
 

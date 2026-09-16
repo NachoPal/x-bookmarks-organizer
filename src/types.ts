@@ -54,3 +54,13 @@ export interface Assignment {
   /** One path per category the bookmark belongs to. Each path is root -> leaf. */
   categories: string[][];
 }
+
+/**
+ * A node in a taxonomy designed by the holistic taxonomy-design pass. This is a
+ * pure shape (name + children) with no counts or ids; it is materialized into
+ * `categories` rows before the assignment pass files bookmarks into it.
+ */
+export interface TaxonomyNode {
+  name: string;
+  children: TaxonomyNode[];
+}

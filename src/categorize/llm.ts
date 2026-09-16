@@ -31,17 +31,28 @@ export interface BatchCategorizer {
  * `ANTHROPIC_API_KEY`; to be safe we strip it from the child environment so a
  * stray value can never cause paid billing.
  */
-export function createClaudeCliRunner(model: string, claudeBin = 'claude'): LlmRunner {
+export interface ClaudeCliOptions {
+  /**
+   * Reasoning effort for this call, passed through as the CLI `--effort` flag
+   * (low|medium|high|xhigh|max). Omitted when undefined so the CLI default
+   * applies.
+   */
+  effort?: string;
+  /** Override the `claude` binary (defaults to `claude` on PATH). */
+  claudeBin?: string;
+}
+
+export function createClaudeCliRunner(model: string, options: ClaudeCliOptions = {}): LlmRunner {
+  const claudeBin = options.claudeBin ?? 'claude';
   return (prompt: string) =>
     new Promise<string>((resolve, reject) => {
       const env = { ...process.env };
       delete env.ANTHROPIC_API_KEY;
 
-      const child = spawn(
-        claudeBin,
-        ['-p', '--output-format', 'json', '--model', model],
-        { env, stdio: ['pipe', 'pipe', 'pipe'] },
-      );
+      const args = ['-p', '--output-format', 'json', '--model', model];
+      if (options.effort) args.push('--effort', options.effort);
+
+      const child = spawn(claudeBin, args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
 
       let stdout = '';
       let stderr = '';

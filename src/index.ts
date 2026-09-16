@@ -3,20 +3,49 @@ import { loadConfig, requireXCredentials, type Config } from './config';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
 import { Categorizer, createClaudeCliRunner } from './categorize/llm';
-import { runIngest } from './ingest';
+import { LlmTaxonomyDesigner } from './categorize/taxonomy';
+import { recategorizeAll, runIngest } from './ingest';
 import { startServer } from './web/server';
 
 const HELP = `X Bookmarks Organizer
 
 Usage:
-  node dist/index.js [run]     Fetch new bookmarks, categorize, store (default)
-  node dist/index.js login     One-time X OAuth login (opens a browser once)
-  node dist/index.js serve     Start the local web viewer
-  node dist/index.js help      Show this help
+  node dist/index.js [run]       Fetch new bookmarks, categorize, store (default)
+  node dist/index.js login       One-time X OAuth login (opens a browser once)
+  node dist/index.js recategorize  Rebuild the taxonomy and reassign ALL stored
+                                   bookmarks from scratch (no re-fetch from X)
+  node dist/index.js serve       Start the local web viewer
+  node dist/index.js help        Show this help
 
 Secrets are injected via Automic Vault, e.g.:
   av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js
 `;
+
+/** Build the two categorization passes' collaborators from config. */
+function buildCategorizers(config: Config) {
+  const taxonomyRunner = createClaudeCliRunner(config.taxonomyModel, {
+    effort: config.taxonomyEffort,
+  });
+  const taxonomer = new LlmTaxonomyDesigner(taxonomyRunner, {
+    minDepth: config.minCategoryDepth,
+    maxDepth: config.maxCategoryDepth,
+  });
+  const assignmentRunner = createClaudeCliRunner(config.categorizeModel);
+  const categorizer = new Categorizer(assignmentRunner, {
+    model: config.categorizeModel,
+    maxDepth: config.maxCategoryDepth,
+  });
+  return { taxonomer, categorizer };
+}
+
+/** Assert the Claude subscription token is present (categorization needs it). */
+function requireClaudeToken(config: Config): void {
+  if (!config.claudeToken) {
+    throw new Error(
+      'Missing CLAUDE_CODE_OAUTH_TOKEN. Categorization runs on your Claude subscription, so this token is required.',
+    );
+  }
+}
 
 async function cmdLogin(config: Config, db: Database): Promise<void> {
   requireXCredentials(config);
@@ -26,21 +55,14 @@ async function cmdLogin(config: Config, db: Database): Promise<void> {
 
 async function cmdRun(config: Config, db: Database): Promise<void> {
   requireXCredentials(config);
-  if (!config.claudeToken) {
-    throw new Error(
-      'Missing CLAUDE_CODE_OAUTH_TOKEN. Categorization runs on your Claude subscription, so this token is required for a run.',
-    );
-  }
+  requireClaudeToken(config);
   const client = await getAuthenticatedClient(config, db);
-  const runner = createClaudeCliRunner(config.categorizeModel);
-  const categorizer = new Categorizer(runner, {
-    model: config.categorizeModel,
-    maxDepth: config.maxCategoryDepth,
-  });
+  const { taxonomer, categorizer } = buildCategorizers(config);
 
   const summary = await runIngest({
     db,
     client,
+    taxonomer,
     categorizer,
     batchSize: config.batchSize,
     maxDepth: config.maxCategoryDepth,
@@ -51,6 +73,27 @@ async function cmdRun(config: Config, db: Database): Promise<void> {
     `\nDone. ${summary.newBookmarks} new bookmark(s), ` +
       `${summary.batches} batch(es), ${summary.nodesCreated} new categor(y/ies).`,
   );
+  console.log('Browse them with:  node dist/index.js serve');
+}
+
+async function cmdRecategorize(config: Config, db: Database): Promise<void> {
+  requireClaudeToken(config);
+  const { taxonomer, categorizer } = buildCategorizers(config);
+
+  const summary = await recategorizeAll({
+    db,
+    taxonomer,
+    categorizer,
+    batchSize: config.batchSize,
+    maxDepth: config.maxCategoryDepth,
+    logger: (msg) => console.log(msg),
+  });
+
+  console.log(
+    `\nDone. Re-categorized ${summary.bookmarks} bookmark(s) into ` +
+      `${summary.nodesCreated} categor(y/ies) over ${summary.batches} batch(es).`,
+  );
+  console.log('Read state and dates were preserved.');
   console.log('Browse them with:  node dist/index.js serve');
 }
 
@@ -85,6 +128,9 @@ async function main(): Promise<void> {
         break;
       case 'run':
         await cmdRun(config, db);
+        break;
+      case 'recategorize':
+        await cmdRecategorize(config, db);
         break;
       case 'serve':
         await cmdServe(config, db);

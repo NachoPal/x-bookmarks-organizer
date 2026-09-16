@@ -84,6 +84,12 @@ Ingest + categorize (repeat whenever, roughly weekly):
 av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js
 ```
 
+Re-categorize all stored bookmarks from scratch (optional; no X fetch, read state preserved):
+
+```bash
+av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js recategorize
+```
+
 Start the local web viewer (no secrets needed) and open the printed URL:
 
 ```bash

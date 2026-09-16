@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { assembleTree, renderTreeForPrompt } from './tree';
-import type { CategoryNode } from '../types';
+import { describe, it, expect, afterEach } from 'vitest';
+import { assembleTree, buildCategoryTree, materializeTaxonomy, renderTreeForPrompt } from './tree';
+import { Database } from '../db/database';
+import type { CategoryNode, TaxonomyNode } from '../types';
 
 const cats: CategoryNode[] = [
   { id: 1, parentId: null, name: 'AI', createdAt: '' },
@@ -67,6 +68,47 @@ describe('assembleTree', () => {
     expect(roots.map((r) => r.name)).toEqual(['AI', 'Game Dev']);
     const ai = roots[0]!;
     expect(ai.children.map((c) => c.name)).toEqual(['Evals', 'Harnesses']);
+  });
+});
+
+describe('materializeTaxonomy', () => {
+  let db: Database;
+  afterEach(() => db?.close());
+
+  const tree: TaxonomyNode[] = [
+    {
+      name: 'AI',
+      children: [
+        { name: 'LLMs', children: [{ name: 'Evals', children: [] }] },
+      ],
+    },
+    { name: 'Game Dev', children: [] },
+  ];
+
+  it('creates every node of the designed tree', () => {
+    db = new Database(':memory:');
+    materializeTaxonomy(db, tree, 4, new Date().toISOString());
+    const names = db.getAllCategories().map((c) => c.name).sort();
+    expect(names).toEqual(['AI', 'Evals', 'Game Dev', 'LLMs']);
+    const rendered = renderTreeForPrompt(buildCategoryTree(db));
+    expect(rendered).toContain('- AI');
+    expect(rendered).toContain('    - Evals');
+  });
+
+  it('caps depth at maxDepth, truncating deeper branches', () => {
+    db = new Database(':memory:');
+    materializeTaxonomy(db, tree, 2, new Date().toISOString());
+    const names = db.getAllCategories().map((c) => c.name).sort();
+    expect(names).toEqual(['AI', 'Game Dev', 'LLMs']); // Evals (depth 3) dropped
+  });
+
+  it('is idempotent and merges with an existing tree (no duplicates)', () => {
+    db = new Database(':memory:');
+    const when = new Date().toISOString();
+    materializeTaxonomy(db, tree, 4, when);
+    const before = db.getAllCategories().length;
+    materializeTaxonomy(db, tree, 4, when);
+    expect(db.getAllCategories().length).toBe(before);
   });
 });
 

@@ -84,6 +84,14 @@ export class Database {
     return row ? toStoredBookmark(row) : undefined;
   }
 
+  /** All stored bookmarks, newest-ingested first. Used by re-categorization. */
+  getAllBookmarks(): StoredBookmark[] {
+    const rows = this.db
+      .prepare('SELECT * FROM bookmarks ORDER BY ingested_at DESC, id DESC')
+      .all() as BookmarkRow[];
+    return rows.map(toStoredBookmark);
+  }
+
   getBookmarkById(id: number): StoredBookmark | undefined {
     const row = this.db.prepare('SELECT * FROM bookmarks WHERE id = ?').get(id) as
       | BookmarkRow
@@ -136,6 +144,38 @@ export class Database {
   getAllCategories(): CategoryNode[] {
     const rows = this.db.prepare('SELECT * FROM categories ORDER BY id').all() as CategoryRow[];
     return rows.map(toCategoryNode);
+  }
+
+  /**
+   * Find a child of `parentId` by case-insensitive name WITHOUT creating it.
+   * `parentId` null means a root node. Used by the assignment pass to resolve a
+   * path against the fixed, designed tree, so an off-tree path resolves to
+   * nothing rather than silently minting a new category.
+   */
+  findCategory(name: string, parentId: number | null): CategoryNode | undefined {
+    const trimmed = name.trim();
+    const row =
+      parentId === null
+        ? (this.db
+            .prepare('SELECT * FROM categories WHERE parent_id IS NULL AND name = ? COLLATE NOCASE')
+            .get(trimmed) as CategoryRow | undefined)
+        : (this.db
+            .prepare('SELECT * FROM categories WHERE parent_id = ? AND name = ? COLLATE NOCASE')
+            .get(parentId, trimmed) as CategoryRow | undefined);
+    return row ? toCategoryNode(row) : undefined;
+  }
+
+  /**
+   * Delete every category and category link, leaving bookmarks (and their read
+   * state/dates) untouched. Used by re-categorization before it rebuilds the
+   * taxonomy from scratch.
+   */
+  clearCategories(): void {
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM bookmark_categories').run();
+      this.db.prepare('DELETE FROM categories').run();
+    });
+    tx();
   }
 
   /**

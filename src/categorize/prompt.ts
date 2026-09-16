@@ -13,25 +13,23 @@ function bookmarkLine(bm: RawBookmark, index: number): string {
 }
 
 /**
- * Build the categorization prompt. The model is strongly biased toward reusing
- * existing tree nodes and returns strict JSON only.
+ * Build the assignment prompt. The tree is FIXED (designed by the holistic
+ * taxonomy pass): the model files bookmarks into it and must not invent new
+ * categories. Returns strict JSON only.
  */
 export function buildPrompt(bookmarks: RawBookmark[], treeText: string, maxDepth: number): string {
   const items = bookmarks.map((bm, i) => bookmarkLine(bm, i)).join('\n\n');
-  return `You are organizing a person's X (Twitter) bookmarks into a nested tree of topic categories.
+  return `You are filing a person's X (Twitter) bookmarks into an EXISTING, fixed category tree.
 
-# Existing category tree
+# Category tree (fixed - do not invent new categories)
 ${treeText}
 
 # Rules
-- Assign each bookmark to one or more categories by topic.
-- STRONGLY prefer reusing an existing node above. Only create a new node when nothing existing fits.
-- When you reuse a node, copy its exact name and full path from root to that node.
-- Categories are hierarchical, e.g. ["AI","Harnesses"] means the node "Harnesses" under "AI".
+- Assign each bookmark to one or more categories, by topic, using ONLY nodes from the tree above.
+- Copy each node's exact name and give its full path from a root node, e.g. ["AI","Harnesses"] means the node "Harnesses" under "AI".
 - Place a bookmark at the MOST SPECIFIC node that fits. A bookmark may belong to several branches at once (multi-category) - list one path per branch.
-- Do NOT create near-duplicate siblings (e.g. "LLMs" next to an existing "LLM"). Reuse the existing one.
-- Keep the tree at most ${maxDepth} levels deep. Never emit a path longer than ${maxDepth}.
-- Every bookmark must get at least one category. If truly nothing fits, use ["Uncategorized"].
+- Do NOT invent new categories or emit paths that are not in the tree. A path may never be longer than ${maxDepth} levels.
+- Every bookmark must get at least one category. If truly nothing in the tree fits, use ["Uncategorized"].
 
 # Bookmarks to categorize
 ${items}

@@ -1,5 +1,28 @@
 import type { Database } from '../db/database';
-import type { CategoryNode, CategoryTreeNode } from '../types';
+import type { CategoryNode, CategoryTreeNode, TaxonomyNode } from '../types';
+
+/**
+ * Materialize a designed taxonomy into `categories` rows, creating each node
+ * (get-or-create, so it merges cleanly with any pre-existing tree). Depth is
+ * capped at `maxDepth`; branches deeper than that are truncated. Idempotent.
+ */
+export function materializeTaxonomy(
+  db: Database,
+  taxonomy: TaxonomyNode[],
+  maxDepth: number,
+  when: string,
+): void {
+  const walk = (nodes: TaxonomyNode[], parentId: number | null, depth: number) => {
+    if (depth >= maxDepth) return;
+    for (const node of nodes) {
+      const name = node.name.trim();
+      if (!name) continue;
+      const created = db.getOrCreateCategory(name, parentId, when);
+      walk(node.children ?? [], created.id, depth + 1);
+    }
+  };
+  walk(taxonomy, null, 0);
+}
 
 /**
  * Build the full category tree with counts rolled up so that each node's
