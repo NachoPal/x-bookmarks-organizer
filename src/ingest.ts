@@ -234,12 +234,13 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
     resolvePath = resolveOrCreatePathToLeafId;
   }
 
-  const treeText = renderTreeForPrompt(buildCategoryTree(db));
-
   const batches = chunk(ordered, batchSize);
   log(`Assigning ${ordered.length} bookmark(s) into the tree in ${batches.length} batch(es).`);
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]!;
+    // Re-render per batch so an extend batch sees nodes created by earlier
+    // batches and reuses them instead of minting near-duplicate siblings.
+    const treeText = renderTreeForPrompt(buildCategoryTree(db));
     const assignments = await categorizer.categorizeBatch(batch, treeText, mode);
     const byPostId = indexAssignments(assignments);
     db.storeCategorizedBatch(batch, makeResolver(db, byPostId, maxDepth, when, resolvePath), when);

@@ -246,6 +246,44 @@ describe('runIngest (two-pass)', () => {
     expect(names).toEqual(['A', 'B', 'C']); // D, E dropped by the depth cap
   });
 
+  it('re-renders the tree between extend batches so a later batch reuses an earlier-created node', async () => {
+    const when = new Date().toISOString();
+    db.getOrCreateCategory('AI', null, when); // existing tree -> extend mode
+
+    // Two new robotics bookmarks; batchSize 1 forces two separate extend batches.
+    const client = new FakeXClient([bm('3'), bm('2')]);
+
+    // A reuse-or-create categorizer that mimics a real model: it reuses the
+    // 'Robotics' node when the tree it is shown already contains it; otherwise it
+    // mints a fresh label, diverging on repeat. If a later batch is shown a stale
+    // tree missing the node the earlier batch created, it produces 'Robots'.
+    const freshLabels = ['Robotics', 'Robots'];
+    class ReuseOrCreateCategorizer implements BatchCategorizer {
+      created = 0;
+      async categorizeBatch(bookmarks: RawBookmark[], treeText: string): Promise<Assignment[]> {
+        const label = treeText.includes('Robotics') ? 'Robotics' : freshLabels[this.created++]!;
+        return bookmarks.map((b) => ({ postId: b.postId, categories: [[label, 'Actuators']] }));
+      }
+    }
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
+    await runIngest({
+      db,
+      client,
+      taxonomer,
+      categorizer: new ReuseOrCreateCategorizer(),
+      batchSize: 1,
+      maxDepth: 4,
+    });
+
+    expect(taxonomer.seenBookmarkCounts).toEqual([]);
+    const names = db.getAllCategories().map((c) => c.name).sort();
+    expect(names).toContain('Robotics');
+    expect(names).not.toContain('Robots'); // no near-duplicate sibling minted
+    // Both bookmarks landed in the single reused Robotics subtree.
+    const actuators = db.getAllCategories().find((c) => c.name === 'Actuators')!;
+    expect(db.getBookmarksForCategory(actuators.id).map((b) => b.postId).sort()).toEqual(['2', '3']);
+  });
+
   it('supports multi-category placement (a bookmark in several branches)', async () => {
     const client = new FakeXClient([bm('1')]);
     const taxonomer = new FakeTaxonomyDesigner(
