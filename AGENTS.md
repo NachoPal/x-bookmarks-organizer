@@ -22,7 +22,19 @@ Setup steps: `docs/setup.md`.
 - **Categorization must run on the Claude subscription, never the paid API.** It shells out to the
   `claude` CLI in print mode (`src/categorize/llm.ts`) using `CLAUDE_CODE_OAUTH_TOKEN`. Never
   introduce `@anthropic-ai/sdk` or require `ANTHROPIC_API_KEY` (the runner even strips it from the
-  child env). Model is Haiku-class; bookmarks are batched to conserve subscription usage.
+  child env).
+- **Categorization is two passes** (`src/ingest.ts`): pass 1 designs a taxonomy holistically over
+  ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus-class + high effort, configurable) so
+  the tree is genuinely deep; pass 2 files each bookmark into that fixed tree in batches
+  (`src/categorize/prompt.ts`, Haiku-class to conserve quota). Pass 1 (the expensive Opus pass)
+  runs ONLY on the first run (empty tree) and on `recategorize`. An incremental `run` against an
+  existing tree SKIPS pass 1 entirely and never re-touches stored bookmarks: it runs only the cheap
+  assignment pass over the NEW bookmarks in `extend` mode (`buildExtendPrompt`), reusing existing
+  nodes and creating one only when nothing fits (resolver `resolveOrCreatePathToLeafId`, capped at
+  maxDepth). First run and `recategorize` use `strict` mode (`buildPrompt`): pass 2 must not invent
+  nodes - off-tree paths fall back to `Uncategorized`. `recategorize` rebuilds both passes over all
+  stored bookmarks without re-fetching, preserving read state/dates (it designs the new taxonomy
+  BEFORE clearing the old one, so a failed LLM call never wipes the DB).
 - **Secrets come only from the environment (Automic Vault `av inject`).** Never read a committed
   `.env`, never write secrets to disk. The X refresh token is persisted in the (gitignored) SQLite
   DB via `run_state`.

@@ -26,10 +26,16 @@ export interface Config {
   authCallbackPort: number;
   /** Port for the local web viewer. */
   webPort: number;
-  /** Claude model used for categorization (Haiku-class for cost/quota efficiency). */
+  /** Claude model used for the assignment pass (Haiku-class for cost/quota efficiency). */
   categorizeModel: string;
-  /** How many bookmarks to send to the LLM per request. */
+  /** Claude model used for the holistic taxonomy-design pass (Opus-class). */
+  taxonomyModel: string;
+  /** Effort level for the taxonomy-design pass (low|medium|high|xhigh|max). */
+  taxonomyEffort: string;
+  /** How many bookmarks to send to the assignment LLM per request. */
   batchSize: number;
+  /** Best-effort minimum nesting depth the taxonomy pass targets. */
+  minCategoryDepth: number;
   /** Maximum category tree depth the LLM is allowed to create. */
   maxCategoryDepth: number;
 }
@@ -38,14 +44,26 @@ const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:3000/callback';
 const DEFAULT_AUTH_PORT = 3000;
 const DEFAULT_WEB_PORT = 5173;
 const DEFAULT_MODEL = 'claude-haiku-4-5';
+const DEFAULT_TAXONOMY_MODEL = 'claude-opus-4-8';
+const DEFAULT_TAXONOMY_EFFORT = 'high';
 const DEFAULT_BATCH_SIZE = 15;
+const DEFAULT_MIN_DEPTH = 3;
 const DEFAULT_MAX_DEPTH = 4;
+
+/** Effort levels the `claude` CLI accepts for `--effort`. */
+const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 function intFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** Read an effort level from the env, falling back if unset or invalid. */
+function effortFromEnv(env: NodeJS.ProcessEnv, name: string, fallback: string): string {
+  const raw = env[name]?.trim().toLowerCase();
+  return raw && VALID_EFFORTS.has(raw) ? raw : fallback;
 }
 
 /**
@@ -69,7 +87,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     authCallbackPort: intFromEnv('XBOOKMARKS_AUTH_PORT', DEFAULT_AUTH_PORT),
     webPort: intFromEnv('XBOOKMARKS_WEB_PORT', DEFAULT_WEB_PORT),
     categorizeModel: env.XBOOKMARKS_MODEL ?? DEFAULT_MODEL,
+    taxonomyModel: env.XBOOKMARKS_TAXONOMY_MODEL ?? DEFAULT_TAXONOMY_MODEL,
+    taxonomyEffort: effortFromEnv(env, 'XBOOKMARKS_TAXONOMY_EFFORT', DEFAULT_TAXONOMY_EFFORT),
     batchSize: intFromEnv('XBOOKMARKS_BATCH_SIZE', DEFAULT_BATCH_SIZE),
+    minCategoryDepth: intFromEnv('XBOOKMARKS_MIN_DEPTH', DEFAULT_MIN_DEPTH),
     maxCategoryDepth: intFromEnv('XBOOKMARKS_MAX_DEPTH', DEFAULT_MAX_DEPTH),
   };
 }
