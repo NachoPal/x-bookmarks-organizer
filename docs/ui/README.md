@@ -12,3 +12,18 @@ bookmarks.
 | `04-after-narrow-content.png` | **After, ~390px.** Sidebar is an off-canvas drawer (closed by default); content is fully contained. |
 | `05-after-narrow-drawer.png` | **After, drawer open** with backdrop scrim and close button. |
 | `06-after-dark.png` | **After, dark mode.** |
+
+## Viewer filters — category search + read-state bar
+
+Visual evidence for the two filtering controls: a category search box in the sidebar
+and a read-state segmented bar (Unread / Read / All) above the bookmark cards. Same
+seeded dataset, never real bookmarks.
+
+| File | What it shows |
+| --- | --- |
+| `wide-01-category-selected.png` | **Desktop.** Search box atop the sidebar; read-state bar (default **All**) above the cards; count `20 bookmarks · 13 unread`. |
+| `wide-02-unread-filter.png` | **Unread filter active.** Only unread cards shown; count reads `13 unread · 20 total`. |
+| `wide-03-category-search.png` | **Category search `invest`.** Tree pruned to matches plus their ancestor path; matched substring highlighted; clear (×) button visible. |
+| `narrow-01-filter-bar.png` | **~390px.** Read-state bar fits the narrow content column above stacked cards. |
+| `narrow-02-category-search-drawer.png` | **~390px, drawer open.** Search filters the tree inside the off-canvas drawer; a 3-level-deep match (`Agentic Workflows & Tool Use`) keeps its full ancestor path. |
+| `wide-04-dark-read-filter-search.png` | **Dark mode.** Both filters active together (search `engine` + **Read**); highlight and segmented control render correctly on dark surfaces. |

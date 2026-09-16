@@ -11,12 +11,22 @@
   const listEl = document.getElementById("bookmark-list");
   const titleEl = document.getElementById("content-title");
   const countEl = document.getElementById("content-count");
+  const searchInput = document.getElementById("category-search");
+  const searchClear = document.getElementById("category-search-clear");
+  const readFilterEl = document.getElementById("read-filter");
 
   let selectedCategoryId = null;
   let selectedButton = null;
   // Manual expand/collapse state (category id -> expanded), preserved across
   // sidebar refreshes so mark-read never resets the user's browsing context.
   let expansionState = new Map();
+  // Full category tree (roots) kept in memory so the search filter can
+  // re-render from source without re-fetching.
+  let treeRoots = [];
+  // Bookmarks of the selected category, kept so the read-state filter can
+  // re-render client-side without re-fetching.
+  let currentBookmarks = [];
+  let readFilter = "all"; // "all" | "unread" | "read"
 
   // ---- sidebar (collapsible) --------------------------------------------
 
@@ -145,8 +155,18 @@
       stateMessage(treeEl, "error", "Could not load categories. Is the server running?");
       return;
     }
-    const roots = data.tree || [];
-    if (roots.length === 0) {
+    treeRoots = data.tree || [];
+    renderTree();
+  }
+
+  /**
+   * Render the category tree, honoring the current search query. An empty
+   * query shows the full tree with the user's expand/collapse state; a query
+   * shows only matching nodes plus the ancestors needed to place them, fully
+   * expanded, with the matched substring highlighted.
+   */
+  function renderTree() {
+    if (treeRoots.length === 0) {
       stateMessage(
         treeEl,
         "empty",
@@ -154,20 +174,69 @@
       );
       return;
     }
-    treeEl.replaceChildren(renderNodeList(roots, 0));
+    const raw = searchInput ? searchInput.value.trim() : "";
+    const query = raw.toLowerCase();
+    const searching = query.length > 0;
+    const roots = searching ? filterTree(treeRoots, query) : treeRoots;
+    if (searching && roots.length === 0) {
+      stateMessage(treeEl, "empty", `No categories match “${raw}”.`);
+      return;
+    }
+    treeEl.replaceChildren(renderNodeList(roots, 0, { searching, query }));
     // Re-apply the current selection highlight after a refresh.
     if (selectedCategoryId != null) {
       const btn = treeEl.querySelector(`[data-category-id="${selectedCategoryId}"]`);
       if (btn) {
         btn.setAttribute("aria-current", "true");
         selectedButton = btn;
-        expandAncestors(btn); // keep the selected node visible
+        if (!searching) expandAncestors(btn); // keep the selected node visible
       }
     }
   }
 
+  /**
+   * Return a pruned copy of the tree: a node survives if its name matches the
+   * (lowercased) query or if any descendant does, so matches always keep their
+   * ancestor path for context. Non-matching branches are dropped.
+   */
+  function filterTree(nodes, query) {
+    const out = [];
+    for (const node of nodes) {
+      const kids =
+        node.children && node.children.length ? filterTree(node.children, query) : [];
+      const selfMatch = node.name.toLowerCase().includes(query);
+      if (selfMatch || kids.length > 0) out.push({ ...node, children: kids });
+    }
+    return out;
+  }
+
+  /** Append `text` to `container`, wrapping each `query` match in a <mark>. */
+  function appendHighlighted(container, text, query) {
+    if (!query) {
+      container.appendChild(document.createTextNode(text));
+      return;
+    }
+    const lower = text.toLowerCase();
+    let from = 0;
+    let idx = lower.indexOf(query);
+    if (idx === -1) {
+      container.appendChild(document.createTextNode(text));
+      return;
+    }
+    while (idx !== -1) {
+      if (idx > from) container.appendChild(document.createTextNode(text.slice(from, idx)));
+      container.appendChild(el("mark", null, text.slice(idx, idx + query.length)));
+      from = idx + query.length;
+      idx = lower.indexOf(query, from);
+    }
+    if (from < text.length) container.appendChild(document.createTextNode(text.slice(from)));
+  }
+
   /** Record which expandable nodes are currently open, keyed by category id. */
   function captureExpansionState() {
+    // While searching, the tree is force-expanded; recording that transient
+    // state would clobber the user's real expand/collapse choices.
+    if (searchInput && searchInput.value.trim().length > 0) return;
     treeEl.querySelectorAll(".tree-row").forEach((row) => {
       const btn = row.querySelector(".tree-node");
       const toggle = row.querySelector(".tree-toggle");
@@ -195,13 +264,15 @@
     }
   }
 
-  function renderNodeList(nodes, depth) {
+  function renderNodeList(nodes, depth, opts) {
     const ul = el("ul");
-    for (const node of nodes) ul.appendChild(renderNode(node, depth));
+    for (const node of nodes) ul.appendChild(renderNode(node, depth, opts));
     return ul;
   }
 
-  function renderNode(node, depth) {
+  function renderNode(node, depth, opts) {
+    const options = opts || {};
+    const searching = options.searching === true;
     const li = el("li");
     const row = el("div", "tree-row");
     const hasChildren = node.children && node.children.length > 0;
@@ -216,7 +287,8 @@
     button.type = "button";
     button.dataset.categoryId = String(node.id);
 
-    const label = el("span", "tree-label", node.name);
+    const label = el("span", "tree-label");
+    appendHighlighted(label, node.name, options.query);
     label.title = node.path.join(" › ");
     const counts = el("span", "tree-counts");
     const total = el("span", "count-total", String(node.total));
@@ -231,9 +303,11 @@
     button.addEventListener("click", () => selectCategory(node, button));
 
     if (hasChildren) {
-      const childList = renderNodeList(node.children, depth + 1);
+      const childList = renderNodeList(node.children, depth + 1, options);
       const saved = expansionState.get(String(node.id));
-      const expanded = saved !== undefined ? saved : depth < 1; // top levels open by default
+      // While searching, every surviving branch is forced open so matches show;
+      // that transient state is not written back to expansionState.
+      const expanded = searching ? true : saved !== undefined ? saved : depth < 1;
       childList.hidden = !expanded;
       toggle.setAttribute("aria-expanded", String(expanded));
       toggle.setAttribute("aria-label", `Toggle ${node.name}`);
@@ -241,7 +315,7 @@
         const now = toggle.getAttribute("aria-expanded") !== "true";
         toggle.setAttribute("aria-expanded", String(now));
         childList.hidden = !now;
-        expansionState.set(String(node.id), now);
+        if (!searching) expansionState.set(String(node.id), now);
       });
       row.append(toggle, button);
       li.append(row, childList);
@@ -275,22 +349,56 @@
     try {
       data = await getJSON(`/api/categories/${node.id}/bookmarks`);
     } catch (err) {
+      readFilterEl.hidden = true;
       stateMessage(listEl, "error", "Could not load bookmarks for this category.");
       return;
     }
-    renderBookmarks(data.bookmarks || []);
+    currentBookmarks = data.bookmarks || [];
+    renderBookmarks();
   }
 
-  function renderBookmarks(bookmarks) {
-    if (bookmarks.length === 0) {
+  /** Does a bookmark belong in the view under the active read-state filter? */
+  function matchesFilter(bm) {
+    if (readFilter === "unread") return !bm.read;
+    if (readFilter === "read") return Boolean(bm.read);
+    return true;
+  }
+
+  /** Render the selected category's bookmarks, filtered by read state. */
+  function renderBookmarks() {
+    const all = currentBookmarks;
+    // The filter bar only makes sense once a category has bookmarks.
+    readFilterEl.hidden = all.length === 0;
+    if (all.length === 0) {
       countEl.textContent = "";
       stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
       return;
     }
-    const unread = bookmarks.filter((b) => !b.read).length;
-    countEl.textContent = `${bookmarks.length} bookmark${bookmarks.length === 1 ? "" : "s"} · ${unread} unread`;
+    const shown = all.filter(matchesFilter);
+    updateCount(all, shown);
+    if (shown.length === 0) {
+      stateMessage(listEl, "empty", emptyFilterMessage());
+      return;
+    }
     listEl.replaceChildren();
-    for (const bm of bookmarks) listEl.appendChild(renderCard(bm));
+    for (const bm of shown) listEl.appendChild(renderCard(bm));
+  }
+
+  /** Count line reflecting the active filter: total when All, filtered vs total otherwise. */
+  function updateCount(all, shown) {
+    const unread = all.filter((b) => !b.read).length;
+    if (readFilter === "all") {
+      countEl.textContent = `${all.length} bookmark${all.length === 1 ? "" : "s"} · ${unread} unread`;
+    } else {
+      const noun = readFilter === "unread" ? "unread" : "read";
+      countEl.textContent = `${shown.length} ${noun} · ${all.length} total`;
+    }
+  }
+
+  function emptyFilterMessage() {
+    if (readFilter === "unread") return "No unread bookmarks in this category.";
+    if (readFilter === "read") return "No read bookmarks in this category yet.";
+    return "No bookmarks are filed under this category.";
   }
 
   function renderCard(bm) {
@@ -405,15 +513,26 @@
       const updated = data.bookmark;
       bm.read = true;
       bm.readAt = updated.readAt;
-      card.classList.remove("is-unread");
-      const head = card.querySelector(".bookmark-head");
-      const oldPill = head.querySelector(".read-pill");
-      if (oldPill) oldPill.replaceWith(renderPill(bm));
-      const btn = card.querySelector(".mark-read-btn");
-      if (btn) btn.hidden = true;
-      // Refresh sidebar counts so the unread badge stays accurate.
+      // Refresh sidebar counts so the unread badge stays accurate (preserves
+      // the active search query).
       loadTree();
-      updateContentCount();
+      if (readFilter === "unread") {
+        // The card no longer belongs in the filtered view: drop it out.
+        card.remove();
+        if (listEl.querySelector(".bookmark-card")) {
+          updateCount(currentBookmarks, currentBookmarks.filter(matchesFilter));
+        } else {
+          renderBookmarks(); // now-empty filtered view + its empty state/count
+        }
+      } else {
+        card.classList.remove("is-unread");
+        const head = card.querySelector(".bookmark-head");
+        const oldPill = head.querySelector(".read-pill");
+        if (oldPill) oldPill.replaceWith(renderPill(bm));
+        const btn = card.querySelector(".mark-read-btn");
+        if (btn) btn.hidden = true;
+        updateCount(currentBookmarks, currentBookmarks.filter(matchesFilter));
+      }
     } catch (err) {
       if (button) {
         button.classList.remove("is-loading");
@@ -429,15 +548,47 @@
     return res.json();
   }
 
-  function updateContentCount() {
-    const cards = listEl.querySelectorAll(".bookmark-card");
-    const unread = listEl.querySelectorAll(".bookmark-card.is-unread").length;
-    if (cards.length > 0) {
-      countEl.textContent = `${cards.length} bookmark${cards.length === 1 ? "" : "s"} · ${unread} unread`;
-    }
+  // ---- filters -----------------------------------------------------------
+
+  function initSearch() {
+    if (!searchInput) return;
+    const onInput = () => {
+      searchClear.hidden = searchInput.value.trim().length === 0;
+      renderTree();
+    };
+    searchInput.addEventListener("input", onInput);
+    searchClear.addEventListener("click", () => {
+      searchInput.value = "";
+      searchClear.hidden = true;
+      renderTree();
+      searchInput.focus();
+    });
+    // Escape clears the query without also closing the sidebar drawer.
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && searchInput.value.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        searchInput.value = "";
+        searchClear.hidden = true;
+        renderTree();
+      }
+    });
+  }
+
+  function initReadFilter() {
+    if (!readFilterEl) return;
+    readFilterEl.querySelectorAll(".seg-input").forEach((input) => {
+      input.addEventListener("change", () => {
+        if (!input.checked) return;
+        readFilter = input.value;
+        if (selectedCategoryId != null) renderBookmarks();
+      });
+    });
   }
 
   // ---- init --------------------------------------------------------------
   initSidebar();
+  initSearch();
+  initReadFilter();
   loadTree();
 })();
