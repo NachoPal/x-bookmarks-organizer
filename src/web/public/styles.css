@@ -762,6 +762,39 @@ body[data-sidebar="collapsed"] .app-body {
   margin-top: 0 !important;
   margin-bottom: 0 !important;
 }
+/* Loading placeholder shown in an embed slot until X's widgets.js reports the
+   tweet fully rendered (then revealed) or the post can't embed (link fallback).
+   A shimmering skeleton reserves the slot's height so the card never jumps, with
+   a spinner layered above it that stays fully opaque as the skeleton pulses. */
+.embed-loader {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 9rem;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+.embed-loader::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--color-surface-2), var(--color-border), var(--color-surface-2));
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+.embed-spinner {
+  position: relative; /* above the shimmer layer */
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 2px solid var(--color-border-strong);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
 .embed-fallback {
   min-width: 0;
   background: var(--color-surface-2);

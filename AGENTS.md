@@ -62,6 +62,13 @@ so a large category is never shipped or embedded all at once. The client (`app.j
 an IntersectionObserver sentinel against the content pane; changing the filter re-pages from the
 top. The dense-category seed leaf exists to exercise this.
 
+Each embed slot (`renderEmbed` in `app.js`) shows a skeleton + spinner immediately and reveals
+only the finished result: it renders into a hidden host and swaps to the embed when
+`twttr.widgets.createTweet(...)` resolves with an element, or to the text+link fallback when it
+resolves `undefined` (deleted/protected), rejects, or a backstop timeout fires - never an infinite
+spinner and never a raw-text flash. This runs per card, so lazy-loaded batches get it too. The seed
+uses a couple of real public post ids so a live embed appears alongside the fallbacks.
+
 To iterate on the viewer without the owner's private DB, seed a throwaway one and serve it:
 `npm run build && npm run seed:dev && XBOOKMARKS_DB_PATH=data/dev-seed.db node dist/index.js serve`
 (`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit
