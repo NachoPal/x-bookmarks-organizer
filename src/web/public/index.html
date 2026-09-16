@@ -8,29 +8,62 @@
   </head>
   <body>
     <a class="skip-link" href="#bookmarks">Skip to bookmarks</a>
+
     <header class="app-header">
-      <h1 class="app-title">X Bookmarks</h1>
-      <p class="app-subtitle">Browse your bookmarks by topic. Opening one marks it read.</p>
+      <button
+        id="sidebar-toggle"
+        class="icon-btn sidebar-toggle"
+        type="button"
+        aria-controls="sidebar"
+        aria-expanded="true"
+        aria-label="Hide categories"
+      >
+        <span class="icon-bars" aria-hidden="true"></span>
+      </button>
+      <div class="app-heading">
+        <h1 class="app-title">X Bookmarks</h1>
+        <p class="app-subtitle">Browse your bookmarks by topic. Opening one marks it read.</p>
+      </div>
     </header>
 
-    <main class="layout">
-      <nav class="sidebar" aria-label="Category tree">
-        <h2 class="sidebar-heading">Categories</h2>
-        <div id="tree" class="tree">
-          <p class="state state-loading" role="status">Loading categories…</p>
+    <div class="app-body">
+      <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+
+      <nav id="sidebar" class="sidebar" aria-label="Category tree">
+        <div class="sidebar-inner">
+          <div class="sidebar-topbar">
+            <h2 class="sidebar-heading">Categories</h2>
+            <button
+              id="sidebar-close"
+              class="icon-btn sidebar-close"
+              type="button"
+              aria-label="Close categories"
+            >
+              <span class="icon-x" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div id="tree" class="tree">
+            <p class="state state-loading" role="status">Loading categories…</p>
+          </div>
         </div>
       </nav>
 
-      <section id="bookmarks" class="content" aria-label="Bookmarks" tabindex="-1">
-        <div class="content-header">
-          <h2 id="content-title" class="content-title">Select a category</h2>
-          <p id="content-count" class="content-count" aria-live="polite"></p>
+      <main id="bookmarks" class="content" aria-label="Bookmarks" tabindex="-1">
+        <div class="content-inner">
+          <div class="content-header">
+            <h2 id="content-title" class="content-title">Select a category</h2>
+            <p id="content-count" class="content-count" aria-live="polite"></p>
+          </div>
+          <div id="bookmark-list" class="bookmark-list" aria-live="polite">
+            <div class="state state-empty state-welcome">
+              <span class="state-icon" aria-hidden="true">🔖</span>
+              <p class="state-title">Nothing selected yet</p>
+              <p class="state-body">Choose a category from the sidebar to see its bookmarks.</p>
+            </div>
+          </div>
         </div>
-        <div id="bookmark-list" class="bookmark-list" aria-live="polite">
-          <p class="state state-empty">Choose a category on the left to see its bookmarks.</p>
-        </div>
-      </section>
-    </main>
+      </main>
+    </div>
 
     <script src="https://platform.twitter.com/widgets.js" async></script>
     <script src="app.js" defer></script>

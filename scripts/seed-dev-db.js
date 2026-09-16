@@ -1,0 +1,183 @@
+'use strict';
+
+/**
+ * Dev-only seed: populate a local SQLite DB with a representative, deeply nested
+ * category tree and a spread of sample bookmarks so the web viewer renders
+ * realistically WITHOUT the owner's private data.
+ *
+ * Never run against real data - it targets a throwaway DB path (default
+ * data/dev-seed.db, gitignored). Usage:
+ *   node scripts/seed-dev-db.js [dbPath]
+ *
+ * Requires a prior `npm run build` (it uses the compiled Database wrapper).
+ */
+const path = require('node:path');
+const fs = require('node:fs');
+const { Database } = require('../dist/db/database');
+
+const dbPath = path.resolve(process.argv[2] || path.join(process.cwd(), 'data', 'dev-seed.db'));
+// Start clean so re-seeding is deterministic.
+for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+  try {
+    fs.rmSync(f);
+  } catch {
+    /* not present */
+  }
+}
+
+const db = new Database(dbPath);
+const now = new Date().toISOString();
+
+// A category id cache keyed by full path so we can build the tree top-down.
+const idByPath = new Map();
+function ensurePath(segments) {
+  let parentId = null;
+  let key = '';
+  for (const name of segments) {
+    key = key ? `${key} › ${name}` : name;
+    if (!idByPath.has(key)) {
+      const node = db.getOrCreateCategory(name, parentId, now);
+      idByPath.set(key, node.id);
+    }
+    parentId = idByPath.get(key);
+  }
+  return parentId;
+}
+
+// A deliberately deep (4-level) taxonomy with long titles to stress the layout.
+const TAXONOMY = {
+  'Software Engineering': {
+    'Programming Languages': {
+      'TypeScript & JavaScript': {},
+      'Rust Systems Programming': {},
+      'Python for Data & Scripting': {},
+    },
+    'Distributed Systems': {
+      'Consensus & Replication Protocols': {},
+      'Event-Driven Architecture': {},
+    },
+    'Developer Tooling & Productivity': {
+      'Editors, IDEs & Terminal Setups': {},
+      'CI/CD & Build Pipelines': {},
+    },
+  },
+  'Artificial Intelligence & Machine Learning': {
+    'Large Language Models': {
+      'Prompt Engineering & Evaluation': {},
+      'Agentic Workflows & Tool Use': {},
+      'Fine-Tuning & Model Alignment': {},
+    },
+    'Computer Vision': {
+      'Image Generation & Diffusion Models': {},
+    },
+  },
+  'Design & Product': {
+    'User Interface & Interaction Design': {
+      'Design Systems & Component Libraries': {},
+      'Typography & Visual Hierarchy': {},
+    },
+    'Product Strategy': {},
+  },
+  'Personal Finance & Investing': {
+    'Long-Term Investing Principles': {},
+    'Startups & Venture Capital': {},
+  },
+};
+
+function buildTree(obj, prefix) {
+  for (const [name, children] of Object.entries(obj)) {
+    const segments = [...prefix, name];
+    ensurePath(segments);
+    if (children && Object.keys(children).length > 0) buildTree(children, segments);
+  }
+}
+buildTree(TAXONOMY, []);
+
+// A pool of sample authors and post templates. A few use real, long-lived public
+// post ids so the official embed can render; the rest use synthetic ids that
+// exercise the text+link fallback (deleted/protected-post path).
+const AUTHORS = [
+  ['Sindre Sorhus', 'sindresorhus'],
+  ['Dan Abramov', 'dan_abramov'],
+  ['Kelsey Hightower', 'kelseyhightower'],
+  ['Andrej Karpathy', 'karpathy'],
+  ['Sarah Drasner', 'sarah_edo'],
+  ['Guillermo Rauch', 'rauchg'],
+  ['Amjad Masad', 'amasad'],
+  ['Rich Harris', 'Rich_Harris'],
+  ['Addy Osmani', 'addyosmani'],
+  ['Julia Evans', 'b0rk'],
+];
+
+const TEXTS = [
+  'A short note. Nothing to see here.',
+  'Just shipped a refactor that removed 400 lines and made the whole module easier to reason about. Deleting code is the best feeling in software.',
+  'Reminder that the fastest way to learn a new codebase is to fix a real bug in it, end to end, the way a user would hit it. Reading alone never sticks the same way.',
+  'Hot take: most "microservice" pain is really just a distributed monolith with a network in the middle. Get the boundaries right first, split later.',
+  'The best prompt engineering advice I can give: write the eval before you write the prompt. If you cannot measure it, you are just vibing.\n\nMeasure, then iterate.',
+  'Spent the afternoon reading through the source of a tool I use every day. Highly recommend it - you learn so much about API design by seeing the seams.',
+  'Design systems are not about components. They are about decisions made once so nobody has to re-litigate padding in every PR forever.',
+  'If your CI takes longer than it takes to get a coffee, people stop trusting it and start merging around it. Fast feedback is a feature.',
+  'Long-term investing is mostly about surviving long enough for compounding to do its thing. The hard part is the temperament, not the math.',
+  'Reader view / offline reading is criminally underrated. Half my bookmarks are articles I will "read later" and never open because the tab died.',
+];
+
+// Real, public, long-lived post ids (used for a handful of cards so a live embed
+// appears when the network allows; synthetic ids elsewhere hit the fallback).
+const REAL_POST_IDS = ['20', '1274809214651805696'];
+
+const leafPaths = [...idByPath.keys()].filter((key) => {
+  // A path is a leaf if no other key extends it.
+  return ![...idByPath.keys()].some((k) => k !== key && k.startsWith(`${key} › `));
+});
+
+let seq = 0;
+function makeBookmark(leafKey) {
+  const [name, username] = AUTHORS[seq % AUTHORS.length];
+  const text = TEXTS[seq % TEXTS.length];
+  const useReal = seq % 7 === 0 && REAL_POST_IDS[seq % REAL_POST_IDS.length];
+  const postId = useReal ? REAL_POST_IDS[seq % REAL_POST_IDS.length] : `900000000000000${String(1000 + seq)}`;
+  const daysAgo = (seq * 3) % 120;
+  const created = new Date(Date.now() - daysAgo * 864e5).toISOString();
+  seq += 1;
+  return {
+    raw: {
+      postId,
+      authorUsername: username,
+      authorName: name,
+      text,
+      url: `https://x.com/${username}/status/${postId}`,
+      postCreatedAt: created,
+    },
+    leafId: idByPath.get(leafKey),
+  };
+}
+
+// Give every leaf a few bookmarks, with a couple of leaves left empty on purpose
+// so the empty-state renders too.
+let leafIndex = 0;
+for (const leafKey of leafPaths) {
+  leafIndex += 1;
+  if (leafIndex % 6 === 0) continue; // leave some categories empty
+  const count = 2 + (leafIndex % 4); // 2..5 bookmarks
+  const items = [];
+  const links = [];
+  for (let i = 0; i < count; i += 1) {
+    const { raw, leafId } = makeBookmark(leafKey);
+    items.push(raw);
+    links.push(leafId);
+  }
+  db.storeCategorizedBatch(items, (bm) => {
+    const idx = items.indexOf(bm);
+    return [links[idx]];
+  });
+}
+
+// Mark a spread of bookmarks read so read/unread states both render.
+const all = db.getAllBookmarks();
+all.forEach((bm, i) => {
+  if (i % 3 === 0) db.markRead(bm.id, new Date(Date.now() - (i % 30) * 864e5).toISOString());
+});
+
+console.log(`Seeded ${all.length} bookmarks across ${idByPath.size} categories -> ${dbPath}`);
+db.close();

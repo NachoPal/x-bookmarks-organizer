@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run copy:assets",
     "copy:assets": "node scripts/copy-assets.js",
+    "seed:dev": "node scripts/seed-dev-db.js",
     "clean": "rm -rf dist",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
