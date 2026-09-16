@@ -450,7 +450,7 @@
     } catch (err) {
       if (seq === requestSeq) {
         pageLoading = false;
-        setSentinelLoading(false); // leave the sentinel so scrolling retries
+        showLoadMoreError(); // surface an inline error with an explicit Retry
       }
       return;
     }
@@ -520,6 +520,28 @@
       end.textContent = `You've reached the end · ${filteredTotal()} shown`;
       listEl.appendChild(end);
     }
+  }
+
+  /**
+   * Replace the tail with an inline error + Retry when a batch fails to load.
+   * An IntersectionObserver only re-fires on an intersection change, so a user
+   * parked at the bottom would otherwise see a silent, stuck end-of-list; the
+   * button re-attempts the fetch on demand and restores normal paging.
+   */
+  function showLoadMoreError() {
+    removeTail();
+    const box = el("div", "list-error");
+    box.setAttribute("role", "alert");
+    box.appendChild(el("p", "list-error-msg", "Couldn't load more posts."));
+    const retry = el("button", "btn btn-secondary list-retry", "Retry");
+    retry.type = "button";
+    retry.addEventListener("click", () => {
+      box.remove();
+      updateTail(); // re-add the observed sentinel
+      loadMore(); // and fetch immediately rather than waiting for a scroll
+    });
+    box.appendChild(retry);
+    listEl.appendChild(box);
   }
 
   /** Show or clear the "Loading more…" spinner inside the sentinel. */

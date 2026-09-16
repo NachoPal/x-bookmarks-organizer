@@ -926,6 +926,25 @@ body[data-sidebar="collapsed"] .app-body {
   color: var(--color-text-muted);
   font-size: var(--text-small);
 }
+/* Inline failure for a load-more batch: message + explicit Retry, so the tail
+   never dead-ends silently when a fetch fails. */
+.list-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 0;
+  padding: var(--space-5);
+  border-radius: var(--radius-md);
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border: 1px solid var(--color-danger);
+  text-align: center;
+}
+.list-error-msg {
+  margin: 0;
+  font-size: var(--text-small);
+}
 
 @keyframes spin {
   to {
