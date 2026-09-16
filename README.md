@@ -38,7 +38,9 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
   portable. Gitignored.
 - **Viewer** - a small local web app: the category tree with counts, drill into a node to list its
   bookmarks, each shown as an embedded X post (link fallback where the post is not embeddable).
-  Opening a bookmark marks it read and records the date, reflected live in the UI.
+  Opening a bookmark marks it read and records the date, reflected live in the UI. Filter the tree
+  by category name from the sidebar search box, and filter a node's bookmarks by read state
+  (Unread / Read / All).
 
 ## Prerequisites
 
