@@ -605,30 +605,85 @@
     return pill;
   }
 
+  // Backstop: if widgets.js loads but createTweet never settles (network stall
+  // on the embed iframe), resolve to the link fallback rather than spinning
+  // forever. whenWidgetsReady already bounds the "never loads" case at 15s.
+  const EMBED_RENDER_TIMEOUT_MS = 20000;
+
   function renderEmbed(slot, bm, onOpen) {
-    // Always render a text+link fallback first, then try to upgrade to the
-    // official embed. Deleted/protected posts keep the fallback.
-    const fallback = el("div", "embed-fallback");
-    if (bm.text) fallback.appendChild(el("p", null, bm.text));
-    const link = el("a", "link-external", "View this post on X ↗");
-    link.href = bm.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    if (onOpen) link.addEventListener("click", onOpen);
-    fallback.appendChild(link);
-    slot.appendChild(fallback);
+    // Show a skeleton + spinner immediately and reveal only the finished
+    // result: the official embed once widgets.js reports it fully rendered, or
+    // the text+link fallback on failure/timeout/non-embeddable post. This
+    // avoids the previous flash where raw text showed first and then "popped"
+    // into the embed.
+    const loader = el("div", "embed-loader");
+    loader.setAttribute("role", "status");
+    loader.setAttribute("aria-label", "Loading post…");
+    const spinner = el("span", "embed-spinner");
+    spinner.setAttribute("aria-hidden", "true");
+    loader.appendChild(spinner);
+    // The embed renders into its own host (empty, so nothing shows until X is
+    // done); the loader sits alongside it and is removed on resolve.
+    const embedHost = el("div", "embed-host");
+    slot.append(loader, embedHost);
+
+    let settled = false;
+
+    function showFallback() {
+      if (settled) return;
+      settled = true;
+      loader.remove();
+      embedHost.remove();
+      const fallback = el("div", "embed-fallback");
+      if (bm.text) fallback.appendChild(el("p", null, bm.text));
+      const link = el("a", "link-external", "View this post on X ↗");
+      link.href = bm.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      if (onOpen) link.addEventListener("click", onOpen);
+      fallback.appendChild(link);
+      slot.appendChild(fallback);
+    }
+
+    function showEmbed() {
+      if (settled) return;
+      settled = true;
+      loader.remove(); // the rendered embed already lives in embedHost
+    }
+
+    const backstop = setTimeout(showFallback, EMBED_RENDER_TIMEOUT_MS);
 
     // widgets.js loads async, so on the first card it may not be ready yet.
     // Wait for it (rather than committing to the fallback) so embeds appear.
     whenWidgetsReady().then((twttr) => {
-      if (!twttr || !slot.isConnected) return; // gave up, or card replaced
+      if (settled) return;
+      if (!slot.isConnected) {
+        // Card was replaced (e.g. filter/category change) before we resolved;
+        // stop here so the backstop can't act on a detached node.
+        clearTimeout(backstop);
+        settled = true;
+        return;
+      }
+      if (!twttr) {
+        clearTimeout(backstop);
+        showFallback(); // widgets.js never loaded
+        return;
+      }
       twttr.widgets
-        .createTweet(bm.postId, slot, { theme: isDarkTheme() ? "dark" : "light", conversation: "none" })
+        .createTweet(bm.postId, embedHost, {
+          theme: isDarkTheme() ? "dark" : "light",
+          conversation: "none",
+        })
         .then((embedded) => {
-          if (embedded) fallback.remove(); // embed succeeded; drop the fallback
+          clearTimeout(backstop);
+          // createTweet resolves with the element on success, undefined for a
+          // deleted/protected post that can't be embedded.
+          if (embedded) showEmbed();
+          else showFallback();
         })
         .catch(() => {
-          /* keep fallback */
+          clearTimeout(backstop);
+          showFallback();
         });
     });
   }
