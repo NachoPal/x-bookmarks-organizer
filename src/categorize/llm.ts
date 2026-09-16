@@ -1,6 +1,13 @@
 import { spawn } from 'node:child_process';
 import type { Assignment, RawBookmark } from '../types';
-import { buildPrompt, parseAssignments } from './prompt';
+import { buildExtendPrompt, buildPrompt, parseAssignments } from './prompt';
+
+/**
+ * How the assignment pass treats the tree it is given:
+ * - `strict`: the tree is fixed (designed by pass 1); off-tree paths are dropped.
+ * - `extend`: incremental runs may create a new node when nothing existing fits.
+ */
+export type AssignMode = 'strict' | 'extend';
 
 /**
  * A function that runs a single prompt against an LLM and returns its raw text
@@ -20,7 +27,11 @@ export interface CategorizerOptions {
  * tests with no network and no subscription usage.
  */
 export interface BatchCategorizer {
-  categorizeBatch(bookmarks: RawBookmark[], treeText: string): Promise<Assignment[]>;
+  categorizeBatch(
+    bookmarks: RawBookmark[],
+    treeText: string,
+    mode?: AssignMode,
+  ): Promise<Assignment[]>;
 }
 
 /**
@@ -101,11 +112,19 @@ export class Categorizer implements BatchCategorizer {
 
   /**
    * Categorize a batch of bookmarks against the current tree (rendered as
-   * text). Returns one assignment per bookmark the model classified.
+   * text). Returns one assignment per bookmark the model classified. `mode`
+   * selects the strict (fixed-tree) or extend (reuse-or-create) prompt.
    */
-  async categorizeBatch(bookmarks: RawBookmark[], treeText: string): Promise<Assignment[]> {
+  async categorizeBatch(
+    bookmarks: RawBookmark[],
+    treeText: string,
+    mode: AssignMode = 'strict',
+  ): Promise<Assignment[]> {
     if (bookmarks.length === 0) return [];
-    const prompt = buildPrompt(bookmarks, treeText, this.options.maxDepth);
+    const prompt =
+      mode === 'extend'
+        ? buildExtendPrompt(bookmarks, treeText, this.options.maxDepth)
+        : buildPrompt(bookmarks, treeText, this.options.maxDepth);
     const response = await this.runner(prompt);
     const validIds = new Set(bookmarks.map((b) => b.postId));
     return parseAssignments(response, validIds, this.options.maxDepth);

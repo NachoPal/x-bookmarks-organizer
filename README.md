@@ -18,15 +18,19 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
 - **Categorization** - runs on your **Claude subscription** (via the `claude` CLI in headless mode
   with `CLAUDE_CODE_OAUTH_TOKEN`), **not** the pay-per-use Anthropic API - so it adds no per-call
   dollar cost. It works in **two passes**:
-  1. **Taxonomy design (holistic).** All newly-collected bookmarks are shown to the model at once,
-     as a compact list, and it designs one coherent, genuinely nested category tree with complete
-     freedom over the labels and structure, targeting a minimum nesting depth
-     (`XBOOKMARKS_MIN_DEPTH`, default 3). This is the hard, large-context step, so it runs on an
-     Opus-class model at high effort (`XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT`).
-     On incremental runs it is seeded with the existing tree and extends it rather than rebuilding.
-  2. **Assignment.** Each bookmark is filed into that finished tree by a Haiku-class model
-     (`XBOOKMARKS_MODEL`) to conserve subscription quota. A bookmark may be filed under several
-     branches at once; anything that fits nothing lands in `Uncategorized`.
+  1. **Taxonomy design (holistic).** All bookmarks are shown to the model at once, as a compact
+     list, and it designs one coherent, genuinely nested category tree with complete freedom over
+     the labels and structure, targeting a minimum nesting depth (`XBOOKMARKS_MIN_DEPTH`, default
+     3). This is the hard, large-context step, so it runs on an Opus-class model at high effort
+     (`XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT`). It runs **only on the first run**
+     (when no tree exists yet) and whenever you run `recategorize`. Incremental runs against an
+     existing tree **skip** this pass to conserve quota (see below).
+  2. **Assignment.** Each bookmark is filed into the tree by a Haiku-class model (`XBOOKMARKS_MODEL`)
+     to conserve subscription quota. A bookmark may be filed under several branches at once;
+     anything that fits nothing lands in `Uncategorized`. On an **incremental run** against an
+     existing tree, only this cheap pass runs over the new bookmarks: it reuses existing nodes and
+     creates a new one only when a bookmark fits nothing. Already-stored bookmarks are never
+     re-touched; use `recategorize` to rebuild the whole tree holistically.
 
   This replaces an older cold-start scheme that categorized bookmarks in isolated batches and tended
   to collapse into a couple of broad, shallow buckets.

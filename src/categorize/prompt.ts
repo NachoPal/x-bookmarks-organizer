@@ -40,6 +40,42 @@ Return ONLY a JSON object, no prose, no markdown fences, of exactly this shape:
 Include every bookmark's post_id exactly once.`;
 }
 
+/**
+ * Build the "extend" assignment prompt used on incremental runs against an
+ * existing tree. Unlike {@link buildPrompt}, the tree is NOT frozen: the model
+ * should prefer existing nodes but may create a new node when a bookmark
+ * genuinely fits nothing that already exists (reuse-or-create). This keeps the
+ * cheap assignment pass, so incremental runs never pay for a full taxonomy
+ * redesign.
+ */
+export function buildExtendPrompt(
+  bookmarks: RawBookmark[],
+  treeText: string,
+  maxDepth: number,
+): string {
+  const items = bookmarks.map((bm, i) => bookmarkLine(bm, i)).join('\n\n');
+  return `You are filing a person's X (Twitter) bookmarks into an EXISTING category tree, extending it only when necessary.
+
+# Existing category tree
+${treeText}
+
+# Rules
+- Assign each bookmark to one or more categories, by topic.
+- STRONGLY prefer existing nodes: reuse a node from the tree above whenever one reasonably fits. Copy its exact name and give its full path from a root node, e.g. ["AI","Harnesses"].
+- Only create a NEW category when NOTHING in the existing tree fits. Keep new nodes consistent with the existing structure (place them under a fitting existing parent when possible) and use specific, descriptive labels.
+- Place a bookmark at the MOST SPECIFIC node that fits. A bookmark may belong to several branches at once (multi-category) - list one path per branch.
+- A path may never be longer than ${maxDepth} levels.
+- Every bookmark must get at least one category. If truly nothing fits and no sensible new node applies, use ["Uncategorized"].
+
+# Bookmarks to categorize
+${items}
+
+# Output
+Return ONLY a JSON object, no prose, no markdown fences, of exactly this shape:
+{"assignments":[{"post_id":"<id>","categories":[["Top","Child"],["Other"]]}]}
+Include every bookmark's post_id exactly once.`;
+}
+
 /** Strip surrounding markdown code fences if the model wrapped its JSON. */
 function stripFences(text: string): string {
   const trimmed = text.trim();

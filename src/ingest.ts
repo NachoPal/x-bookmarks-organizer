@@ -1,6 +1,6 @@
 import type { Database } from './db/database';
 import type { XClient } from './x/client';
-import type { BatchCategorizer } from './categorize/llm';
+import type { AssignMode, BatchCategorizer } from './categorize/llm';
 import type { TaxonomyDesigner } from './categorize/taxonomy';
 import { buildCategoryTree, materializeTaxonomy, renderTreeForPrompt } from './categorize/tree';
 import type { Assignment, RawBookmark } from './types';
@@ -89,16 +89,24 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 /**
+ * Maps one assignment path (root -> leaf) to a leaf category id, or undefined
+ * when the path cannot/should not resolve to a node.
+ */
+type PathResolver = (
+  db: Database,
+  path: string[],
+  maxDepth: number,
+  when: string,
+) => number | undefined;
+
+/**
  * Resolve a single category path (root -> leaf) to the leaf node id WITHOUT
  * creating anything: every segment must already exist in the (designed) tree.
  * Off-tree paths resolve to undefined so they fall back to `Uncategorized`
  * rather than minting ad-hoc nodes that would defeat the holistic taxonomy.
+ * Used by the first run and by `recategorize`, where the tree is fixed.
  */
-function resolveExistingPathToLeafId(
-  db: Database,
-  path: string[],
-  maxDepth: number,
-): number | undefined {
+const resolveExistingPathToLeafId: PathResolver = (db, path, maxDepth) => {
   const capped = path.slice(0, maxDepth);
   let parentId: number | null = null;
   let leafId: number | undefined;
@@ -109,24 +117,43 @@ function resolveExistingPathToLeafId(
     leafId = node.id;
   }
   return leafId;
-}
+};
+
+/**
+ * Resolve a single category path (root -> leaf) to the leaf node id, CREATING
+ * any missing segments (capped at `maxDepth`). Used by incremental runs that
+ * extend an existing tree: the model may reuse existing nodes or introduce a new
+ * one when nothing fits (reuse-or-create).
+ */
+const resolveOrCreatePathToLeafId: PathResolver = (db, path, maxDepth, when) => {
+  const capped = path.slice(0, maxDepth);
+  let parentId: number | null = null;
+  let leafId: number | undefined;
+  for (const name of capped) {
+    const node = db.getOrCreateCategory(name, parentId, when);
+    parentId = node.id;
+    leafId = node.id;
+  }
+  return leafId;
+};
 
 /**
  * Build the resolver passed to `storeCategorizedBatch`: map a bookmark to the
- * designed-tree leaf ids it was assigned to, falling back to `Uncategorized`
- * when the model returned nothing that fits the tree.
+ * leaf ids it was assigned to (via `resolvePath`), falling back to
+ * `Uncategorized` when the model returned nothing that resolves.
  */
 function makeResolver(
   db: Database,
   byPostId: Map<string, string[][]>,
   maxDepth: number,
   when: string,
+  resolvePath: PathResolver,
 ) {
   return (bm: RawBookmark): number[] => {
     const paths = byPostId.get(bm.postId) ?? [];
     const ids = new Set<number>();
     for (const path of paths) {
-      const id = resolveExistingPathToLeafId(db, path, maxDepth);
+      const id = resolvePath(db, path, maxDepth, when);
       if (id !== undefined) ids.add(id);
     }
     if (ids.size === 0) {
@@ -144,17 +171,24 @@ function indexAssignments(assignments: Assignment[]): Map<string, string[][]> {
 }
 
 /**
- * Full incremental run, in two passes:
+ * Full incremental run. The expensive holistic taxonomy-design pass runs ONLY on
+ * the first run (empty tree); once a tree exists, incremental runs skip it to
+ * conserve subscription quota:
  *
- *   1. Taxonomy design (holistic): show the model ALL newly-collected bookmarks
- *      at once and have it design a genuinely nested tree, seeded with any
- *      existing tree so incremental runs extend rather than churn it.
- *   2. Assignment: file each bookmark into that finished tree (multi-category
- *      preserved; anything that fits nothing lands in `Uncategorized`).
+ *   - First run (no categories yet): pass 1 designs a genuinely nested tree over
+ *     ALL newly-collected bookmarks at once, then the assignment pass files each
+ *     bookmark strictly into that fixed tree (off-tree paths -> `Uncategorized`).
+ *   - Incremental run (tree already exists): SKIP the taxonomy designer entirely
+ *     and never re-touch already-stored bookmarks. The assignment pass files the
+ *     NEW bookmarks into the existing tree, reusing nodes and creating a new one
+ *     only when a bookmark fits nothing (reuse-or-create). A full holistic
+ *     redesign is available on demand via `recategorize`.
  *
- * Each assignment batch is stored atomically with its category links, so a
- * bookmark is only marked "seen" once stored with categories: an interrupted
- * run simply retries the unstored bookmarks next time (idempotent).
+ * Either way a bookmark may be filed under several branches; anything that fits
+ * nothing lands in `Uncategorized`. Each assignment batch is stored atomically
+ * with its category links, so a bookmark is only marked "seen" once stored with
+ * categories: an interrupted run simply retries the unstored bookmarks next time
+ * (idempotent).
  */
 export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
   const { db, client, taxonomer, categorizer, batchSize, maxDepth } = deps;
@@ -179,22 +213,36 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
   const ordered = [...newBookmarks].reverse();
   log(`Found ${ordered.length} new bookmark(s).`);
 
-  // Pass 1: design the taxonomy holistically over all new bookmarks.
-  const existingTreeText = renderTreeForPrompt(buildCategoryTree(db));
-  log('Designing taxonomy (pass 1)...');
-  const taxonomy = await taxonomer.designTaxonomy(ordered, existingTreeText);
   const when = new Date().toISOString();
-  materializeTaxonomy(db, taxonomy, maxDepth, when);
+  let mode: AssignMode;
+  let resolvePath: PathResolver;
+
+  if (nodesBefore === 0) {
+    // First run: design the taxonomy holistically over all new bookmarks, then
+    // file strictly into the fixed tree.
+    log('Designing taxonomy (pass 1)...');
+    const taxonomy = await taxonomer.designTaxonomy(ordered, EMPTY_TREE_TEXT);
+    materializeTaxonomy(db, taxonomy, maxDepth, when);
+    mode = 'strict';
+    resolvePath = resolveExistingPathToLeafId;
+  } else {
+    // Incremental run: a tree already exists. Skip the taxonomy designer and
+    // extend the existing tree via the cheap assignment pass over ONLY the new
+    // bookmarks (reuse existing nodes; create one only when nothing fits).
+    log('Existing taxonomy found; extending it via the assignment pass.');
+    mode = 'extend';
+    resolvePath = resolveOrCreatePathToLeafId;
+  }
+
   const treeText = renderTreeForPrompt(buildCategoryTree(db));
 
-  // Pass 2: assign each bookmark into the finished tree, in batches.
   const batches = chunk(ordered, batchSize);
-  log(`Assigning ${ordered.length} bookmark(s) into the tree in ${batches.length} batch(es) (pass 2).`);
+  log(`Assigning ${ordered.length} bookmark(s) into the tree in ${batches.length} batch(es).`);
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]!;
-    const assignments = await categorizer.categorizeBatch(batch, treeText);
+    const assignments = await categorizer.categorizeBatch(batch, treeText, mode);
     const byPostId = indexAssignments(assignments);
-    db.storeCategorizedBatch(batch, makeResolver(db, byPostId, maxDepth, when), when);
+    db.storeCategorizedBatch(batch, makeResolver(db, byPostId, maxDepth, when, resolvePath), when);
     log(`Stored batch ${i + 1}/${batches.length} (${batch.length} bookmark(s)).`);
   }
 
@@ -222,12 +270,15 @@ export async function recategorizeAll(deps: RecategorizeDeps): Promise<Recategor
   }
 
   log(`Re-categorizing ${bookmarks.length} stored bookmark(s).`);
-  db.clearCategories();
 
-  // Pass 1: design the taxonomy from scratch over all stored bookmarks.
+  // Pass 1: design the taxonomy from scratch over all stored bookmarks BEFORE
+  // touching the DB. designTaxonomy throws on a malformed LLM response, so
+  // clearing first would risk wiping the existing taxonomy with nothing to
+  // replace it; only clear once the new taxonomy is in hand.
   log('Designing taxonomy (pass 1)...');
   const taxonomy = await taxonomer.designTaxonomy(bookmarks, EMPTY_TREE_TEXT);
   const when = new Date().toISOString();
+  db.clearCategories();
   materializeTaxonomy(db, taxonomy, maxDepth, when);
   const treeText = renderTreeForPrompt(buildCategoryTree(db));
 
@@ -238,9 +289,13 @@ export async function recategorizeAll(deps: RecategorizeDeps): Promise<Recategor
   log(`Assigning ${bookmarks.length} bookmark(s) into the tree in ${batches.length} batch(es) (pass 2).`);
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]!;
-    const assignments = await categorizer.categorizeBatch(batch, treeText);
+    const assignments = await categorizer.categorizeBatch(batch, treeText, 'strict');
     const byPostId = indexAssignments(assignments);
-    db.storeCategorizedBatch(batch, makeResolver(db, byPostId, maxDepth, when), when);
+    db.storeCategorizedBatch(
+      batch,
+      makeResolver(db, byPostId, maxDepth, when, resolveExistingPathToLeafId),
+      when,
+    );
     log(`Reassigned batch ${i + 1}/${batches.length} (${batch.length} bookmark(s)).`);
   }
 

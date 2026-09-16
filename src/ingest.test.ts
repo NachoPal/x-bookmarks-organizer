@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from './db/database';
 import { collectNewBookmarks, recategorizeAll, runIngest } from './ingest';
 import type { XClient, BookmarkPage } from './x/client';
-import type { BatchCategorizer } from './categorize/llm';
+import type { AssignMode, BatchCategorizer } from './categorize/llm';
 import type { TaxonomyDesigner } from './categorize/taxonomy';
 import type { Assignment, RawBookmark, TaxonomyNode } from './types';
 
@@ -75,9 +75,15 @@ class FakeTaxonomyDesigner implements TaxonomyDesigner {
 /** Fake categorizer driven by a fixed postId -> paths map. */
 class FakeCategorizer implements BatchCategorizer {
   seenTrees: string[] = [];
+  seenModes: AssignMode[] = [];
   constructor(private readonly map: Record<string, string[][]>) {}
-  async categorizeBatch(bookmarks: RawBookmark[], treeText: string): Promise<Assignment[]> {
+  async categorizeBatch(
+    bookmarks: RawBookmark[],
+    treeText: string,
+    mode: AssignMode = 'strict',
+  ): Promise<Assignment[]> {
     this.seenTrees.push(treeText);
+    this.seenModes.push(mode);
     return bookmarks
       .filter((b) => this.map[b.postId])
       .map((b) => ({ postId: b.postId, categories: this.map[b.postId]! }));
@@ -147,15 +153,15 @@ describe('runIngest (two-pass)', () => {
     expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['1']);
   });
 
-  it('extends an existing tree instead of duplicating nodes', async () => {
+  it('incremental run against an existing tree skips the taxonomy designer and files into it', async () => {
     const when = new Date().toISOString();
     const ai = db.getOrCreateCategory('AI', null, when);
     db.getOrCreateCategory('Evals', ai.id, when);
     const before = db.getAllCategories().length;
 
     const client = new FakeXClient([bm('1')]);
-    // Taxonomy pass adds nothing new (the existing tree already covers it).
-    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI', 'Evals']]));
+    // If the designer were called it would blow the tree up - it must NOT be.
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
     const categorizer = new FakeCategorizer({ '1': [['AI', 'Evals']] });
     const summary = await runIngest({
       db,
@@ -166,10 +172,78 @@ describe('runIngest (two-pass)', () => {
       maxDepth: 4,
     });
 
-    // Pass 1 was seeded with the existing tree.
-    expect(taxonomer.seenExistingTrees[0]).toContain('- AI');
+    // The expensive taxonomy-design pass was skipped entirely.
+    expect(taxonomer.seenBookmarkCounts).toEqual([]);
+    // The assignment pass ran in extend mode against the existing tree.
+    expect(categorizer.seenModes).toEqual(['extend']);
+    expect(categorizer.seenTrees[0]).toContain('- AI');
+    // No nodes duplicated; the new bookmark filed into the existing leaf.
     expect(summary.nodesCreated).toBe(0);
     expect(db.getAllCategories().length).toBe(before);
+    const evals = db.getAllCategories().find((c) => c.name === 'Evals')!;
+    expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['1']);
+  });
+
+  it('incremental extend reuses existing nodes and creates a node only when nothing fits', async () => {
+    const when = new Date().toISOString();
+    const ai = db.getOrCreateCategory('AI', null, when);
+    db.getOrCreateCategory('Evals', ai.id, when);
+
+    // Two new bookmarks: one reuses the existing leaf, one needs a brand-new node.
+    const client = new FakeXClient([bm('3'), bm('2')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
+    const categorizer = new FakeCategorizer({
+      '2': [['AI', 'Evals']], // reuse
+      '3': [['Robotics', 'Actuators']], // create
+    });
+    const summary = await runIngest({
+      db,
+      client,
+      taxonomer,
+      categorizer,
+      batchSize: 10,
+      maxDepth: 4,
+    });
+
+    expect(taxonomer.seenBookmarkCounts).toEqual([]);
+    // Robotics + Actuators created; AI/Evals not duplicated.
+    const names = db.getAllCategories().map((c) => c.name).sort();
+    expect(names).toEqual(['AI', 'Actuators', 'Evals', 'Robotics']);
+    expect(summary.nodesCreated).toBe(2);
+
+    const evals = db.getAllCategories().find((c) => c.name === 'Evals')!;
+    const actuators = db.getAllCategories().find((c) => c.name === 'Actuators')!;
+    expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['2']);
+    expect(db.getBookmarksForCategory(actuators.id).map((b) => b.postId)).toEqual(['3']);
+  });
+
+  it('incremental extend files an unplaced bookmark under Uncategorized', async () => {
+    const when = new Date().toISOString();
+    db.getOrCreateCategory('AI', null, when);
+
+    const client = new FakeXClient([bm('2')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
+    const categorizer = new FakeCategorizer({}); // no assignment for '2'
+    await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+
+    expect(taxonomer.seenBookmarkCounts).toEqual([]);
+    const uncategorized = db.getAllCategories().find((c) => c.name === 'Uncategorized')!;
+    expect(uncategorized).toBeDefined();
+    expect(db.getBookmarksForCategory(uncategorized.id).map((b) => b.postId)).toEqual(['2']);
+  });
+
+  it('incremental extend caps created paths at maxDepth', async () => {
+    const when = new Date().toISOString();
+    db.getOrCreateCategory('A', null, when);
+
+    const client = new FakeXClient([bm('2')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
+    const categorizer = new FakeCategorizer({ '2': [['A', 'B', 'C', 'D', 'E']] });
+    await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 3 });
+
+    expect(taxonomer.seenBookmarkCounts).toEqual([]);
+    const names = db.getAllCategories().map((c) => c.name).sort();
+    expect(names).toEqual(['A', 'B', 'C']); // D, E dropped by the depth cap
   });
 
   it('supports multi-category placement (a bookmark in several branches)', async () => {
