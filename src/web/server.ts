@@ -5,7 +5,13 @@ import type { Database, ReadFilter } from '../db/database';
 import { buildCategoryTree } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
 import { HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
-import { htmlToPlainText, type SummaryGenerator } from '../summarize/summarizer';
+import {
+  hasSummarizableContent,
+  htmlToPlainText,
+  NOTHING_TO_SUMMARIZE_MESSAGE,
+  type SummaryGenerator,
+  type SummaryInput,
+} from '../summarize/summarizer';
 import type { ArticleLinkMetadata, ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
@@ -280,7 +286,8 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // article is fetched/cached the same way the reader view does, so a
   // bookmark whose article was never opened still gets an article-aware
   // summary. 503 (not 500) signals the graceful no-token degradation the
-  // owner sees as a clear message rather than a crash or a hang.
+  // owner sees as a clear message rather than a crash or a hang; 422 signals
+  // the bookmark simply holds nothing summarizable (see below).
   app.get<{ Params: { id: string } }>('/api/bookmarks/:id/summary', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
@@ -299,15 +306,37 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     const article = articleUrl ? await getOrFetchArticle(id, articleUrl) : undefined;
     const readableArticle = article && article.status === 'ok' ? article : null;
 
+    // When the reader-view extraction produced no readable body, fall back to
+    // the ingest-time link-metadata cache (issue #25/#26): an OpenGraph title
+    // and description are often all a link-only post has to go on, and they
+    // are already on disk, so this stays a pure cache read with no live fetch.
+    const linkMetadata =
+      articleUrl && !readableArticle ? db.getArticleLinkMetadata(articleUrl) : undefined;
+    const cachedPreview = linkMetadata?.status === 'ok' ? linkMetadata : null;
+
+    const input: SummaryInput = {
+      postText: bookmark.text,
+      authorName: bookmark.authorName,
+      authorUsername: bookmark.authorUsername,
+      articleTitle: readableArticle?.title ?? cachedPreview?.title ?? null,
+      articleDescription: cachedPreview?.description ?? null,
+      articleText: readableArticle ? htmlToPlainText(readableArticle.contentHtml ?? '') : null,
+    };
+
+    // A post that is only a link, whose link could not be read, holds nothing a
+    // model could summarize - and the CLI adapter is hardened with `--tools ""`
+    // precisely so it cannot go fetch the URL itself. Asking anyway only ever
+    // returned the model's "paste the text and I'll summarize it" refusal,
+    // which then got cached as if it were a summary. Say so plainly instead,
+    // before spending a call. 422 (not 502) marks this as an explanatory state
+    // rather than a failure the owner could retry their way out of.
+    if (!hasSummarizableContent(input)) {
+      return reply.code(422).send({ error: NOTHING_TO_SUMMARIZE_MESSAGE });
+    }
+
     let summaryText: string;
     try {
-      summaryText = await summaryGenerator.summarize({
-        postText: bookmark.text,
-        authorName: bookmark.authorName,
-        authorUsername: bookmark.authorUsername,
-        articleTitle: readableArticle?.title ?? null,
-        articleText: readableArticle ? htmlToPlainText(readableArticle.contentHtml ?? '') : null,
-      });
+      summaryText = await summaryGenerator.summarize(input);
     } catch (err) {
       // Forward the adapter's message: it is written to be user-facing and is
       // redacted at the adapter boundary, so it tells the owner what to fix

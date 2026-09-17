@@ -10,9 +10,23 @@ export interface SummaryInput {
   authorUsername: string;
   /** The reader-view extraction's title, when the bookmark's link is an article. */
   articleTitle?: string | null;
+  /**
+   * The linked article's short description/excerpt, when only its metadata (not
+   * its body) could be retrieved - see the ingest-time link-metadata cache.
+   */
+  articleDescription?: string | null;
   /** Plain-text article body, when the bookmark's link is an article. */
   articleText?: string | null;
 }
+
+/**
+ * What the owner is told when a bookmark has nothing a model could summarize.
+ * Shown instead of asking the model to summarize a URL it cannot open - which
+ * only ever produces a confused "paste the text and I'll summarize it" refusal.
+ */
+export const NOTHING_TO_SUMMARIZE_MESSAGE =
+  "Nothing to summarize: this bookmark links content that couldn't be read (it may be a video, " +
+  'image, or a page that blocks fetching), and the post itself has no text.';
 
 /**
  * Generates a summary for a bookmark's content. Abstracted so a provider-backed
@@ -43,14 +57,48 @@ export function htmlToPlainText(html: string): string {
     .trim();
 }
 
-/** Build the prompt sent to the LLM: the post, plus the article body when available. */
+/** Matches the URL tokens X leaves in a post's stored text (all of them t.co-shortened). */
+const URL_TOKEN = /https?:\/\/\S+/gi;
+
+/**
+ * The post's own prose: its stored text with bare URL tokens removed. X
+ * shortens every link to an opaque `t.co` URL that carries no meaning on its
+ * own, so this is what separates a post that merely *contains* a link (still
+ * summarizable from its prose) from one that is *only* a link (not
+ * summarizable without the link's content).
+ */
+export function postProse(text: string): string {
+  return text.replace(URL_TOKEN, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Whether this input holds anything a model could summarize without opening a
+ * URL itself. The CLI adapter runs hardened with `--tools ""` (no web fetch),
+ * by design, so a prompt whose only content is a link cannot be answered and
+ * comes back as a refusal; callers must check this BEFORE spending a call.
+ */
+export function hasSummarizableContent(input: SummaryInput): boolean {
+  if (input.articleText?.trim()) return true;
+  if (input.articleTitle?.trim()) return true;
+  if (input.articleDescription?.trim()) return true;
+  return postProse(input.postText).length > 0;
+}
+
+/**
+ * Build the prompt sent to the LLM: the post's prose, plus the linked
+ * article's body when it could be read, or just its title/description when
+ * only that much was cached. The prompt never carries a bare URL as its
+ * subject - the model has no tools to fetch one.
+ */
 export function buildSummaryPrompt(input: SummaryInput): string {
+  const prose = postProse(input.postText);
   const lines = [
     "Summarize this bookmarked X post so its owner can grasp it without reading it in full.",
     'Write 2-4 concise sentences of plain prose - no headings, no bullet points, no preamble like "This post is about".',
+    'Everything available is quoted below. You cannot open links and must not ask for more content - summarize only what is here.',
     '',
     `Post by @${input.authorUsername}${input.authorName ? ` (${input.authorName})` : ''}:`,
-    input.postText.trim() || '(no text)',
+    prose || '(no text beyond a link)',
   ];
   if (input.articleText) {
     lines.push(
@@ -59,6 +107,17 @@ export function buildSummaryPrompt(input: SummaryInput): string {
       input.articleText.slice(0, MAX_ARTICLE_CHARS),
       '',
       "The article is the substance being shared, so summarize its content, not just the post's framing of it.",
+    );
+  } else if (input.articleTitle || input.articleDescription) {
+    // Only the link's metadata was cached (no readable body). It is thin, but
+    // it is real content - better than giving up on a link-only post.
+    lines.push(
+      '',
+      'The post links an article whose body could not be retrieved. This is all that is known about it:',
+      ...(input.articleTitle ? [`Title: ${input.articleTitle}`] : []),
+      ...(input.articleDescription ? [`Description: ${input.articleDescription}`] : []),
+      '',
+      'Summarize what is being shared based on that, and do not speculate beyond it.',
     );
   }
   return lines.join('\n');

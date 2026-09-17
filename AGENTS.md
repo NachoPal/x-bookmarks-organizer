@@ -187,6 +187,17 @@ factory as categorization (Haiku-class model by default) - never the paid API. C
 button up front - `reason` is the provider's own message). `ServerOptions.summaryGenerator` (plus
 `summaryUnavailableReason`) is the injection seam for offline tests.
 
+A summary is only ever built from content that is already IN the prompt: the post's own prose
+(`postProse` strips the opaque `t.co` URLs X leaves in the text), the reader-view article body,
+or - when the body could not be read - the ingest-time link-metadata cache's OG title/description
+(a pure cache read; the endpoint never fetches for this). When `hasSummarizableContent` finds none
+of those, the endpoint answers **422 with `NOTHING_TO_SUMMARIZE_MESSAGE` without calling the
+model**, and the client renders it as a calm explanatory state with no Retry. This is load-bearing:
+the `claude-cli` adapter is hardened with `--tools ""` (no web fetch, by design - see above), so a
+prompt whose only subject is a URL is unanswerable and the model replies "I can't access external
+URLs... paste the post text" - which was then cached as if it were the summary. Never "fix" that by
+re-enabling the CLI's tools; put the content in the prompt or say there is none.
+
 Unlike ingestion/categorization, the web viewer needs no secrets to browse. `cmdServe`
 (`src/index.ts`) wires a real `LlmSummaryGenerator` only when the summary role's provider reports
 `check() === 'ok'`, leaving it `undefined` otherwise. Then `/api/bookmarks/:id/summary` returns 503

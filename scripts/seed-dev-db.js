@@ -205,6 +205,11 @@ const webPort = process.env.XBOOKMARKS_WEB_PORT || '5173';
 const fixtureArticleUrl = `http://127.0.0.1:${webPort}/fixtures/sample-article.html`;
 const deadLinkUrl = 'https://reader-view-demo-dead-link.invalid/article';
 const sparseLinkUrl = 'https://reader-view-demo-sparse.invalid/article';
+// A bare-link post - the whole text is a URL, nothing else - whose link never
+// resolves to a readable article. There is genuinely nothing to summarize, so
+// Summarize must say so cleanly rather than ask the model to open a URL it has
+// no tools to fetch (the refusal fixed in the summary path).
+const bareLinkUrl = 'https://reader-view-demo-bare-link.invalid/video';
 db.storeCategorizedBatch(
   [
     {
@@ -229,6 +234,14 @@ db.storeCategorizedBatch(
       authorName: 'Addy Osmani',
       text: `Only a title came back for this one: ${sparseLinkUrl}`,
       url: `https://x.com/addyosmani/status/900000000000090003`,
+      postCreatedAt: new Date().toISOString(),
+    },
+    {
+      postId: '900000000000090004',
+      authorUsername: 'dan_abramov',
+      authorName: 'Dan Abramov',
+      text: bareLinkUrl,
+      url: `https://x.com/dan_abramov/status/900000000000090004`,
       postCreatedAt: new Date().toISOString(),
     },
   ],
@@ -261,6 +274,15 @@ if (fixtureExtraction.status === 'ok') {
     fetchedAt: new Date().toISOString(),
   });
 }
+db.saveArticleLinkMetadata({
+  url: bareLinkUrl,
+  status: 'failed',
+  title: null,
+  description: null,
+  image: null,
+  siteName: null,
+  fetchedAt: new Date().toISOString(),
+});
 db.saveArticleLinkMetadata({
   url: deadLinkUrl,
   status: 'failed',
