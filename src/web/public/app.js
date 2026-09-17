@@ -298,6 +298,12 @@
     const button = el("button", "tree-node");
     button.type = "button";
     button.dataset.categoryId = String(node.id);
+    // A root's hue is set once and inherited by its whole subtree via CSS
+    // custom property cascading; depth parity alternates the shade within it.
+    if (depth === 0 && window.XBOTreeColor) {
+      li.style.setProperty("--tree-hue", String(window.XBOTreeColor.rootCategoryHue(node.id)));
+    }
+    button.dataset.parity = String(depth % 2);
 
     const label = el("span", "tree-label");
     appendHighlighted(label, node.name, options.query);

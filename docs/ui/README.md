@@ -43,3 +43,16 @@ Same seeded dataset, never real bookmarks (one card uses the public, long-lived 
 | `embed-spinner-loading-dark.png` | **Dark mode, loading.** Skeleton + spinner render on dark surfaces via the token layer. |
 | `embed-spinner-resolved-dark.png` | **Dark mode, resolved.** Embed + fallbacks in dark mode. |
 | `embed-spinner-loading-mobile.png` | **~390px, loading.** Spinner treatment holds in the narrow single-column layout after the drawer closes on category select. |
+
+## Category tree coloring (issue #15)
+
+Each root category gets a distinct, stable soft color (hashed from its id via
+`tree-color.js`); depth alternates between two shades of that color so root, child,
+and grandchild bands read at a glance. Same seeded dataset (4 roots, 3-4 levels deep),
+never real bookmarks.
+
+| File | What it shows |
+| --- | --- |
+| `tree-colors-light.png` | **Light mode.** Four roots, each a distinct soft hue; each child row a lighter tint of its root's hue, an expanded grandchild returning to the root's own shade. |
+| `tree-colors-dark.png` | **Dark mode.** Muted dark tints per root; selected-category highlight and count badges stay legible on top. |
+| `tree-colors-search-match.png` | **Category search active.** The matched-substring highlight (`<mark>`) still pops over the colored rows. |
