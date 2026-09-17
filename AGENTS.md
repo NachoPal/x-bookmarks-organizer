@@ -35,9 +35,14 @@ Setup steps: `docs/setup.md`.
   nodes - off-tree paths fall back to `Uncategorized`. `recategorize` rebuilds both passes over all
   stored bookmarks without re-fetching, preserving read state/dates (it designs the new taxonomy
   BEFORE clearing the old one, so a failed LLM call never wipes the DB).
-- **Secrets come only from the environment (Automic Vault `av inject`).** Never read a committed
+- **Secrets (the X app credentials) come only from the environment**, injected however you like
+  (`av inject`, an exported `.env` via `node --env-file`, CI secrets, ...). Never read a committed
   `.env`, never write secrets to disk. The X refresh token is persisted in the (gitignored) SQLite
-  DB via `run_state`.
+  DB via `run_state`. Claude is NOT held as a secret: `isClaudeAvailable`/`isClaudeCliAvailable`
+  (`src/categorize/llm.ts`) probe whether the `claude` CLI resolves and runs, and every LLM feature
+  (categorization, summaries, future ones) gates on that OR `CLAUDE_CODE_OAUTH_TOKEN` being set -
+  never on the token alone (issue #35). The token is only needed on a headless box with no
+  interactive `claude` login; a genuine auth failure still surfaces a clear error at call time.
 - **Incremental detection is by DB membership, not post date.** `collectNewBookmarks`
   (`src/ingest.ts`) pages the bookmark timeline newest-first and stops at the first already-stored
   `post_id`. Old posts can be freshly bookmarked, so post `created_at` must never be the signal.
