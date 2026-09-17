@@ -365,6 +365,26 @@ describe('runIngest (two-pass)', () => {
     const names = db.getAllCategories().map((c) => c.name).sort();
     expect(names).toEqual(['A', 'B', 'C']); // D, E dropped
   });
+
+  it('records the last-synced timestamp on a run that finds new bookmarks', async () => {
+    expect(db.getLastSyncedAt()).toBeUndefined();
+    const client = new FakeXClient([bm('1')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI']]));
+    const categorizer = new FakeCategorizer({ '1': [['AI']] });
+    await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+
+    expect(db.getLastSyncedAt()).toBeDefined();
+  });
+
+  it('records the last-synced timestamp even when there is nothing new to fetch', async () => {
+    const client = new FakeXClient([]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI']]));
+    const categorizer = new FakeCategorizer({});
+    const result = await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+
+    expect(result.newBookmarks).toBe(0);
+    expect(db.getLastSyncedAt()).toBeDefined();
+  });
 });
 
 describe('recategorizeAll', () => {

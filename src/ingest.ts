@@ -200,6 +200,9 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
     known,
     deps.maxPages ?? 50,
   );
+  // The fetch against X succeeded at this point, regardless of whether it
+  // turned up anything new - that is what "last synced" means to the owner.
+  db.setLastSyncedAt(new Date().toISOString());
 
   const nodesBefore = db.getAllCategories().length;
 

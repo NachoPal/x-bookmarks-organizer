@@ -111,6 +111,14 @@ describe('Database', () => {
       db.setRefreshToken('rt-2');
       expect(db.getRefreshToken()).toBe('rt-2');
     });
+
+    it('reports no last-sync timestamp until one is set', () => {
+      expect(db.getLastSyncedAt()).toBeUndefined();
+      db.setLastSyncedAt('2026-09-16T10:00:00.000Z');
+      expect(db.getLastSyncedAt()).toBe('2026-09-16T10:00:00.000Z');
+      db.setLastSyncedAt('2026-09-17T08:00:00.000Z');
+      expect(db.getLastSyncedAt()).toBe('2026-09-17T08:00:00.000Z');
+    });
   });
 
   describe('getDirectMembership', () => {
