@@ -759,24 +759,43 @@ body[data-sidebar="collapsed"] .app-body {
   color: var(--color-text-muted);
   font-weight: 400;
 }
+/* The status chip doubles as the read/unread toggle button. */
 .read-pill {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  min-height: 1.75rem;
   padding: var(--space-1) var(--space-2);
   border-radius: 999px;
+  font: inherit;
   font-size: var(--text-small);
   font-weight: 600;
   border: 1px solid var(--color-border);
   color: var(--color-text-muted);
   background: var(--color-surface-2);
   white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease),
+    opacity var(--motion-fast) var(--ease);
+}
+.read-pill:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-border);
 }
 .read-pill.is-unread {
   color: var(--color-accent);
   background: var(--color-accent-soft);
   border-color: transparent;
+}
+.read-pill.is-unread:hover {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+.read-pill:disabled,
+.read-pill.is-loading {
+  cursor: progress;
+  opacity: 0.6;
 }
 .read-pill .dot {
   width: 0.5rem;
@@ -850,6 +869,22 @@ body[data-sidebar="collapsed"] .app-body {
   gap: var(--space-3);
   margin-top: var(--space-2);
 }
+.bookmark-foot .link-external {
+  margin-right: auto;
+}
+.delete-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--color-text-muted);
+}
+.delete-btn:hover {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+.icon-trash {
+  width: 1.1rem;
+  height: 1.1rem;
+}
 
 /* ============================================================
    Buttons & links
@@ -886,6 +921,20 @@ body[data-sidebar="collapsed"] .app-body {
 }
 .btn-secondary:hover {
   background: var(--color-surface-2);
+}
+/* Ghost buttons inherit their color so they work on any background (e.g. the
+   inverted toast surface below) while keeping full-contrast text. */
+.btn-ghost {
+  min-height: auto;
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.btn-ghost:hover {
+  background: color-mix(in srgb, currentColor 20%, transparent);
 }
 .btn:disabled,
 .btn[aria-disabled="true"] {
@@ -1012,6 +1061,56 @@ body[data-sidebar="collapsed"] .app-body {
 .list-error-msg {
   margin: 0;
   font-size: var(--text-small);
+}
+
+/* ============================================================
+   Toasts (undo notifications)
+   ============================================================ */
+.toast-container {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: min(28rem, calc(100vw - 2 * var(--space-4)));
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-text);
+  color: var(--color-bg);
+  box-shadow: var(--shadow-md);
+  font-size: var(--text-small);
+  animation: toast-in var(--motion-fast) var(--ease);
+}
+.toast-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.toast-action {
+  flex: 0 0 auto;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes spin {

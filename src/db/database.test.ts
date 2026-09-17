@@ -76,6 +76,52 @@ describe('Database', () => {
     });
   });
 
+  describe('markUnread', () => {
+    it('clears read and read_at, so the chip can toggle back', () => {
+      db.storeCategorizedBatch([bookmark('1')], () => []);
+      const stored = db.getBookmarkByPostId('1')!;
+      db.markRead(stored.id, '2024-05-01T00:00:00.000Z');
+
+      const cleared = db.markUnread(stored.id)!;
+      expect(cleared.read).toBe(false);
+      expect(cleared.readAt).toBeNull();
+
+      // Marking read again after an unread starts a fresh read_at, not the old one.
+      const reread = db.markRead(stored.id, '2024-07-01T00:00:00.000Z')!;
+      expect(reread.readAt).toBe('2024-07-01T00:00:00.000Z');
+    });
+  });
+
+  describe('deleteBookmark', () => {
+    it('removes the bookmark and its category links', () => {
+      const when = new Date().toISOString();
+      const cat = db.getOrCreateCategory('AI', null, when);
+      db.storeCategorizedBatch([bookmark('1'), bookmark('2')], () => [cat.id]);
+      const b1 = db.getBookmarkByPostId('1')!;
+
+      expect(db.deleteBookmark(b1.id)).toBe(true);
+      expect(db.getBookmarkByPostId('1')).toBeUndefined();
+      expect(db.getBookmarksForCategory(cat.id).map((b) => b.postId)).toEqual(['2']);
+    });
+
+    it('returns false for an unknown id', () => {
+      expect(db.deleteBookmark(999)).toBe(false);
+    });
+
+    it('tombstones the post id so it never counts as new again', () => {
+      db.storeCategorizedBatch([bookmark('1')], () => []);
+      const b1 = db.getBookmarkByPostId('1')!;
+      expect(db.getKnownPostIds()).toEqual(new Set(['1']));
+
+      db.deleteBookmark(b1.id);
+
+      // Gone from storage, but still "known" - a later incremental sync must
+      // never mistake it for new and re-fetch/re-store it.
+      expect(db.getBookmarkByPostId('1')).toBeUndefined();
+      expect(db.getKnownPostIds()).toEqual(new Set(['1']));
+    });
+  });
+
   describe('storeCategorizedBatch', () => {
     it('stores bookmarks and links them to categories atomically', () => {
       const when = new Date().toISOString();

@@ -76,13 +76,30 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     },
   );
 
-  // Mark a bookmark read (records the timestamp the first time only).
-  app.post<{ Params: { id: string } }>('/api/bookmarks/:id/read', async (req, reply) => {
+  // Set a bookmark's read state. Body { read: false } clears it (un-read),
+  // read (or no body) marks it read; the timestamp is recorded only the first
+  // time a bookmark is marked read. This is the toggle the status chip drives.
+  app.post<{ Params: { id: string }; Body?: { read?: boolean } }>(
+    '/api/bookmarks/:id/read',
+    async (req, reply) => {
+      const id = Number.parseInt(req.params.id, 10);
+      if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
+      const read = req.body?.read !== false;
+      const updated = read ? db.markRead(id) : db.markUnread(id);
+      if (!updated) return reply.code(404).send({ error: 'bookmark not found' });
+      return { bookmark: updated };
+    },
+  );
+
+  // Permanently delete a bookmark from the local store. Read-only against X:
+  // this never touches the X API, it only removes the local copy. The post id
+  // is tombstoned so a later sync/recategorize can never re-add it.
+  app.delete<{ Params: { id: string } }>('/api/bookmarks/:id', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
-    const updated = db.markRead(id);
-    if (!updated) return reply.code(404).send({ error: 'bookmark not found' });
-    return { bookmark: updated };
+    const deleted = db.deleteBookmark(id);
+    if (!deleted) return reply.code(404).send({ error: 'bookmark not found' });
+    return reply.code(204).send();
   });
 
   return app;

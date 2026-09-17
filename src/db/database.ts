@@ -82,9 +82,15 @@ export class Database {
 
   // --- Bookmarks ---------------------------------------------------------
 
-  /** Post ids already stored. Used as the incremental "already seen" signal. */
+  /**
+   * Post ids already stored, UNION permanently-deleted post ids. Used as the
+   * incremental "already seen" signal so a deleted bookmark is never
+   * re-fetched and re-stored by a later sync.
+   */
   getKnownPostIds(): Set<string> {
-    const rows = this.db.prepare('SELECT post_id FROM bookmarks').all() as { post_id: string }[];
+    const rows = this.db
+      .prepare('SELECT post_id FROM bookmarks UNION SELECT post_id FROM deleted_bookmarks')
+      .all() as { post_id: string }[];
     return new Set(rows.map((r) => r.post_id));
   }
 
@@ -186,6 +192,34 @@ export class Database {
       )
       .run(when, id);
     return this.getBookmarkById(id);
+  }
+
+  /** Clear read state, so the chip's toggle can flip a bookmark back to unread. */
+  markUnread(id: number): StoredBookmark | undefined {
+    this.db.prepare(`UPDATE bookmarks SET read = 0, read_at = NULL WHERE id = ?`).run(id);
+    return this.getBookmarkById(id);
+  }
+
+  /**
+   * Permanently remove a bookmark from the local store: the row (and its
+   * category links, via ON DELETE CASCADE) is deleted, and its post id is
+   * tombstoned in `deleted_bookmarks` so it can never be re-added by a later
+   * incremental sync (`getKnownPostIds` includes tombstones). Returns false if
+   * the id is unknown. This never touches X - it only removes the local copy.
+   */
+  deleteBookmark(id: number, when: string = new Date().toISOString()): boolean {
+    const tx = this.db.transaction((bookmarkId: number) => {
+      const row = this.db.prepare('SELECT post_id FROM bookmarks WHERE id = ?').get(bookmarkId) as
+        | { post_id: string }
+        | undefined;
+      if (!row) return false;
+      this.db
+        .prepare('INSERT OR IGNORE INTO deleted_bookmarks (post_id, deleted_at) VALUES (?, ?)')
+        .run(row.post_id, when);
+      this.db.prepare('DELETE FROM bookmarks WHERE id = ?').run(bookmarkId);
+      return true;
+    });
+    return tx(id);
   }
 
   // --- Categories --------------------------------------------------------
