@@ -29,7 +29,41 @@
     return ROOT_HUES[hashString(String(categoryId)) % ROOT_HUES.length];
   }
 
-  const api = { ROOT_HUES, hashString, rootCategoryHue };
+  /** localStorage key for the persisted category-coloring on/off preference. */
+  const COLOR_PREF_KEY = "xbo:tree-colors-enabled";
+
+  /**
+   * Whether category coloring is on, per `storage` (normally
+   * window.localStorage). Defaults to on (the current colored look) when
+   * unset or when storage is unavailable/throws (private mode, blocked
+   * storage).
+   */
+  function readColorEnabled(storage) {
+    try {
+      const raw = storage.getItem(COLOR_PREF_KEY);
+      return raw === null ? true : raw === "1";
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /** Persist the category-coloring preference; silently ignored if storage throws. */
+  function writeColorEnabled(storage, enabled) {
+    try {
+      storage.setItem(COLOR_PREF_KEY, enabled ? "1" : "0");
+    } catch (_) {
+      /* private mode / blocked storage: ignore */
+    }
+  }
+
+  const api = {
+    ROOT_HUES,
+    hashString,
+    rootCategoryHue,
+    COLOR_PREF_KEY,
+    readColorEnabled,
+    writeColorEnabled,
+  };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

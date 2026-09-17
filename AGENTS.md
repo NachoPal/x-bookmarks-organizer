@@ -62,6 +62,21 @@ so a large category is never shipped or embedded all at once. The client (`app.j
 an IntersectionObserver sentinel against the content pane; changing the filter re-pages from the
 top. The dense-category seed leaf exists to exercise this.
 
+A read-state toggle or delete must NEVER reload/re-render the whole sidebar tree (that flickers
+and loses scroll + expand-collapse state) - it patches only the affected counters in place. Each
+bookmark the viewer serves carries `categoryIds` (its direct category ids, from
+`Database.getCategoryIdsForBookmarks`, added in the `/api/categories/:id/bookmarks` response); a
+counter update walks each id's ancestor chain and applies a total/unread delta once per
+deduplicated affected category (`src/web/public/tree-counts.js`, `applyCountDelta` +
+`updateSidebarCounts`/`patchCategoryCountDom` in `app.js`), because a category's rolled-up counts
+include all descendants (`assembleTree` in `src/categorize/tree.ts`) and a multi-category bookmark
+must not double-adjust a shared ancestor. The category tree renders with every node - including
+roots - collapsed by default until the owner expands it or a search match forces ancestors open.
+
+The per-root tree tint (`tree-color.js`) has a paired on/off toggle, persisted in localStorage
+(`readColorEnabled`/`writeColorEnabled`, default on) via a `body[data-tree-colors="off"]` CSS
+attribute; guard every localStorage access in try/catch (private mode / blocked storage).
+
 Each embed slot (`renderEmbed` in `app.js`) shows a skeleton + spinner immediately and reveals
 only the finished result: it renders into a hidden host and swaps to the embed when
 `twttr.widgets.createTweet(...)` resolves with an element, or to the text+link fallback when it
