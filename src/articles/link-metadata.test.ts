@@ -97,6 +97,8 @@ describe('buildArticleContext', () => {
       status: 'ok',
       title: 'Cached Title',
       description: null,
+      image: null,
+      siteName: null,
       fetchedAt: '2026-01-01T00:00:00.000Z',
     });
     const fetcher = new FakeFetcher({});

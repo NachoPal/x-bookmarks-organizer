@@ -193,19 +193,25 @@ if (idByPath.has(denseKey)) {
   });
 }
 
-// A couple of bookmarks that exercise the reader view end to end: one links to
-// a fixture article served locally by this same viewer (so "Read" can fetch
-// and extract it fully offline), the other to a domain reserved by RFC 2606
-// to never resolve, so "Read" reliably hits the graceful-failure path.
+// A few bookmarks that exercise the reader view AND the article-preview card
+// (issue #26) end to end: one links to a fixture article served locally by
+// this same viewer (so "Read article" can fetch and extract it fully
+// offline), one to a domain reserved by RFC 2606 to never resolve (so it
+// correctly gets no preview / no "Read article" control), and one has only a
+// title cached (no description/image) to exercise the preview card's
+// graceful partial-data fallback.
 const readerDemoParent = ensurePath(['Reader View Demo']);
 const webPort = process.env.XBOOKMARKS_WEB_PORT || '5173';
+const fixtureArticleUrl = `http://127.0.0.1:${webPort}/fixtures/sample-article.html`;
+const deadLinkUrl = 'https://reader-view-demo-dead-link.invalid/article';
+const sparseLinkUrl = 'https://reader-view-demo-sparse.invalid/article';
 db.storeCategorizedBatch(
   [
     {
       postId: '900000000000090001',
       authorUsername: 'sindresorhus',
       authorName: 'Sindre Sorhus',
-      text: `Good piece on reader views done right: http://127.0.0.1:${webPort}/fixtures/sample-article.html`,
+      text: `Good piece on reader views done right: ${fixtureArticleUrl}`,
       url: `https://x.com/sindresorhus/status/900000000000090001`,
       postCreatedAt: new Date().toISOString(),
     },
@@ -213,13 +219,66 @@ db.storeCategorizedBatch(
       postId: '900000000000090002',
       authorUsername: 'karpathy',
       authorName: 'Andrej Karpathy',
-      text: 'Interesting writeup here: https://reader-view-demo-dead-link.invalid/article',
+      text: `Interesting writeup here: ${deadLinkUrl}`,
       url: `https://x.com/karpathy/status/900000000000090002`,
+      postCreatedAt: new Date().toISOString(),
+    },
+    {
+      postId: '900000000000090003',
+      authorUsername: 'addyosmani',
+      authorName: 'Addy Osmani',
+      text: `Only a title came back for this one: ${sparseLinkUrl}`,
+      url: `https://x.com/addyosmani/status/900000000000090003`,
       postCreatedAt: new Date().toISOString(),
     },
   ],
   () => [readerDemoParent],
 );
+
+// Populate the URL-keyed preview cache directly (bypassing any real fetch),
+// mirroring what a real ingest run's buildArticleContext would have cached,
+// so the preview card and gated "Read article" control render
+// deterministically and fully offline:
+//  - the fixture link runs through the REAL extractArticle against the
+//    fixture file on disk, so its cached preview is exactly what the running
+//    viewer's own reader fetch would produce for the same URL;
+//  - the dead link is cached as a confirmed failure (never an article);
+//  - the sparse link is cached as a confirmed article with only a title.
+const { extractArticle } = require('../dist/articles/fetch-article');
+const fixtureHtml = fs.readFileSync(
+  path.join(__dirname, '../src/web/public/fixtures/sample-article.html'),
+  'utf-8',
+);
+const fixtureExtraction = extractArticle(fixtureHtml, fixtureArticleUrl);
+if (fixtureExtraction.status === 'ok') {
+  db.saveArticleLinkMetadata({
+    url: fixtureArticleUrl,
+    status: 'ok',
+    title: fixtureExtraction.ogTitle || fixtureExtraction.title,
+    description: fixtureExtraction.ogDescription || fixtureExtraction.excerpt,
+    image: fixtureExtraction.ogImage,
+    siteName: fixtureExtraction.ogSiteName || fixtureExtraction.siteName,
+    fetchedAt: new Date().toISOString(),
+  });
+}
+db.saveArticleLinkMetadata({
+  url: deadLinkUrl,
+  status: 'failed',
+  title: null,
+  description: null,
+  image: null,
+  siteName: null,
+  fetchedAt: new Date().toISOString(),
+});
+db.saveArticleLinkMetadata({
+  url: sparseLinkUrl,
+  status: 'ok',
+  title: 'A Title With No Description or Image',
+  description: null,
+  image: null,
+  siteName: null,
+  fetchedAt: new Date().toISOString(),
+});
 
 // Mark a spread of bookmarks read so read/unread states both render.
 const all = db.getAllBookmarks();

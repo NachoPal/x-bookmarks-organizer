@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import BetterSqlite3 from 'better-sqlite3';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from './database';
 import type { RawBookmark } from '../types';
@@ -376,6 +380,8 @@ describe('Database', () => {
         status: 'ok',
         title: 'A Great Article',
         description: 'A short summary',
+        image: 'https://example.com/cover.png',
+        siteName: 'Example',
         fetchedAt: '2026-09-17T00:00:00.000Z',
       });
       expect(db.getArticleLinkMetadata('https://example.com/article')).toEqual({
@@ -383,6 +389,8 @@ describe('Database', () => {
         status: 'ok',
         title: 'A Great Article',
         description: 'A short summary',
+        image: 'https://example.com/cover.png',
+        siteName: 'Example',
         fetchedAt: '2026-09-17T00:00:00.000Z',
       });
     });
@@ -393,6 +401,8 @@ describe('Database', () => {
         status: 'failed',
         title: null,
         description: null,
+        image: null,
+        siteName: null,
         fetchedAt: '2026-09-17T00:00:00.000Z',
       });
       expect(db.getArticleLinkMetadata('https://example.com/dead')?.status).toBe('failed');
@@ -404,6 +414,8 @@ describe('Database', () => {
         status: 'failed',
         title: null,
         description: null,
+        image: null,
+        siteName: null,
         fetchedAt: '2026-09-17T00:00:00.000Z',
       });
       db.saveArticleLinkMetadata({
@@ -411,10 +423,81 @@ describe('Database', () => {
         status: 'ok',
         title: 'Now it works',
         description: null,
+        image: null,
+        siteName: null,
         fetchedAt: '2026-09-17T01:00:00.000Z',
       });
       expect(db.getArticleLinkMetadata('https://example.com/a')?.status).toBe('ok');
       expect(db.getArticleLinkMetadata('https://example.com/a')?.title).toBe('Now it works');
+    });
+
+    it('migrates a database created before image/siteName existed (issue #26) without losing data', () => {
+      const dbPath = path.join(os.tmpdir(), `xbookmarks-migration-test-${Date.now()}-${Math.random()}.db`);
+      try {
+        // Simulate a pre-#26 database: the original article_link_metadata
+        // shape, with no `image`/`site_name` columns, already holding a row.
+        const raw = new BetterSqlite3(dbPath);
+        raw.exec(`
+          CREATE TABLE article_link_metadata (
+            url         TEXT PRIMARY KEY,
+            status      TEXT NOT NULL,
+            title       TEXT,
+            description TEXT,
+            fetched_at  TEXT NOT NULL
+          );
+        `);
+        raw
+          .prepare(
+            `INSERT INTO article_link_metadata (url, status, title, description, fetched_at)
+             VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run('https://example.com/pre-existing', 'ok', 'Pre-existing Title', 'Pre-existing summary', '2026-01-01T00:00:00.000Z');
+        raw.close();
+
+        const migrated = new Database(dbPath);
+        try {
+          // The pre-existing row survived, with the new columns defaulting to null.
+          expect(migrated.getArticleLinkMetadata('https://example.com/pre-existing')).toEqual({
+            url: 'https://example.com/pre-existing',
+            status: 'ok',
+            title: 'Pre-existing Title',
+            description: 'Pre-existing summary',
+            image: null,
+            siteName: null,
+            fetchedAt: '2026-01-01T00:00:00.000Z',
+          });
+
+          // The new columns are now writable, and re-opening again is a no-op.
+          migrated.saveArticleLinkMetadata({
+            url: 'https://example.com/new',
+            status: 'ok',
+            title: 'New',
+            description: null,
+            image: 'https://example.com/new.png',
+            siteName: 'Example',
+            fetchedAt: '2026-01-02T00:00:00.000Z',
+          });
+          expect(migrated.getArticleLinkMetadata('https://example.com/new')?.image).toBe(
+            'https://example.com/new.png',
+          );
+        } finally {
+          migrated.close();
+        }
+        const reopened = new Database(dbPath);
+        try {
+          expect(reopened.getArticleLinkMetadata('https://example.com/new')?.siteName).toBe('Example');
+        } finally {
+          reopened.close();
+        }
+      } finally {
+        for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+          try {
+            fs.rmSync(f);
+          } catch {
+            /* not present */
+          }
+        }
+      }
     });
   });
 });

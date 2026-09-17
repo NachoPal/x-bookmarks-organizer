@@ -22,7 +22,13 @@ function toContext(record: ArticleLinkMetadata): ArticleContext | undefined {
   return { title: record.title, description: record.description ?? undefined };
 }
 
-async function resolveMetadata(
+/**
+ * Fetch (or reuse the cached) metadata for a single URL. Exported so the web
+ * viewer's server can reuse the exact same cache-or-fetch + failure-caching
+ * semantics for the link-preview card (issue #26) as ingest uses for
+ * categorization signal (issue #25) - the same cache row serves both.
+ */
+export async function resolveArticleLinkMetadata(
   url: string,
   fetcher: ArticleFetcher,
   cache: ArticleMetadataCache,
@@ -36,15 +42,51 @@ async function resolveMetadata(
     const result = await fetcher.fetch(url);
     record =
       result.status === 'ok'
-        ? { url, status: 'ok', title: result.title, description: result.excerpt, fetchedAt }
-        : { url, status: 'failed', title: null, description: null, fetchedAt };
+        ? {
+            url,
+            status: 'ok',
+            // Prefer OpenGraph-specific fields (purpose-built for a preview
+            // card) and fall back to the readability-derived ones when a page
+            // has no OG tags.
+            title: result.ogTitle || result.title,
+            description: result.ogDescription ?? result.excerpt,
+            image: result.ogImage ?? null,
+            siteName: result.ogSiteName ?? result.siteName,
+            fetchedAt,
+          }
+        : { url, status: 'failed', title: null, description: null, image: null, siteName: null, fetchedAt };
   } catch {
     // A fetcher must never take down ingest - a thrown error degrades to
     // today's behavior (no article context) exactly like a typed failure.
-    record = { url, status: 'failed', title: null, description: null, fetchedAt };
+    record = { url, status: 'failed', title: null, description: null, image: null, siteName: null, fetchedAt };
   }
   cache.saveArticleLinkMetadata(record);
   return record;
+}
+
+/**
+ * Resolve metadata for many URLs at once, deduplicated, with at most
+ * `concurrency` fetches in flight - the shared worker-pool implementation
+ * behind both `buildArticleContext` (ingest) and the viewer's bookmark list
+ * (which only ever reads the cache - see its call site).
+ */
+export async function resolveManyArticleLinkMetadata(
+  urls: string[],
+  fetcher: ArticleFetcher,
+  cache: ArticleMetadataCache,
+  concurrency = DEFAULT_CONCURRENCY,
+): Promise<Map<string, ArticleLinkMetadata>> {
+  const results = new Map<string, ArticleLinkMetadata>();
+  const uniqueUrls = [...new Set(urls)];
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < uniqueUrls.length) {
+      const url = uniqueUrls[cursor++]!;
+      results.set(url, await resolveArticleLinkMetadata(url, fetcher, cache));
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, uniqueUrls.length) }, () => worker()));
+  return results;
 }
 
 /**
@@ -79,19 +121,11 @@ export async function buildArticleContext(
   }
   if (postIdsByUrl.size === 0) return context;
 
-  const urls = [...postIdsByUrl.keys()];
-  let cursor = 0;
-  async function worker(): Promise<void> {
-    while (cursor < urls.length) {
-      const url = urls[cursor++]!;
-      const record = await resolveMetadata(url, fetcher, cache);
-      const ctx = toContext(record);
-      if (!ctx) continue;
-      for (const postId of postIdsByUrl.get(url)!) context.set(postId, ctx);
-    }
+  const metadataByUrl = await resolveManyArticleLinkMetadata([...postIdsByUrl.keys()], fetcher, cache, concurrency);
+  for (const [url, postIds] of postIdsByUrl) {
+    const ctx = toContext(metadataByUrl.get(url)!);
+    if (!ctx) continue;
+    for (const postId of postIds) context.set(postId, ctx);
   }
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, urls.length) }, () => worker()),
-  );
   return context;
 }

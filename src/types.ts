@@ -50,14 +50,18 @@ export interface SummaryRecord {
 
 /**
  * The cached title/description fetched for a link found in a bookmark's post
- * text, used as extra categorization signal (issue #25). Keyed by URL - see
- * `article_link_metadata` in `src/db/schema.ts` for why.
+ * text, used as extra categorization signal (issue #25) AND as the viewer's
+ * link-preview card data (issue #26) - `image`/`siteName` were added for the
+ * latter. Keyed by URL - see `article_link_metadata` in `src/db/schema.ts`
+ * for why.
  */
 export interface ArticleLinkMetadata {
   url: string;
   status: 'ok' | 'failed';
   title: string | null;
   description: string | null;
+  image: string | null;
+  siteName: string | null;
   fetchedAt: string;
 }
 

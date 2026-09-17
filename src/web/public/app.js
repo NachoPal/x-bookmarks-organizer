@@ -752,11 +752,13 @@
     }
     left.appendChild(summarizeBtn);
 
-    if (bm.articleUrl) {
+    // Gated to posts whose link actually resolved to an article (issue #26) -
+    // a bare/unresolved/non-article link gets no "Read article" control.
+    if (bm.hasArticle) {
       const readBtn = el("button", "link-external read-link");
       readBtn.type = "button";
       readBtn.appendChild(bookIcon());
-      readBtn.appendChild(document.createTextNode("Read"));
+      readBtn.appendChild(document.createTextNode("Read article"));
       readBtn.addEventListener("click", () => openReader(bm, card, readBtn));
       left.appendChild(readBtn);
     }
@@ -785,7 +787,54 @@
     renderEmbed(slot, bm, () => setRead(bm, card, true));
 
     card.append(actions, slot);
+
+    // Compact link-preview card (issue #26), gated the same way as the "Read
+    // article" button above: only a confirmed article gets a preview.
+    const preview = renderArticlePreview(bm, card);
+    if (preview) card.appendChild(preview);
+
     return card;
+  }
+
+  /**
+   * A compact, X-style preview card for a bookmark whose link resolved to a
+   * confirmed article: thumbnail (when available) + title/description/
+   * domain. The whole card is one button that opens the in-app reader, same
+   * as the "Read article" action. Returns null when the bookmark has no
+   * confirmed article (nothing is rendered for it, per the gating rule).
+   */
+  function renderArticlePreview(bm, card) {
+    if (!bm.hasArticle || !bm.preview) return null;
+    const preview = bm.preview;
+
+    const btn = el("button", "article-preview");
+    btn.type = "button";
+    btn.setAttribute("aria-label", `Read article: ${preview.title}`);
+
+    if (preview.image) {
+      const imageWrap = el("div", "article-preview-image-wrap");
+      const img = document.createElement("img");
+      img.className = "article-preview-image";
+      img.src = preview.image;
+      img.alt = "";
+      img.loading = "lazy";
+      // Graceful fallback: an image that 404s/blocks just drops the thumbnail
+      // rather than leaving a broken-image icon in the card.
+      img.addEventListener("error", () => imageWrap.remove());
+      imageWrap.appendChild(img);
+      btn.appendChild(imageWrap);
+    }
+
+    const body = el("div", "article-preview-body");
+    body.appendChild(el("p", "article-preview-domain", preview.siteName || preview.domain));
+    body.appendChild(el("p", "article-preview-title", preview.title));
+    if (preview.description) {
+      body.appendChild(el("p", "article-preview-desc", preview.description));
+    }
+    btn.appendChild(body);
+
+    btn.addEventListener("click", () => openReader(bm, card, btn));
+    return btn;
   }
 
   function bookIcon() {
