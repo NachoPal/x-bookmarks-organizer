@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { loadConfig, requireXCredentials, type Config } from './config';
+import { createCredentialStore, type CredentialStore } from './creds/resolve';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
 import { Categorizer } from './categorize/llm';
@@ -21,9 +22,10 @@ Usage:
   node dist/index.js serve       Start the local web viewer
   node dist/index.js help        Show this help
 
-Secrets are read from the environment only. Provide them however you like -
-exported in your shell, from a systemd unit, or from a vault, e.g.:
-  av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
+Secrets resolve through a layered chain, first hit wins: the environment (a
+vault such as \`av inject\`, a shell export, a systemd unit, CI secrets), a
+\`.env\` file in the project root, your OS keychain, or
+~/.config/x-bookmarks-organizer/credentials.json. See .env.example.
 
 Categorization and summaries run through the LLM provider named by
 XBOOKMARKS_LLM_PROVIDER (default: claude-cli, your Claude Code subscription via
@@ -71,9 +73,9 @@ async function cmdLogin(config: Config, db: Database): Promise<void> {
   console.log('Logged in. Refresh token stored locally. Future runs are headless.');
 }
 
-async function cmdRun(config: Config, db: Database): Promise<void> {
+async function cmdRun(config: Config, db: Database, store: CredentialStore): Promise<void> {
   requireXCredentials(config);
-  const llm = createLlmFactory(config);
+  const llm = createLlmFactory(config, process.env, store);
   await requireLlm(llm, ['taxonomy', 'assignment']);
   const client = await getAuthenticatedClient(config, db);
   const { taxonomer, categorizer } = buildCategorizers(config, llm);
@@ -95,8 +97,8 @@ async function cmdRun(config: Config, db: Database): Promise<void> {
   console.log('Browse them with:  node dist/index.js serve');
 }
 
-async function cmdRecategorize(config: Config, db: Database): Promise<void> {
-  const llm = createLlmFactory(config);
+async function cmdRecategorize(config: Config, db: Database, store: CredentialStore): Promise<void> {
+  const llm = createLlmFactory(config, process.env, store);
   await requireLlm(llm, ['taxonomy', 'assignment']);
   const { taxonomer, categorizer } = buildCategorizers(config, llm);
 
@@ -117,12 +119,12 @@ async function cmdRecategorize(config: Config, db: Database): Promise<void> {
   console.log('Browse them with:  node dist/index.js serve');
 }
 
-async function cmdServe(config: Config, db: Database): Promise<void> {
+async function cmdServe(config: Config, db: Database, store: CredentialStore): Promise<void> {
   // Summaries go through the same provider abstraction as categorization, on
   // the summary role's model. The button is offered whenever the provider says
   // it can run; a call that then fails surfaces the adapter's actionable error
   // in the modal instead of the control being pre-disabled.
-  const llm = createLlmFactory(config);
+  const llm = createLlmFactory(config, process.env, store);
   const health = await llm.check('summary');
   const available = health.state === 'ok';
   const summaryGenerator = available
@@ -158,7 +160,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const config = loadConfig();
+  const store = createCredentialStore();
+  const config = loadConfig(process.env, store);
   const db = new Database(config.dbPath);
 
   try {
@@ -167,13 +170,13 @@ async function main(): Promise<void> {
         await cmdLogin(config, db);
         break;
       case 'run':
-        await cmdRun(config, db);
+        await cmdRun(config, db, store);
         break;
       case 'recategorize':
-        await cmdRecategorize(config, db);
+        await cmdRecategorize(config, db, store);
         break;
       case 'serve':
-        await cmdServe(config, db);
+        await cmdServe(config, db, store);
         return; // serve keeps the process alive; do not close the db here.
       default:
         console.error(`Unknown command: ${command}\n`);

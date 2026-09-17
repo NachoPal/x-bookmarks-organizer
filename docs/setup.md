@@ -29,11 +29,19 @@ bookmark reads.
 > Categorization is separate and costs **no** X credit and **no** Anthropic API dollars - it runs on
 > your existing Claude subscription. See step 4.
 
-## 3. Get the secrets into the environment (one time)
+## 3. Get the secrets to the tool (one time)
 
-The tool reads all secrets from the **process environment** - never from a committed file, never
-written to disk. Any mechanism that exports them works: a shell profile, a systemd unit, a
-`direnv` file you keep out of git, or a vault.
+The tool resolves secrets through a **layered credential chain**, first hit wins - there is no
+single required mechanism:
+
+1. **The process environment** - a shell profile, a systemd unit, a Docker `-e` flag, CI secrets,
+   or a vault such as Automic Vault. Unchanged from before this chain existed.
+2. **A `.env` file in the project root** - the easiest option if you have no vault. Copy
+   [`.env.example`](../.env.example) to `.env` (gitignored) and fill it in.
+3. **Your OS keychain** (macOS Keychain / Linux Secret Service / Windows Credential Manager).
+4. **`~/.config/x-bookmarks-organizer/credentials.json`**, owner-only (`chmod 600`).
+
+Nothing is ever read from a *committed* file.
 
 | Env var                    | Value                                                            |
 | -------------------------- | ---------------------------------------------------------------- |
@@ -41,7 +49,8 @@ written to disk. Any mechanism that exports them works: a shell profile, a syste
 | `XBOOKMARKS_CLIENT_SECRET`  | X app OAuth 2.0 Client Secret (from step 1)                      |
 | `CLAUDE_CODE_OAUTH_TOKEN`   | Claude subscription token (step 4) - **optional**, see below     |
 
-This guide's examples use Automic Vault (`av`), which injects them per command:
+Quickest: `cp .env.example .env` and fill in the values. If you already use a vault such as
+Automic Vault (`av`), it keeps working unchanged, injecting per command:
 
 ```bash
 av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- <command>
@@ -84,6 +93,8 @@ Run the login command once. It opens your browser to X's consent screen, receive
 (gitignored). All later runs are headless.
 
 ```bash
+node dist/index.js login
+# or, with a vault instead of .env:
 av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js login
 ```
 
@@ -92,7 +103,7 @@ av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js 
 Ingest + categorize (repeat whenever, roughly weekly):
 
 ```bash
-av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
+node dist/index.js
 ```
 
 Re-categorize all stored bookmarks from scratch (optional; no X fetch, read state preserved):
@@ -116,8 +127,10 @@ summaries are disabled.
 ## Troubleshooting
 
 - **"Not logged in to X yet"** - run the `login` command (step 6) first.
-- **"Missing required secret(s)"** - the X credentials are not in the environment of the command you
-  ran (with `av`, that means you ran it without `av inject`, or a key is missing from the vault).
+- **"Missing required secret(s)"** - the X credentials were not found in any tier of the credential
+  chain: not in the environment (with `av`, that means you ran it without `av inject`, or a key is
+  missing from the vault), not in a `.env` file, not in your OS keychain, and not in
+  `~/.config/x-bookmarks-organizer/credentials.json`. The error message lists all four.
 - **"Summaries disabled" / the Summarize button is disabled** - the viewer prints the provider's own
   reason at startup, and the button's tooltip repeats it. For `claude-cli` it is almost always that
   the `claude` CLI is not installed, not on `PATH`, or not logged in; `claude --version` reproduces

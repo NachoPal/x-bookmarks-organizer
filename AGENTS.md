@@ -37,10 +37,16 @@ Setup steps: `docs/setup.md`.
   nodes - off-tree paths fall back to `Uncategorized`. `recategorize` rebuilds both passes over all
   stored bookmarks without re-fetching, preserving read state/dates (it designs the new taxonomy
   BEFORE clearing the old one, so a failed LLM call never wipes the DB).
-- **Secrets come only from the environment.** How they get there is the operator's choice (`av
-  inject` is one example, not a requirement) - so keep user-facing strings and docs tool-agnostic.
-  Never read a committed `.env`, never write secrets to disk. The X refresh token is persisted in
-  the (gitignored) SQLite DB via `run_state`.
+- **Secrets resolve through a layered credential chain** (`src/creds/resolve.ts`,
+  `CredentialStore`): process env (tier 1, unchanged - `av inject` is one example among several,
+  never a requirement) -> a gitignored `.env` in the project root -> the OS keychain via the
+  platform CLI (`security` / `secret-tool` / `cmdkey`) -> an owner-only (`chmod 600`)
+  `~/.config/x-bookmarks-organizer/credentials.json`. First hit wins. `loadConfig` and
+  `createLlmFactory` both take an optional `CredentialStore`; omitting it keeps behavior
+  byte-identical to env-only, which is what every test that injects a fake `env` relies on. Never
+  read a *committed* file, never log or surface a resolved `value` (only its `source` is safe to
+  show). The X refresh token is persisted in the (gitignored) SQLite DB via `run_state` - a
+  separate, older exception to "nothing written to disk," not part of this chain.
 - **Incremental detection is by DB membership, not post date.** `collectNewBookmarks`
   (`src/ingest.ts`) pages the bookmark timeline newest-first and stops at the first already-stored
   `post_id`. Old posts can be freshly bookmarked, so post `created_at` must never be the signal.

@@ -1,13 +1,16 @@
 import path from 'node:path';
+import type { CredentialStore } from './creds/resolve';
+import { missingCredentialMessage } from './creds/resolve';
 import type { LlmConfig } from './llm/types';
 
 /**
  * Runtime configuration for the tool.
  *
- * Secrets are ONLY ever read from the process environment. They are never read
- * from a committed file and never written to disk - how they get into the
- * environment (a vault such as `av inject`, a shell export, a systemd unit) is
- * the operator's choice. See README "Secrets".
+ * Secrets resolve through the layered credential chain (`src/creds/resolve.ts`):
+ * the process environment first (a vault such as `av inject`, a shell export, a
+ * systemd unit - unchanged), then a `.env` file, the OS keychain, and finally an
+ * owner-only config file. Nothing is ever read from a *committed* file. See
+ * README "Secrets".
  */
 export interface Config {
   /** X OAuth 2.0 app Client ID (env: XBOOKMARKS_CLIENT_ID). */
@@ -105,18 +108,27 @@ function llmFromEnv(env: NodeJS.ProcessEnv): LlmConfig {
 /**
  * Build the runtime config from the environment.
  *
+ * `store` is optional and, when omitted, behavior is byte-identical to before
+ * the credential chain existed (env only) - every test that injects a fake
+ * `env` keeps passing unchanged. When passed, the X credentials resolve
+ * through the full chain (env -> .env -> keychain -> config file), of which
+ * `env` is still tier 1.
+ *
  * X credentials are required for ingestion but not for the web viewer, so their
  * absence is tolerated here and validated at the point of use via
  * {@link requireXCredentials}.
  */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+export function loadConfig(env: NodeJS.ProcessEnv = process.env, store?: CredentialStore): Config {
   const dbPath = env.XBOOKMARKS_DB_PATH
     ? path.resolve(env.XBOOKMARKS_DB_PATH)
     : path.resolve(process.cwd(), 'data', 'bookmarks.db');
 
+  const xClientId = store ? store.get('XBOOKMARKS_CLIENT_ID').value : env.XBOOKMARKS_CLIENT_ID;
+  const xClientSecret = store ? store.get('XBOOKMARKS_CLIENT_SECRET').value : env.XBOOKMARKS_CLIENT_SECRET;
+
   return {
-    xClientId: env.XBOOKMARKS_CLIENT_ID ?? '',
-    xClientSecret: env.XBOOKMARKS_CLIENT_SECRET ?? '',
+    xClientId: xClientId ?? '',
+    xClientSecret: xClientSecret ?? '',
     dbPath,
     redirectUri: env.XBOOKMARKS_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
     authCallbackPort: intFromEnv('XBOOKMARKS_AUTH_PORT', DEFAULT_AUTH_PORT),
@@ -135,10 +147,6 @@ export function requireXCredentials(config: Config): void {
   if (!config.xClientId) missing.push('XBOOKMARKS_CLIENT_ID');
   if (!config.xClientSecret) missing.push('XBOOKMARKS_CLIENT_SECRET');
   if (missing.length > 0) {
-    throw new Error(
-      `Missing required secret(s): ${missing.join(', ')}. ` +
-        'Provide them in the environment - however you prefer, e.g. a vault:\n' +
-        '  av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js',
-    );
+    throw new Error(missingCredentialMessage(missing));
   }
 }

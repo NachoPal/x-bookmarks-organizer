@@ -58,8 +58,8 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
 
 - Node.js >= 20
 - The `claude` CLI on your `PATH`, logged in (the default `claude-cli` LLM provider)
-- A way to put the two X secrets below into the environment - a vault such as
-  [Automic Vault](docs/setup.md) (`av`), a shell export, a systemd unit; your choice
+- A way to provide the two X secrets below - the easiest is a `.env` file (see Secrets); a vault
+  such as [Automic Vault](docs/setup.md) (`av`), a shell export, or a systemd unit all work too
 - A pay-per-use X API app - see [`docs/setup.md`](docs/setup.md)
 
 ## Install & build
@@ -71,8 +71,21 @@ npm run build
 
 ## Secrets
 
-Secrets are read from the **process environment** only. They are **never** read from a committed
-file and **never** written to disk. How they get into the environment is up to you.
+Secrets resolve through a **layered credential chain**, first hit wins, so there is no single
+required mechanism:
+
+1. **The process environment** - unchanged: a vault such as `av inject`, a shell `export`,
+   a Docker `-e` flag, a systemd unit, or CI secrets all keep working exactly as before.
+2. **A `.env` file in the project root** - the easy default for running this yourself. Copy
+   [`.env.example`](.env.example) to `.env` and fill in what you need; it is gitignored and never
+   committed.
+3. **Your OS keychain** - macOS Keychain, the Linux Secret Service (`secret-tool`), or Windows
+   Credential Manager (`cmdkey`), via the platform CLI.
+4. **`~/.config/x-bookmarks-organizer/credentials.json`** - an owner-only (`chmod 600`) file, for
+   when none of the above fit.
+
+Nothing is ever read from a *committed* file, and nothing is ever written to disk unless a store
+tier is actually used (tiers 3-4).
 
 | Env var                   | What                                             |
 | ------------------------- | ------------------------------------------------ |
@@ -80,8 +93,16 @@ file and **never** written to disk. How they get into the environment is up to y
 | `XBOOKMARKS_CLIENT_SECRET` | X OAuth 2.0 app Client Secret (ingestion only)  |
 | `CLAUDE_CODE_OAUTH_TOKEN`  | Claude subscription token - **optional**: a `claude` CLI you have logged into interactively needs none |
 
-The examples below use [Automic Vault](docs/setup.md) (`av inject`) because that is what this
-repo's author runs, but any mechanism that exports these variables works just as well:
+Quickest start - drop a `.env` in the project root:
+
+```bash
+cp .env.example .env
+# edit .env with your values, then:
+node dist/index.js
+```
+
+If you already use a vault such as [Automic Vault](docs/setup.md) (`av inject`), it keeps working
+unchanged - it is simply one supported provider among several, not the only door:
 
 ```bash
 av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
@@ -90,7 +111,13 @@ av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
 ## Usage
 
 **1. One-time login** (opens a browser once; stores a rotating refresh token locally so all later
-runs are headless):
+runs are headless). With a `.env` file in place (see Secrets), just:
+
+```bash
+node dist/index.js login
+```
+
+Or with a vault such as Automic Vault:
 
 ```bash
 av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js login
@@ -99,7 +126,7 @@ av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js 
 **2. Ingest + categorize** (the default command; run this whenever - roughly weekly):
 
 ```bash
-av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
+node dist/index.js
 ```
 
 It prints a summary: how many new bookmarks, how many batches, how many new categories.
