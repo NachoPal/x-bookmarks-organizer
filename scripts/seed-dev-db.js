@@ -193,6 +193,34 @@ if (idByPath.has(denseKey)) {
   });
 }
 
+// A couple of bookmarks that exercise the reader view end to end: one links to
+// a fixture article served locally by this same viewer (so "Read" can fetch
+// and extract it fully offline), the other to a domain reserved by RFC 2606
+// to never resolve, so "Read" reliably hits the graceful-failure path.
+const readerDemoParent = ensurePath(['Reader View Demo']);
+const webPort = process.env.XBOOKMARKS_WEB_PORT || '5173';
+db.storeCategorizedBatch(
+  [
+    {
+      postId: '900000000000090001',
+      authorUsername: 'sindresorhus',
+      authorName: 'Sindre Sorhus',
+      text: `Good piece on reader views done right: http://127.0.0.1:${webPort}/fixtures/sample-article.html`,
+      url: `https://x.com/sindresorhus/status/900000000000090001`,
+      postCreatedAt: new Date().toISOString(),
+    },
+    {
+      postId: '900000000000090002',
+      authorUsername: 'karpathy',
+      authorName: 'Andrej Karpathy',
+      text: 'Interesting writeup here: https://reader-view-demo-dead-link.invalid/article',
+      url: `https://x.com/karpathy/status/900000000000090002`,
+      postCreatedAt: new Date().toISOString(),
+    },
+  ],
+  () => [readerDemoParent],
+);
+
 // Mark a spread of bookmarks read so read/unread states both render.
 const all = db.getAllBookmarks();
 all.forEach((bm, i) => {

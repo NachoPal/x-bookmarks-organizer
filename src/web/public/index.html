@@ -118,6 +118,34 @@
 
     <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="false"></div>
 
+    <div id="reader-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="reader-modal"
+      class="reader-modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="reader-title"
+    >
+      <div class="reader-panel">
+        <div class="reader-header">
+          <div class="reader-heading">
+            <h2 id="reader-title" class="reader-title"></h2>
+            <p id="reader-meta" class="reader-meta"></p>
+          </div>
+          <div class="reader-header-actions">
+            <a id="reader-original-link" class="link-external reader-original-link" target="_blank" rel="noopener noreferrer">
+              View original ↗
+            </a>
+            <button id="reader-close" class="icon-btn reader-close" type="button" aria-label="Close reader">
+              <span class="icon-x" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+        <div id="reader-body" class="reader-body"></div>
+      </div>
+    </div>
+
     <script src="https://platform.twitter.com/widgets.js" async></script>
     <script src="tree-color.js" defer></script>
     <script src="app.js" defer></script>

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { SCHEMA_SQL } from './schema';
-import type { CategoryNode, RawBookmark, StoredBookmark } from '../types';
+import type { ArticleRecord, CategoryNode, RawBookmark, StoredBookmark } from '../types';
 
 /** Read-state filter for the viewer's paged bookmark list. */
 export type ReadFilter = 'all' | 'unread' | 'read';
@@ -34,6 +34,18 @@ interface CategoryRow {
   created_at: string;
 }
 
+interface ArticleRow {
+  bookmark_id: number;
+  url: string;
+  status: string;
+  title: string | null;
+  content_html: string | null;
+  excerpt: string | null;
+  site_name: string | null;
+  reason: string | null;
+  fetched_at: string;
+}
+
 function toStoredBookmark(row: BookmarkRow): StoredBookmark {
   return {
     id: row.id,
@@ -51,6 +63,20 @@ function toStoredBookmark(row: BookmarkRow): StoredBookmark {
 
 function toCategoryNode(row: CategoryRow): CategoryNode {
   return { id: row.id, parentId: row.parent_id, name: row.name, createdAt: row.created_at };
+}
+
+function toArticleRecord(row: ArticleRow): ArticleRecord {
+  return {
+    bookmarkId: row.bookmark_id,
+    url: row.url,
+    status: row.status === 'ok' ? 'ok' : 'failed',
+    title: row.title,
+    contentHtml: row.content_html,
+    excerpt: row.excerpt,
+    siteName: row.site_name,
+    reason: row.reason,
+    fetchedAt: row.fetched_at,
+  };
 }
 
 const MARKER_KEY = 'newest_seen_post_id';
@@ -404,5 +430,38 @@ export class Database {
       else map.set(r.category_id, [entry]);
     }
     return map;
+  }
+
+  // --- Article reader cache ------------------------------------------------
+
+  /** The cached reader-view extraction for a bookmark, if one has been fetched. */
+  getArticleForBookmark(bookmarkId: number): ArticleRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM articles WHERE bookmark_id = ?').get(bookmarkId) as
+      | ArticleRow
+      | undefined;
+    return row ? toArticleRecord(row) : undefined;
+  }
+
+  /**
+   * Store (or replace) the reader-view extraction result for a bookmark, so
+   * the reader is served from cache on later opens instead of re-fetching.
+   */
+  saveArticle(record: ArticleRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO articles
+           (bookmark_id, url, status, title, content_html, excerpt, site_name, reason, fetched_at)
+         VALUES (@bookmarkId, @url, @status, @title, @contentHtml, @excerpt, @siteName, @reason, @fetchedAt)
+         ON CONFLICT(bookmark_id) DO UPDATE SET
+           url = excluded.url,
+           status = excluded.status,
+           title = excluded.title,
+           content_html = excluded.content_html,
+           excerpt = excluded.excerpt,
+           site_name = excluded.site_name,
+           reason = excluded.reason,
+           fetched_at = excluded.fetched_at`,
+      )
+      .run(record);
   }
 }

@@ -6,8 +6,6 @@ const path = require('node:path');
 const src = path.join(__dirname, '..', 'src', 'web', 'public');
 const dest = path.join(__dirname, '..', 'dist', 'web', 'public');
 
-fs.mkdirSync(dest, { recursive: true });
-for (const entry of fs.readdirSync(src)) {
-  fs.copyFileSync(path.join(src, entry), path.join(dest, entry));
-}
+// Recursive so nested asset directories (e.g. public/fixtures/) are copied too.
+fs.cpSync(src, dest, { recursive: true });
 console.log(`Copied web assets -> ${path.relative(process.cwd(), dest)}`);

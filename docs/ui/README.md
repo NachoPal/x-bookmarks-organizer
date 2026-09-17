@@ -56,3 +56,19 @@ never real bookmarks.
 | `tree-colors-light.png` | **Light mode.** Four roots, each a distinct soft hue; each child row a lighter tint of its root's hue, an expanded grandchild returning to the root's own shade. |
 | `tree-colors-dark.png` | **Dark mode.** Muted dark tints per root; selected-category highlight and count badges stay legible on top. |
 | `tree-colors-search-match.png` | **Category search active.** The matched-substring highlight (`<mark>`) still pops over the colored rows. |
+
+## Article reader (issue #4)
+
+A card whose post links to an external article gets a "Read" affordance that opens the
+extracted article (title + sanitized body, server-fetched via readability) in an in-app
+modal, with a graceful message + link-out for anything that can't be read. Seeded with
+`npm run seed:dev`'s "Reader View Demo" category: one bookmark links to a fixture article
+page served locally (`src/web/public/fixtures/sample-article.html`, fetched fully
+offline), the other to a domain reserved by RFC 2606 to never resolve - never real data.
+
+| File | What it shows |
+| --- | --- |
+| `reader-light.png` | **Light mode.** The reader modal showing the extracted title, site chrome (nav/ads/scripts) stripped, and comfortable reading measure/line-height; "View original" link in the header. |
+| `reader-dark.png` | **Dark mode.** Same article, dark surfaces and text via the token layer. |
+| `reader-fallback.png` | **Graceful failure.** An unreachable link (`.invalid` domain) shows a clear message and a link to the original - never a blank or stuck panel. |
+| `reader-mobile.png` | **~390px.** The reader becomes a full-screen panel; header wraps the title above the actions; reading measure and line-height hold. |

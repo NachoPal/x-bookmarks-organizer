@@ -75,11 +75,16 @@
   --header-height: 4.25rem;
   --sidebar-width: clamp(17rem, 24vw, 21rem);
   --content-measure: 44rem;
+  --reader-measure: 38rem;
+  --text-reader: clamp(1rem, 0.95rem + 0.2vw, 1.1875rem);
+  --leading-reader: 1.7;
 
   /* Stacking */
   --z-header: 30;
   --z-backdrop: 40;
   --z-sidebar: 50;
+  --z-modal-backdrop: 55;
+  --z-modal: 60;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -909,6 +914,24 @@ body[data-sidebar="collapsed"] .app-body {
 .bookmark-foot .link-external {
   margin-right: auto;
 }
+/* Opens the in-app reader for a card whose post links to an article. A plain
+   button styled like the external-link affordances beside it, since it stays
+   in-app rather than navigating away. */
+.read-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-right: 0; /* only the LAST left-aligned action pushes the rest right */
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.read-link .icon-book {
+  width: 1rem;
+  height: 1rem;
+}
 .delete-btn {
   width: 2.25rem;
   height: 2.25rem;
@@ -1098,6 +1121,236 @@ body[data-sidebar="collapsed"] .app-body {
 .list-error-msg {
   margin: 0;
   font-size: var(--text-small);
+}
+
+/* ============================================================
+   Reader (article) modal
+   ============================================================ */
+.reader-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal-backdrop);
+  background: var(--color-backdrop);
+}
+
+.reader-modal {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+}
+.reader-panel {
+  width: min(48rem, 100%);
+  max-height: min(85vh, 100%);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  animation: reader-in var(--motion-med) var(--ease);
+}
+@keyframes reader-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.reader-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+.reader-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.reader-title {
+  margin: 0;
+  font-size: var(--text-h2);
+  letter-spacing: -0.005em;
+  overflow-wrap: anywhere;
+}
+.reader-meta {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.reader-header-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.reader-original-link {
+  white-space: nowrap;
+  font-size: var(--text-small);
+}
+.reader-close {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.reader-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-5);
+}
+
+/* --- Loading state: skeleton + spinner, matching the embed-loader pattern -- */
+.reader-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: 12rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.reader-spinner {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 3px solid var(--color-border-strong);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* --- Failure fallback: message + link out, never a blank/broken panel ----- */
+.reader-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--color-text-muted);
+}
+.reader-fallback-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+.reader-fallback-msg {
+  margin: 0;
+  max-width: 32rem;
+}
+
+/* --- Article content: comfortable reading measure and rhythm -------------- */
+.reader-content {
+  max-width: var(--reader-measure);
+  margin: 0 auto;
+  font-size: var(--text-reader);
+  line-height: var(--leading-reader);
+}
+.reader-content > :first-child {
+  margin-top: 0;
+}
+.reader-content > :last-child {
+  margin-bottom: 0;
+}
+.reader-content p {
+  margin: 0 0 var(--space-4);
+}
+.reader-content h1,
+.reader-content h2,
+.reader-content h3,
+.reader-content h4,
+.reader-content h5,
+.reader-content h6 {
+  margin: var(--space-6) 0 var(--space-3);
+  line-height: 1.3;
+  letter-spacing: -0.005em;
+}
+.reader-content ul,
+.reader-content ol {
+  margin: 0 0 var(--space-4);
+  padding-left: var(--space-5);
+}
+.reader-content li {
+  margin-bottom: var(--space-2);
+}
+.reader-content a {
+  color: var(--color-accent);
+}
+.reader-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+}
+.reader-content blockquote {
+  margin: var(--space-4) 0;
+  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+  border-left: 3px solid var(--color-border-strong);
+  color: var(--color-text-muted);
+}
+.reader-content pre {
+  overflow-x: auto;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+.reader-content code {
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  background: var(--color-surface-2);
+  font-size: 0.9em;
+}
+.reader-content pre code {
+  padding: 0;
+  background: none;
+}
+.reader-content figure {
+  margin: var(--space-4) 0;
+}
+.reader-content figcaption {
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.reader-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 var(--space-4);
+}
+.reader-content th,
+.reader-content td {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+
+@media (max-width: 640px) {
+  .reader-modal {
+    padding: 0;
+  }
+  .reader-panel {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+  .reader-header {
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+  }
+  .reader-header-actions {
+    margin-left: auto;
+  }
 }
 
 /* ============================================================
