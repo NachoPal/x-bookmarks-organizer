@@ -104,6 +104,63 @@ describe('extractArticle (pure, no network)', () => {
   });
 });
 
+describe('extractArticle OpenGraph preview fields (issue #26, pure, no network)', () => {
+  it('extracts og:title/og:description/og:image/og:site_name and resolves a relative image URL', () => {
+    const result = extractArticle(FIXTURE_HTML, FIXTURE_URL);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+
+    expect(result.ogTitle).toBe("Reader View, and Why Bookmarking Isn't the Same as Reading");
+    expect(result.ogDescription).toContain('save for later');
+    expect(result.ogSiteName).toBe('Sample Times');
+    // The fixture's og:image is a root-relative path - resolved against the
+    // fetched page's own URL, exactly like a relative <a>/<img> in the body.
+    expect(result.ogImage).toBe('https://example.com/fixtures/sample-article-cover.svg');
+  });
+
+  it('falls back to null OG fields (never a crash) on a page with no OpenGraph tags', () => {
+    const html = `<!doctype html><html><body><article>
+      <h1>No OG Tags Here</h1>
+      <p>${'Padding content so the extractor treats this as a real article body. '.repeat(15)}</p>
+    </article></body></html>`;
+    const result = extractArticle(html, 'https://example.com/posts/no-og');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.ogTitle).toBeNull();
+    expect(result.ogDescription).toBeNull();
+    expect(result.ogImage).toBeNull();
+    expect(result.ogSiteName).toBeNull();
+  });
+
+  it('ignores an og:image with a non-http(s) scheme rather than passing it through', () => {
+    const html = `<!doctype html><html><head>
+      <meta property="og:image" content="javascript:alert(1)" />
+    </head><body><article>
+      <h1>Malicious OG Image Test</h1>
+      <p>${'Padding content so the extractor treats this as a real article body. '.repeat(15)}</p>
+    </article></body></html>`;
+    const result = extractArticle(html, 'https://example.com/posts/bad-image');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.ogImage).toBeNull();
+  });
+
+  it('collapses whitespace and caps an overlong og:description', () => {
+    const longDescription = 'word '.repeat(200).trim();
+    const html = `<!doctype html><html><head>
+      <meta property="og:description" content="${longDescription}" />
+    </head><body><article>
+      <h1>Long Description Test</h1>
+      <p>${'Padding content so the extractor treats this as a real article body. '.repeat(15)}</p>
+    </article></body></html>`;
+    const result = extractArticle(html, 'https://example.com/posts/long-description');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.ogDescription!.length).toBeLessThanOrEqual(300);
+    expect(result.ogDescription!.endsWith('…')).toBe(true);
+  });
+});
+
 describe('HttpArticleFetcher (network mocked, never hits the real internet)', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

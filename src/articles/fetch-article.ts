@@ -18,6 +18,18 @@ export interface ArticleExtractionOk {
   contentHtml: string;
   excerpt: string | null;
   siteName: string | null;
+  /**
+   * OpenGraph-style preview fields (issue #26), scraped from the same parsed
+   * document - a link preview card prefers these over `title`/`excerpt`/
+   * `siteName` when present, since they're purpose-built for social/preview
+   * cards and often cleaner. Optional so callers that don't care about the
+   * preview (existing fixtures/tests) don't need to supply them; absent on a
+   * page with no OpenGraph tags.
+   */
+  ogTitle?: string | null;
+  ogDescription?: string | null;
+  ogImage?: string | null;
+  ogSiteName?: string | null;
 }
 
 /** A failure the reader view surfaces as a message + link to the original, never a crash. */
@@ -82,6 +94,75 @@ function safeHostname(url: string): string | null {
   }
 }
 
+/** Longest a preview title/description is allowed to render as, untrusted page content. */
+const MAX_OG_TEXT_LENGTH = 300;
+
+/** Collapse whitespace, trim, and cap length; null for empty/missing input. */
+function cleanOgText(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const collapsed = raw.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return null;
+  return collapsed.length > MAX_OG_TEXT_LENGTH
+    ? `${collapsed.slice(0, MAX_OG_TEXT_LENGTH - 1)}…`
+    : collapsed;
+}
+
+/** Resolve a possibly-relative image URL against the page URL, http(s) only. */
+function resolveOgImage(raw: string | null | undefined, baseUrl: string): string | null {
+  if (!raw || !raw.trim()) return null;
+  try {
+    const resolved = new URL(raw.trim(), baseUrl);
+    return resolved.protocol === 'http:' || resolved.protocol === 'https:' ? resolved.href : null;
+  } catch {
+    return null;
+  }
+}
+
+interface MinimalElement {
+  getAttribute(name: string): string | null;
+}
+interface MinimalDocument {
+  querySelector(selector: string): MinimalElement | null;
+}
+
+/** First non-empty `content` attribute across the given meta selectors, tried in order. */
+function metaContent(document: MinimalDocument, selectors: string[]): string | null {
+  for (const selector of selectors) {
+    const content = document.querySelector(selector)?.getAttribute('content');
+    if (content && content.trim()) return content;
+  }
+  return null;
+}
+
+interface OpenGraphData {
+  title: string | null;
+  description: string | null;
+  image: string | null;
+  siteName: string | null;
+}
+
+/**
+ * Scrape OpenGraph-style preview metadata (title/description/image/site name)
+ * from an already-parsed document, for the link-preview card (issue #26).
+ * Falls back to the plain `<meta name="description">` when a page has no
+ * `og:description`; there is no non-OG fallback for image/site name since
+ * those have no standard non-OG equivalent.
+ */
+function extractOpenGraph(document: MinimalDocument, baseUrl: string): OpenGraphData {
+  return {
+    title: cleanOgText(metaContent(document, ['meta[property="og:title"]', 'meta[name="og:title"]'])),
+    description: cleanOgText(
+      metaContent(document, [
+        'meta[property="og:description"]',
+        'meta[name="og:description"]',
+        'meta[name="description"]',
+      ]),
+    ),
+    image: resolveOgImage(metaContent(document, ['meta[property="og:image"]', 'meta[name="og:image"]']), baseUrl),
+    siteName: cleanOgText(metaContent(document, ['meta[property="og:site_name"]', 'meta[name="og:site_name"]'])),
+  };
+}
+
 /**
  * Pure extraction step: given already-fetched HTML, run readability + sanitize.
  * Kept separate from the network fetch so it can be tested offline against
@@ -89,11 +170,13 @@ function safeHostname(url: string): string | null {
  */
 export function extractArticle(html: string, url: string): ArticleExtractionResult {
   let parsed;
+  let document: unknown;
   try {
     // linkedom resolves relative <a>/<img> URLs (and Readability's own
     // baseURI lookups) off `defaultView.location.href`, not a plain `url`
     // option - see linkedom's Node#baseURI getter.
-    const { document } = parseHTMLWithGlobals(html, { location: new URL(url) });
+    const parsedDoc = parseHTMLWithGlobals(html, { location: new URL(url) });
+    document = parsedDoc.document;
     parsed = new Readability(document as any).parse();
   } catch {
     return { status: 'failed', reason: 'Could not parse this page as an article.' };
@@ -103,12 +186,18 @@ export function extractArticle(html: string, url: string): ArticleExtractionResu
     return { status: 'failed', reason: 'This page does not look like a readable article.' };
   }
 
+  const og = extractOpenGraph(document as MinimalDocument, url);
+
   return {
     status: 'ok',
     title: parsed.title?.trim() || 'Untitled article',
     contentHtml: sanitizeHtml(parsed.content, SANITIZE_OPTIONS),
     excerpt: parsed.excerpt?.trim() || null,
     siteName: parsed.siteName?.trim() || null,
+    ogTitle: og.title,
+    ogDescription: og.description,
+    ogImage: og.image,
+    ogSiteName: og.siteName,
   };
 }
 

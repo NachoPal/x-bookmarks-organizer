@@ -111,3 +111,21 @@ dataset (`npm run seed:dev`, posts of very different lengths), never real bookma
 | `colors-on.png` | **Colors toggled on.** The per-root tree tint from issue #15, still available via the sidebar toggle. |
 | `theme-light.png` | **Light theme, explicit.** The header toggle shows a sun icon (click switches to dark). |
 | `theme-dark.png` | **Dark theme, explicit.** The header toggle shows a moon icon (click switches to light); preference persists across reloads. |
+
+## Article previews + gated "Read article" affordance (issue #26)
+
+A bookmark whose post links a confirmed article now shows a compact link-preview card
+(thumbnail + title/description/domain, X-style) below the embed; clicking it opens the
+same in-app reader as the "Read article" button. Both the preview card and the "Read
+article" control are gated to posts whose link actually resolved to an article - a plain
+post, or one whose link failed to resolve as an article, shows neither. Seeded via
+`npm run seed:dev`'s "Reader View Demo" category, which now covers all three states
+(confirmed article w/ full metadata, confirmed article w/ only a title, and a dead link),
+entirely offline - never real bookmarks.
+
+| File | What it shows |
+| --- | --- |
+| `link-preview-light.png` | **Light.** Full preview card (thumbnail, title, description, domain via `og:site_name`) for a bookmark with a confirmed article link; "Read article" in the action row. |
+| `link-preview-dark.png` | **Dark.** Same three demo cards (sparse-metadata fallback, gated dead link, full preview) in dark theme. |
+| `non-article-post.png` | **Plain posts, light.** Cards with no link in the post text show no preview and no "Read article" control. |
+| `gating-and-fallback.png` | **Gating + graceful fallback, light.** A dead-link post (no preview, no control) next to a confirmed article with only a title cached (title-only preview, no image/description). |

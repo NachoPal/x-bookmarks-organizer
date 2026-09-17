@@ -1030,6 +1030,85 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   overflow-wrap: anywhere;
 }
 
+/* Compact link-preview card (issue #26), shown below the embed only for a
+   bookmark whose link resolved to a confirmed article: thumbnail + title/
+   description/domain, X-style. The whole card is one button that opens the
+   in-app reader. Degrades gracefully with no thumbnail when the page had no
+   og:image, and to a single-line title-only card when description is also
+   missing - never a broken/empty box. */
+.article-preview {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-3);
+  width: 100%;
+  margin-top: var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+}
+.article-preview:hover {
+  background: var(--color-border);
+  border-color: var(--color-border-strong);
+}
+.article-preview:active {
+  transform: scale(0.995);
+}
+.article-preview-image-wrap {
+  flex: 0 0 auto;
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+.article-preview-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.article-preview-body {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-1);
+}
+.article-preview-domain {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.article-preview-title {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-text);
+  font-weight: 600;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.article-preview-desc {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 /* Opens the in-app reader for a card whose post links to an article. A plain
    button styled like the external-link affordances beside it, since it stays
    in-app rather than navigating away. */

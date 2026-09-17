@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
-import { SCHEMA_SQL } from './schema';
+import { ARTICLE_LINK_METADATA_ADDED_COLUMNS, SCHEMA_SQL } from './schema';
 import type {
   ArticleLinkMetadata,
   ArticleRecord,
@@ -87,6 +87,8 @@ interface ArticleLinkMetadataRow {
   status: string;
   title: string | null;
   description: string | null;
+  image: string | null;
+  site_name: string | null;
   fetched_at: string;
 }
 
@@ -96,6 +98,8 @@ function toArticleLinkMetadata(row: ArticleLinkMetadataRow): ArticleLinkMetadata
     status: row.status === 'ok' ? 'ok' : 'failed',
     title: row.title,
     description: row.description,
+    image: row.image,
+    siteName: row.site_name,
     fetchedAt: row.fetched_at,
   };
 }
@@ -135,6 +139,25 @@ export class Database {
     this.db = new BetterSqlite3(dbPath);
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA_SQL);
+    this.migrate();
+  }
+
+  /**
+   * Add columns introduced after a table's original release, for a database
+   * that predates them. `CREATE TABLE IF NOT EXISTS` above only shapes a
+   * brand-new table; an already-existing one keeps its original columns until
+   * migrated here. Idempotent via `PRAGMA table_info`, so re-opening an
+   * already-migrated database is a no-op.
+   */
+  private migrate(): void {
+    const existing = new Set(
+      (this.db.prepare('PRAGMA table_info(article_link_metadata)').all() as { name: string }[]).map(
+        (c) => c.name,
+      ),
+    );
+    for (const { name, ddl } of ARTICLE_LINK_METADATA_ADDED_COLUMNS) {
+      if (!existing.has(name)) this.db.exec(ddl);
+    }
   }
 
   close(): void {
@@ -541,12 +564,14 @@ export class Database {
   saveArticleLinkMetadata(record: ArticleLinkMetadata): void {
     this.db
       .prepare(
-        `INSERT INTO article_link_metadata (url, status, title, description, fetched_at)
-         VALUES (@url, @status, @title, @description, @fetchedAt)
+        `INSERT INTO article_link_metadata (url, status, title, description, image, site_name, fetched_at)
+         VALUES (@url, @status, @title, @description, @image, @siteName, @fetchedAt)
          ON CONFLICT(url) DO UPDATE SET
            status = excluded.status,
            title = excluded.title,
            description = excluded.description,
+           image = excluded.image,
+           site_name = excluded.site_name,
            fetched_at = excluded.fetched_at`,
       )
       .run(record);

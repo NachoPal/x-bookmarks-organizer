@@ -107,20 +107,21 @@ real data).
 
 ## Article reader (issue #4)
 
-A bookmark whose post text contains a link gets a "Read" affordance that opens the
-extracted article in an in-app modal. `src/articles/extract-link.ts` finds the primary
-link in the stored post text (all links are t.co-shortened by X, so this cannot tell an
-article from a link back to a post until it is fetched); `src/articles/fetch-article.ts`
-fetches it server-side (timeout, `NON_ARTICLE_HOSTS` short-circuits an x.com/
-twitter.com link, redirects followed so t.co/shorteners resolve to the real destination
-before extraction) and extracts it with `@mozilla/readability` over a `linkedom` DOM,
-sanitizing the result with `sanitize-html` before it is ever cached or served - never trust
-fetched HTML. Results (success or failure) are cached in the `articles` table
-(`src/db/schema.ts`, keyed by `bookmark_id`) via `Database.getArticleForBookmark` /
-`saveArticle`, so a bookmark's link is fetched at most once. Server surface:
-`GET /api/bookmarks/:id/article` (`src/web/server.ts`); the bookmark list endpoint also
-adds a computed `articleUrl` per bookmark so a card knows whether to show "Read" without
-an extra request. `ServerOptions.articleFetcher` is the injection seam for offline tests
+A bookmark whose post links a confirmed article (see issue #26 below for what "confirmed"
+means) gets a "Read article" affordance that opens the extracted article in an in-app
+modal. `src/articles/extract-link.ts` finds the primary link in the stored post text (all
+links are t.co-shortened by X, so this cannot tell an article from a link back to a post
+until it is fetched); `src/articles/fetch-article.ts` fetches it server-side (timeout,
+`NON_ARTICLE_HOSTS` short-circuits an x.com/twitter.com link, redirects followed so
+t.co/shorteners resolve to the real destination before extraction) and extracts it with
+`@mozilla/readability` over a `linkedom` DOM, sanitizing the result with `sanitize-html`
+before it is ever cached or served - never trust fetched HTML. Results (success or
+failure) are cached in the `articles` table (`src/db/schema.ts`, keyed by `bookmark_id`)
+via `Database.getArticleForBookmark` / `saveArticle`, so a bookmark's link is fetched at
+most once. Server surface: `GET /api/bookmarks/:id/article` (`src/web/server.ts`); the
+bookmark list endpoint also computes `articleUrl` per bookmark (the raw extracted link,
+used to drive this fetch) plus the separate `hasArticle`/`preview` gating fields described
+under issue #26. `ServerOptions.articleFetcher` is the injection seam for offline tests
 (mirrors the `XClient`/`BatchCategorizer` pattern) - never let a test hit the real network.
 `scripts/copy-assets.js` copies `public/` recursively (`fs.cpSync`), which is what lets
 `src/web/public/fixtures/sample-article.html` (a fixture article page with nav/ads/scripts
@@ -173,6 +174,43 @@ injection seam for offline tests (defaults to a real `HttpArticleFetcher`, mirro
 (post text + domain only) and never blocks ingest. Because `recategorizeAll` re-runs both passes
 over every stored bookmark, it is also how the owner reaches this benefit for bookmarks already
 sitting in `Uncategorized` from before this feature existed.
+
+## Article previews + gated "Read article" affordance (issue #26)
+
+Like X, a bookmark whose link resolves to a confirmed article shows a compact preview
+card (thumbnail, title, description, domain) instead of a bare URL, and ONLY such a
+bookmark gets the "Read article" control - a plain post, or one whose link turned out not
+to be an article, gets neither. "Confirmed" means `article_link_metadata.status === 'ok'`
+(the same URL-keyed cache issue #25 introduced): `src/articles/fetch-article.ts`'s
+`extractArticle` additionally scrapes OpenGraph meta tags (`extractOpenGraph`) from the
+same parsed document used for Readability, onto optional `ogTitle`/`ogDescription`/
+`ogImage`/`ogSiteName` fields on `ArticleExtractionOk` (sanitized: whitespace-collapsed,
+length-capped, image resolved to an absolute http(s) URL or dropped) - `link-metadata.ts`'s
+`resolveArticleLinkMetadata` prefers these over the plain `title`/`excerpt`/`siteName`
+fields when present. The cache table gained `image`/`site_name` columns (`ArticleLinkMetadata`
+in `src/types.ts`); `Database`'s constructor runs a `PRAGMA table_info`-guarded migration
+(`ARTICLE_LINK_METADATA_ADDED_COLUMNS` in `src/db/schema.ts`) so an existing on-disk DB
+gains the columns without losing data.
+
+Critically, the bookmark list endpoint (`toViewerBookmarks` in `src/web/server.ts`) only
+ever READS this cache - it never fetches live. The cache is populated once, at ingest time,
+by issue #25's `buildArticleContext` (run over every bookmark on `run`/`recategorize`), so
+by the time a bookmark reaches the viewer its link has normally already been resolved; this
+keeps the list endpoint a fast, offline-testable pure cache read with no network dependency
+of its own (and is why `ServerOptions.articleFetcher` is untouched by this feature - it still
+only backs the on-demand `/article` and `/summary` endpoints). A bookmark whose link predates
+issue #25, or hasn't been through `recategorize` yet, shows no preview/control until it has -
+the same documented backfill path issue #25 already established. `resolveManyArticleLinkMetadata`
+(concurrency-bounded, dedup'd by URL) is the shared worker-pool ingest uses; the server does
+not call it, since it never fetches.
+
+Frontend: `renderArticlePreview` in `src/web/public/app.js` renders the `.article-preview`
+button (styles in `styles.css`) only when `bm.hasArticle` is true, gracefully omitting the
+thumbnail when `preview.image` is null (and hiding it client-side too if the image URL
+404s/blocks) and the description line when `preview.description` is null - never a broken
+box. Clicking it calls the same `openReader` as the "Read article" text button. Both are
+gated identically off `bm.hasArticle`, which is `preview !== null` server-side, itself
+`metadata?.status === 'ok' && metadata.title` truthy - see `toPreview` in `server.ts`.
 
 ## Live vs. tested
 

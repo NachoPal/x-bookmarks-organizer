@@ -307,6 +307,126 @@ describe('bookmark list exposes the primary article link', () => {
   });
 });
 
+describe('bookmark list gates the "Read article" affordance and preview card (issue #26)', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let evalsId: number;
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    const when = new Date().toISOString();
+    const evals = db.getOrCreateCategory('Evals', null, when);
+    evalsId = evals.id;
+    db.storeCategorizedBatch(
+      [
+        { ...bm('1'), text: 'Great read: https://example.com/articles/with-preview' },
+        { ...bm('2'), text: 'Just thoughts, no links here.' },
+        { ...bm('3'), text: 'Dead link: https://example.com/articles/dead' },
+        { ...bm('4'), text: 'Never fetched yet: https://example.com/articles/unresolved' },
+        { ...bm('5'), text: 'Sparse metadata: https://example.com/articles/sparse' },
+      ],
+      () => [evals.id],
+    );
+    // Simulate ingest-time population of the URL-keyed cache (issue #25/#26):
+    // the list endpoint only ever reads this, never fetches live.
+    db.saveArticleLinkMetadata({
+      url: 'https://example.com/articles/with-preview',
+      status: 'ok',
+      title: 'A Great Article',
+      description: 'A short summary',
+      image: 'https://example.com/cover.png',
+      siteName: 'Example Times',
+      fetchedAt: when,
+    });
+    db.saveArticleLinkMetadata({
+      url: 'https://example.com/articles/dead',
+      status: 'failed',
+      title: null,
+      description: null,
+      image: null,
+      siteName: null,
+      fetchedAt: when,
+    });
+    // A confirmed article whose fetch produced a title but no description/
+    // image - the preview card's graceful partial-data fallback.
+    db.saveArticleLinkMetadata({
+      url: 'https://example.com/articles/sparse',
+      status: 'ok',
+      title: 'Sparse Article',
+      description: null,
+      image: null,
+      siteName: null,
+      fetchedAt: when,
+    });
+    app = buildServer(db);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  function fetchList() {
+    return app
+      .inject({ method: 'GET', url: `/api/categories/${evalsId}/bookmarks` })
+      .then((res) => res.json() as {
+        bookmarks: {
+          postId: string;
+          hasArticle: boolean;
+          preview: { title: string; description: string | null; image: string | null; siteName: string | null; domain: string } | null;
+        }[];
+      });
+  }
+
+  it('sets hasArticle true with full preview data for a confirmed article', async () => {
+    const body = await fetchList();
+    const b1 = body.bookmarks.find((b) => b.postId === '1')!;
+    expect(b1.hasArticle).toBe(true);
+    expect(b1.preview).toEqual({
+      title: 'A Great Article',
+      description: 'A short summary',
+      image: 'https://example.com/cover.png',
+      siteName: 'Example Times',
+      domain: 'example.com',
+    });
+  });
+
+  it('sets hasArticle false and no preview for a post with no link at all', async () => {
+    const body = await fetchList();
+    const b2 = body.bookmarks.find((b) => b.postId === '2')!;
+    expect(b2.hasArticle).toBe(false);
+    expect(b2.preview).toBeNull();
+  });
+
+  it('sets hasArticle false and no preview for a link that resolved to a fetch failure (not an article)', async () => {
+    const body = await fetchList();
+    const b3 = body.bookmarks.find((b) => b.postId === '3')!;
+    expect(b3.hasArticle).toBe(false);
+    expect(b3.preview).toBeNull();
+  });
+
+  it('sets hasArticle false and no preview for a link never yet resolved by ingest (no cache entry)', async () => {
+    const body = await fetchList();
+    const b4 = body.bookmarks.find((b) => b.postId === '4')!;
+    expect(b4.hasArticle).toBe(false);
+    expect(b4.preview).toBeNull();
+  });
+
+  it('gracefully falls back to a minimal preview (title + domain) when metadata is sparse', async () => {
+    const body = await fetchList();
+    const b5 = body.bookmarks.find((b) => b.postId === '5')!;
+    expect(b5.hasArticle).toBe(true);
+    expect(b5.preview).toEqual({
+      title: 'Sparse Article',
+      description: null,
+      image: null,
+      siteName: null,
+      domain: 'example.com',
+    });
+  });
+});
+
 describe('GET /api/bookmarks/:id/article', () => {
   let db: Database;
   let app: FastifyInstance;

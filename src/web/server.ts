@@ -6,7 +6,7 @@ import { buildCategoryTree } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
 import { HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
 import { htmlToPlainText, type SummaryGenerator } from '../summarize/summarizer';
-import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
+import type { ArticleLinkMetadata, ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -31,18 +31,73 @@ export interface ServerOptions {
   summaryGenerator?: SummaryGenerator;
 }
 
+/** The link-preview card data shipped alongside a bookmark that has a confirmed article link. */
+interface ArticlePreview {
+  title: string;
+  description: string | null;
+  image: string | null;
+  siteName: string | null;
+  domain: string;
+}
+
 /**
  * A bookmark as shipped to the viewer, with the primary article link (if any)
- * computed from its text so a card can show the "Read" affordance without a
- * separate round trip, and the ids of the categories it is directly filed
- * under so the client can patch only the affected sidebar counters (plus
- * their ancestors) on a read-state toggle or delete, instead of reloading
- * the whole tree.
+ * computed from its text, whether that link is a confirmed article
+ * (`hasArticle`) and its preview card data (issue #26) - gating the "Read
+ * article" affordance and the preview card - and the ids of the categories it
+ * is directly filed under so the client can patch only the affected sidebar
+ * counters (plus their ancestors) on a read-state toggle or delete, instead
+ * of reloading the whole tree.
  */
-type BookmarkForViewer = StoredBookmark & { articleUrl: string | null; categoryIds: number[] };
+type BookmarkForViewer = StoredBookmark & {
+  articleUrl: string | null;
+  hasArticle: boolean;
+  preview: ArticlePreview | null;
+  categoryIds: number[];
+};
 
-function toViewerBookmark(bookmark: StoredBookmark, categoryIds: number[]): BookmarkForViewer {
-  return { ...bookmark, articleUrl: extractArticleLink(bookmark.text), categoryIds };
+/** `example.com` from `https://www.example.com/foo`, or the raw hostname if parsing fails. */
+function domainFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+function toPreview(url: string, metadata: ArticleLinkMetadata | undefined): ArticlePreview | null {
+  if (!metadata || metadata.status !== 'ok' || !metadata.title) return null;
+  return {
+    title: metadata.title,
+    description: metadata.description,
+    image: metadata.image,
+    siteName: metadata.siteName,
+    domain: domainFromUrl(url),
+  };
+}
+
+/**
+ * Build the viewer's bookmark shape for a page of bookmarks. Preview data
+ * comes ONLY from the `article_link_metadata` cache (issue #25/#26) - never a
+ * live fetch here - because that cache is already populated at ingest time
+ * (`buildArticleContext`, run over every bookmark on `run`/`recategorize`),
+ * so a bookmark's "Read article" affordance and preview card appear once
+ * ingest has resolved its link, keeping the bookmark list endpoint a pure,
+ * fast, offline-testable cache read with no network dependency of its own.
+ */
+function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryIdsByBookmark: Map<number, number[]>): BookmarkForViewer[] {
+  return bookmarks.map((bookmark) => {
+    const articleUrl = extractArticleLink(bookmark.text);
+    const metadata = articleUrl ? db.getArticleLinkMetadata(articleUrl) : undefined;
+    const preview = articleUrl ? toPreview(articleUrl, metadata) : null;
+    return {
+      ...bookmark,
+      articleUrl,
+      hasArticle: preview !== null,
+      preview,
+      categoryIds: categoryIdsByBookmark.get(bookmark.id) ?? [],
+    };
+  });
 }
 
 function parseReadFilter(raw: unknown): ReadFilter {
@@ -138,7 +193,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       const categoryIdsByBookmark = db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id));
 
       return {
-        bookmarks: bookmarks.map((b) => toViewerBookmark(b, categoryIdsByBookmark.get(b.id) ?? [])),
+        bookmarks: toViewerBookmarks(db, bookmarks, categoryIdsByBookmark),
         counts,
         offset,
         limit,
