@@ -27,6 +27,16 @@
   --color-focus: #1868d6;
   --color-backdrop: rgba(20, 24, 31, 0.44);
 
+  /* Category-tree per-root tint: hue is set per-node (JS), these tokens
+     supply the saturation/lightness for the two alternating depth shades
+     and the row-interaction overlays layered on top of the tint. */
+  --tree-tint-sat-1: 42%;
+  --tree-tint-light-1: 91%;
+  --tree-tint-sat-2: 34%;
+  --tree-tint-light-2: 96%;
+  --tree-hover-overlay: rgba(20, 24, 31, 0.05);
+  --tree-active-overlay: rgba(20, 24, 31, 0.09);
+
   /* Spacing scale (4px base) */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -94,6 +104,13 @@
     --color-focus: #77b3ff;
     --color-backdrop: rgba(0, 0, 0, 0.62);
 
+    --tree-tint-sat-1: 26%;
+    --tree-tint-light-1: 16%;
+    --tree-tint-sat-2: 20%;
+    --tree-tint-light-2: 18%;
+    --tree-hover-overlay: rgba(255, 255, 255, 0.06);
+    --tree-active-overlay: rgba(255, 255, 255, 0.1);
+
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
     --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.55);
     --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.66);
@@ -120,6 +137,13 @@
   --color-danger-soft: #331a17;
   --color-focus: #77b3ff;
   --color-backdrop: rgba(0, 0, 0, 0.62);
+
+  --tree-tint-sat-1: 26%;
+  --tree-tint-light-1: 16%;
+  --tree-tint-sat-2: 20%;
+  --tree-tint-light-2: 18%;
+  --tree-hover-overlay: rgba(255, 255, 255, 0.06);
+  --tree-active-overlay: rgba(255, 255, 255, 0.1);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
   --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.55);
@@ -660,18 +684,31 @@ body[data-sidebar="collapsed"] .app-body {
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+  transition: background var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
 }
+/* Per-root color: --tree-hue is set once per root (JS) and inherited by its
+   whole subtree; parity alternates the shade by nesting depth so root,
+   child, grandchild, etc. read as distinct bands of the same hue. */
+.tree-node[data-parity="0"] {
+  background: hsl(var(--tree-hue, 220) var(--tree-tint-sat-1) var(--tree-tint-light-1));
+}
+.tree-node[data-parity="1"] {
+  background: hsl(var(--tree-hue, 220) var(--tree-tint-sat-2) var(--tree-tint-light-2));
+}
+/* Hover/active layer a neutral overlay on top of the tint (instead of
+   replacing it) so the row's root color stays visible through interaction. */
 .tree-node:hover {
-  background: var(--color-surface-2);
+  box-shadow: inset 0 0 0 999px var(--tree-hover-overlay);
 }
 .tree-node:active {
-  background: var(--color-border);
+  box-shadow: inset 0 0 0 999px var(--tree-active-overlay);
 }
 .tree-node[aria-current="true"] {
   background: var(--color-accent-soft);
   color: var(--color-accent);
   font-weight: 600;
+  box-shadow: none;
 }
 .tree-label {
   min-width: 0;
