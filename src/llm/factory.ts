@@ -1,4 +1,5 @@
 import type { Config } from '../config';
+import type { CredentialStore } from '../creds/resolve';
 import { getProvider, providerIds } from './registry';
 import './providers';
 import {
@@ -69,11 +70,18 @@ function paramsFor(llm: LlmConfig, role: LlmRole, provider: ProviderDefinition):
  * `env` is the injected seam that backs {@link ResolvedProviderConfig}: adapters
  * ask for a key by name and never read `process.env` themselves, which is what
  * keeps provider selection and credential sourcing independent (and lets tests
- * run entirely offline).
+ * run entirely offline). `store` is optional; when omitted, resolution is
+ * env-only, byte-identical to before the credential chain existed - every test
+ * that passes a fake `env` keeps passing unchanged. When passed, a key resolves
+ * through the full chain (env -> .env -> keychain -> config file).
  */
-export function createLlmFactory(config: Config, env: NodeJS.ProcessEnv = process.env): LlmFactory {
+export function createLlmFactory(
+  config: Config,
+  env: NodeJS.ProcessEnv = process.env,
+  store?: CredentialStore,
+): LlmFactory {
   const llm = config.llm;
-  const cfg: ResolvedProviderConfig = { get: (key) => env[key] };
+  const cfg: ResolvedProviderConfig = store ? { get: (key) => store.get(key).value } : { get: (key) => env[key] };
   const clients = new Map<LlmRole, LlmClient>();
 
   const resolveProvider = (role: LlmRole): ProviderDefinition => {

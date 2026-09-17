@@ -1,9 +1,13 @@
 # Secrets / credentials - never commit API keys or tokens
 .env
 .env.*
+!.env.example
 *.pem
 *_token
 *.secret
+
+# Credential chain's owner-only config file fallback
+credentials.json
 
 # Local bookmark database (personal data, owned locally, not versioned)
 *.db
