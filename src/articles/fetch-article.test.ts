@@ -1,11 +1,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { extractArticle, HttpArticleFetcher } from './fetch-article';
 
 const FIXTURE_PATH = path.join(__dirname, '../web/public/fixtures/sample-article.html');
 const FIXTURE_HTML = fs.readFileSync(FIXTURE_PATH, 'utf-8');
 const FIXTURE_URL = 'https://example.com/blog/reader-view';
+
+const ARTICLE_HTML = `<!doctype html><html><head><title>Resolved Article</title></head><body><article>
+  <h1>Resolved Article</h1>
+  <p>${'This article only shows up once the shortener redirect has actually been followed. '.repeat(20)}</p>
+</article></body></html>`;
+
+/**
+ * A tiny local HTTP server standing in for a real shortener (t.co) plus its
+ * destination article host, so redirect-following and UA behavior can be
+ * exercised against a real socket instead of a mocked `fetch` - offline, but
+ * with none of the redirect mechanics faked away.
+ */
+function startFixtureServer(handler: http.RequestListener): Promise<{ url: (path: string) => string; close: () => Promise<void> }> {
+  const server = http.createServer(handler);
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        url: (p: string) => `http://127.0.0.1:${port}${p}`,
+        close: () => new Promise((r) => server.close(() => r())),
+      });
+    });
+  });
+}
 
 function jsonResponse(body: string, init: { status?: number; url?: string; contentType?: string } = {}) {
   const headers = new Headers();
@@ -158,5 +184,84 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
     expect(result.reason).toMatch(/not an article|post on X/i);
+  });
+});
+
+describe('HttpArticleFetcher against a real local server (redirect + UA robustness, issue #28)', () => {
+  it('resolves a shortened/redirecting link to its destination article instead of 404ing', async () => {
+    // Mimics t.co: a bare 301 to the real article, on a real socket so the
+    // redirect is actually followed by the HTTP client, not by test mocking.
+    const fixture = await startFixtureServer((req, res) => {
+      if (req.url === '/abc123') {
+        res.writeHead(301, { Location: fixture.url('/real-article') });
+        res.end();
+        return;
+      }
+      if (req.url === '/real-article') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(ARTICLE_HTML);
+        return;
+      }
+      res.writeHead(404);
+      res.end('not found');
+    });
+
+    try {
+      const result = await new HttpArticleFetcher().fetch(fixture.url('/abc123'));
+      expect(result.status).toBe('ok');
+      if (result.status !== 'ok') throw new Error('expected ok');
+      expect(result.title).toContain('Resolved Article');
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('resolves a link even when a bot-detecting site 404s a generic/self-identifying UA but serves a realistic browser UA', async () => {
+    // Some sites 404 (rather than 403) requests from an obviously
+    // bot-like User-Agent as a basic anti-scraping measure. A fetcher that
+    // identifies itself as a bot spuriously 404s on links that actually
+    // resolve fine for a real browser.
+    const fixture = await startFixtureServer((req, res) => {
+      const ua = req.headers['user-agent'] ?? '';
+      const looksLikeBrowser = /Mozilla\/5\.0.*(Chrome|Safari|Firefox)/.test(ua) && !/XBookmarksOrganizer/i.test(ua);
+      if (!looksLikeBrowser) {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(ARTICLE_HTML);
+    });
+
+    try {
+      const result = await new HttpArticleFetcher().fetch(fixture.url('/article'));
+      expect(result.status).toBe('ok');
+      if (result.status !== 'ok') throw new Error('expected ok');
+      expect(result.title).toContain('Resolved Article');
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('fails gracefully with a friendly message when the destination is genuinely gone, regardless of UA', async () => {
+    const fixture = await startFixtureServer((req, res) => {
+      if (req.url === '/dead-shortlink') {
+        res.writeHead(301, { Location: fixture.url('/gone') });
+        res.end();
+        return;
+      }
+      res.writeHead(404);
+      res.end('not found');
+    });
+
+    try {
+      const result = await new HttpArticleFetcher().fetch(fixture.url('/dead-shortlink'));
+      expect(result.status).toBe('failed');
+      if (result.status !== 'failed') throw new Error('expected failed');
+      expect(result.reason).toBeTruthy();
+      expect(result.reason).not.toBe('');
+    } finally {
+      await fixture.close();
+    }
   });
 });

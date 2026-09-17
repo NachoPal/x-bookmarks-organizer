@@ -95,8 +95,9 @@ A bookmark whose post text contains a link gets a "Read" affordance that opens t
 extracted article in an in-app modal. `src/articles/extract-link.ts` finds the primary
 link in the stored post text (all links are t.co-shortened by X, so this cannot tell an
 article from a link back to a post until it is fetched); `src/articles/fetch-article.ts`
-fetches it server-side (timeout, UA, `NON_ARTICLE_HOSTS` short-circuits an x.com/
-twitter.com link) and extracts it with `@mozilla/readability` over a `linkedom` DOM,
+fetches it server-side (timeout, `NON_ARTICLE_HOSTS` short-circuits an x.com/
+twitter.com link, redirects followed so t.co/shorteners resolve to the real destination
+before extraction) and extracts it with `@mozilla/readability` over a `linkedom` DOM,
 sanitizing the result with `sanitize-html` before it is ever cached or served - never trust
 fetched HTML. Results (success or failure) are cached in the `articles` table
 (`src/db/schema.ts`, keyed by `bookmark_id`) via `Database.getArticleForBookmark` /
@@ -109,7 +110,11 @@ an extra request. `ServerOptions.articleFetcher` is the injection seam for offli
 `src/web/public/fixtures/sample-article.html` (a fixture article page with nav/ads/scripts
 Readability must strip) ship as a servable asset; both the article tests and the dev seed
 (`scripts/seed-dev-db.js`'s "Reader View Demo" category) point at it so extraction is
-exercised fully offline, end to end, with zero real network calls.
+exercised fully offline, end to end, with zero real network calls. `HttpArticleFetcher`'s
+`USER_AGENT` is a realistic desktop browser string, not a self-identifying one - some sites'
+basic anti-scraping checks 404/403 an honest bot UA even though the page resolves fine for a
+real browser (issue #28); its tests spin up a real local `http` server (not just a mocked
+`fetch`) to exercise actual redirect-following and this UA behavior end to end.
 
 ## On-demand bookmark summaries (issue #5)
 

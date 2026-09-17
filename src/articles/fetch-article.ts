@@ -33,8 +33,13 @@ export interface ArticleFetcher {
   fetch(url: string): Promise<ArticleExtractionResult>;
 }
 
+// A self-identifying bot UA (e.g. "XBookmarksOrganizer/1.0") gets 404'd or
+// 403'd outright by some sites' basic anti-scraping checks, even though the
+// page resolves fine for a real browser and this is a personal, single-user
+// fetch of a link the owner bookmarked. A realistic desktop browser UA avoids
+// that false-positive block (issue #28).
 const USER_AGENT =
-  'Mozilla/5.0 (compatible; XBookmarksOrganizer/1.0; +personal reader view, single-user tool)';
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const FETCH_TIMEOUT_MS = 10_000;
 const MIN_TEXT_LENGTH = 200;
 
@@ -131,6 +136,7 @@ export class HttpArticleFetcher implements ArticleFetcher {
         headers: {
           'User-Agent': USER_AGENT,
           Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
         },
       });
 
