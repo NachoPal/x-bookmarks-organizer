@@ -66,8 +66,8 @@ describe("rootCategoryHue", () => {
 });
 
 describe("category-color toggle persistence", () => {
-  it("defaults to enabled (the current colored look) when nothing is stored", () => {
-    expect(readColorEnabled(fakeStorage())).toBe(true);
+  it("defaults to disabled (the plain tree) when nothing is stored", () => {
+    expect(readColorEnabled(fakeStorage())).toBe(false);
   });
 
   it("round-trips a persisted off preference", () => {
@@ -83,8 +83,8 @@ describe("category-color toggle persistence", () => {
     expect(readColorEnabled(storage)).toBe(true);
   });
 
-  it("falls back to enabled when storage throws on read", () => {
-    expect(readColorEnabled(throwingStorage())).toBe(true);
+  it("falls back to disabled when storage throws on read", () => {
+    expect(readColorEnabled(throwingStorage())).toBe(false);
   });
 
   it("does not throw when storage throws on write", () => {

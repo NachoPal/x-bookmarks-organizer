@@ -34,16 +34,16 @@
 
   /**
    * Whether category coloring is on, per `storage` (normally
-   * window.localStorage). Defaults to on (the current colored look) when
-   * unset or when storage is unavailable/throws (private mode, blocked
-   * storage).
+   * window.localStorage). Defaults to off (the plain tree) when unset or
+   * when storage is unavailable/throws (private mode, blocked storage); the
+   * toggle still works and persists whichever choice is made.
    */
   function readColorEnabled(storage) {
     try {
       const raw = storage.getItem(COLOR_PREF_KEY);
-      return raw === null ? true : raw === "1";
+      return raw === "1";
     } catch (_) {
-      return true;
+      return false;
     }
   }
 

@@ -77,8 +77,8 @@
   --header-height: 4.25rem;
   --sidebar-width: clamp(17rem, 24vw, 21rem);
   --content-measure: 44rem;
-  /* Card max-width, sized to X's own embed width (~550px) plus card padding,
-     so a card never stretches full-width around a narrower post. */
+  /* Fixed card column width (like X, ~550-600px): every card renders at this
+     same width regardless of its post's content length. */
   --post-card-measure: 36rem;
   --reader-measure: 38rem;
   --text-reader: clamp(1rem, 0.95rem + 0.2vw, 1.1875rem);
@@ -346,6 +346,22 @@ body {
   display: block;
   width: 1.15rem;
   height: 1.15rem;
+}
+
+/* --- Light/dark theme toggle -------------------------------------------- */
+.icon-sun,
+.icon-moon {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+/* Icon shows the theme a click switches TO; driven off data-theme (set by
+   JS) rather than toggling the `hidden` attribute from script, so a single
+   source of truth (the attribute) decides what's on screen. */
+:root[data-theme="dark"] .theme-toggle .icon-sun {
+  display: none;
+}
+:root:not([data-theme="dark"]) .theme-toggle .icon-moon {
+  display: none;
 }
 .icon-x::before,
 .icon-x::after {
@@ -759,20 +775,21 @@ body[data-sidebar="collapsed"] .app-body {
   transition: background var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease),
     color var(--motion-fast) var(--ease);
 }
+/* Category coloring defaults OFF (a plain tree - indentation + the nested-list
+   guide line above communicate hierarchy on their own); the toggle turns on
+   the per-root color tint below. */
+.tree-node[data-parity="0"],
+.tree-node[data-parity="1"] {
+  background: transparent;
+}
 /* Per-root color: --tree-hue is set once per root (JS) and inherited by its
    whole subtree; parity alternates the shade by nesting depth so root,
    child, grandchild, etc. read as distinct bands of the same hue. */
-.tree-node[data-parity="0"] {
+body[data-tree-colors="on"] .tree-node[data-parity="0"] {
   background: hsl(var(--tree-hue, 220) var(--tree-tint-sat-1) var(--tree-tint-light-1));
 }
-.tree-node[data-parity="1"] {
+body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   background: hsl(var(--tree-hue, 220) var(--tree-tint-sat-2) var(--tree-tint-light-2));
-}
-/* Category-color toggle off: fall back to a plain tree (indentation + the
-   nested-list guide line above still communicate hierarchy on their own). */
-body[data-tree-colors="off"] .tree-node[data-parity="0"],
-body[data-tree-colors="off"] .tree-node[data-parity="1"] {
-  background: transparent;
 }
 /* Hover/active layer a neutral overlay on top of the tint (instead of
    replacing it) so the row's root color stays visible through interaction. */
@@ -846,8 +863,9 @@ body[data-tree-colors="off"] .tree-node[data-parity="1"] {
 }
 .bookmark-card {
   min-width: 0;
-  /* Sized to the post's own natural width (X embeds max ~550px) rather than
-     stretching full-width around a narrower embed; centered in the list. */
+  /* Uniform fixed-width column: every card is exactly this wide (the embed
+     inside may cap narrower on its own), centered in the content area. */
+  width: 100%;
   max-width: var(--post-card-measure);
   margin-inline: auto;
   background: var(--color-surface);
@@ -887,8 +905,12 @@ body[data-tree-colors="off"] .tree-node[data-parity="1"] {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-1);
   min-height: 1.75rem;
+  /* Reserved to fit the wider "Unread" label so toggling the shorter "Read"
+     label in and out causes zero reflow of the row's other controls. */
+  min-width: 5.5rem;
   padding: var(--space-1) var(--space-2);
   border-radius: 999px;
   font: inherit;
