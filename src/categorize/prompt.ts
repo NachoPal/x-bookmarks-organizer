@@ -1,15 +1,35 @@
+import type { ArticleContext } from '../articles/link-metadata';
 import type { Assignment, RawBookmark } from '../types';
 
 const MAX_TEXT_CHARS = 500;
 
-/** One entry in the batch shown to the model. */
-function bookmarkLine(bm: RawBookmark, index: number): string {
+/** Text budget for the linked article's title+description shown per bookmark. */
+const MAX_ARTICLE_CHARS = 300;
+
+/**
+ * One entry in the batch shown to the model. When `articleContext` has an
+ * entry for this bookmark (its post links to an article - issue #25), the
+ * linked article's title/description is appended as its own line so a
+ * link-heavy post is filed by what the link is actually about instead of
+ * falling back to `Uncategorized` for lack of signal.
+ */
+function bookmarkLine(
+  bm: RawBookmark,
+  index: number,
+  articleContext?: Map<string, ArticleContext>,
+): string {
   const text = bm.text.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_CHARS);
-  return [
+  const lines = [
     `[${index}] post_id: ${bm.postId}`,
     `    author: @${bm.authorUsername} (${bm.authorName})`,
     `    text: ${text}`,
-  ].join('\n');
+  ];
+  const article = articleContext?.get(bm.postId);
+  if (article) {
+    const combined = article.description ? `${article.title} - ${article.description}` : article.title;
+    lines.push(`    linked article: ${combined.replace(/\s+/g, ' ').trim().slice(0, MAX_ARTICLE_CHARS)}`);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -17,8 +37,13 @@ function bookmarkLine(bm: RawBookmark, index: number): string {
  * taxonomy pass): the model files bookmarks into it and must not invent new
  * categories. Returns strict JSON only.
  */
-export function buildPrompt(bookmarks: RawBookmark[], treeText: string, maxDepth: number): string {
-  const items = bookmarks.map((bm, i) => bookmarkLine(bm, i)).join('\n\n');
+export function buildPrompt(
+  bookmarks: RawBookmark[],
+  treeText: string,
+  maxDepth: number,
+  articleContext?: Map<string, ArticleContext>,
+): string {
+  const items = bookmarks.map((bm, i) => bookmarkLine(bm, i, articleContext)).join('\n\n');
   return `You are filing a person's X (Twitter) bookmarks into an EXISTING, fixed category tree.
 
 # Category tree (fixed - do not invent new categories)
@@ -52,8 +77,9 @@ export function buildExtendPrompt(
   bookmarks: RawBookmark[],
   treeText: string,
   maxDepth: number,
+  articleContext?: Map<string, ArticleContext>,
 ): string {
-  const items = bookmarks.map((bm, i) => bookmarkLine(bm, i)).join('\n\n');
+  const items = bookmarks.map((bm, i) => bookmarkLine(bm, i, articleContext)).join('\n\n');
   return `You are filing a person's X (Twitter) bookmarks into an EXISTING category tree, extending it only when necessary.
 
 # Existing category tree

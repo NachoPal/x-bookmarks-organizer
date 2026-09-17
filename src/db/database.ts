@@ -2,7 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { SCHEMA_SQL } from './schema';
-import type { ArticleRecord, CategoryNode, RawBookmark, StoredBookmark, SummaryRecord } from '../types';
+import type {
+  ArticleLinkMetadata,
+  ArticleRecord,
+  CategoryNode,
+  RawBookmark,
+  StoredBookmark,
+  SummaryRecord,
+} from '../types';
 
 /** Read-state filter for the viewer's paged bookmark list. */
 export type ReadFilter = 'all' | 'unread' | 'read';
@@ -73,6 +80,24 @@ interface SummaryRow {
 
 function toSummaryRecord(row: SummaryRow): SummaryRecord {
   return { bookmarkId: row.bookmark_id, summary: row.summary, generatedAt: row.generated_at };
+}
+
+interface ArticleLinkMetadataRow {
+  url: string;
+  status: string;
+  title: string | null;
+  description: string | null;
+  fetched_at: string;
+}
+
+function toArticleLinkMetadata(row: ArticleLinkMetadataRow): ArticleLinkMetadata {
+  return {
+    url: row.url,
+    status: row.status === 'ok' ? 'ok' : 'failed',
+    title: row.title,
+    description: row.description,
+    fetchedAt: row.fetched_at,
+  };
 }
 
 function toArticleRecord(row: ArticleRow): ArticleRecord {
@@ -470,6 +495,35 @@ export class Database {
            excerpt = excluded.excerpt,
            site_name = excluded.site_name,
            reason = excluded.reason,
+           fetched_at = excluded.fetched_at`,
+      )
+      .run(record);
+  }
+
+  // --- Article link metadata cache (categorization input, issue #25) -------
+
+  /** The cached title/description for a link, if it has been fetched. */
+  getArticleLinkMetadata(url: string): ArticleLinkMetadata | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM article_link_metadata WHERE url = ?')
+      .get(url) as ArticleLinkMetadataRow | undefined;
+    return row ? toArticleLinkMetadata(row) : undefined;
+  }
+
+  /**
+   * Store (or replace) the fetched metadata for a link, keyed by URL so it is
+   * reused across bookmarks that share a link and across runs (a dead link is
+   * not re-fetched every time either, since failures are cached too).
+   */
+  saveArticleLinkMetadata(record: ArticleLinkMetadata): void {
+    this.db
+      .prepare(
+        `INSERT INTO article_link_metadata (url, status, title, description, fetched_at)
+         VALUES (@url, @status, @title, @description, @fetchedAt)
+         ON CONFLICT(url) DO UPDATE SET
+           status = excluded.status,
+           title = excluded.title,
+           description = excluded.description,
            fetched_at = excluded.fetched_at`,
       )
       .run(record);

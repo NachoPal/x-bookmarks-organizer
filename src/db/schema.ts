@@ -24,6 +24,13 @@
  * - `summaries` caches the on-demand LLM summary for a bookmark, keyed by
  *   bookmark, so re-opening the summary modal is instant and spends no extra
  *   subscription usage after the first generation.
+ * - `article_link_metadata` caches the linked article's title/description used
+ *   as extra categorization signal for link-heavy posts (issue #25). Keyed by
+ *   URL rather than bookmark, because it must be fetched and fed into the
+ *   categorization prompt BEFORE the bookmark is stored (and thus before it has
+ *   a bookmark id) - and URL-keying also dedups bookmarks that share a link.
+ *   Both a success and a failure are cached, mirroring `articles`, so a dead
+ *   link is not re-fetched on every run.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -90,5 +97,13 @@ CREATE TABLE IF NOT EXISTS summaries (
   bookmark_id  INTEGER PRIMARY KEY REFERENCES bookmarks(id) ON DELETE CASCADE,
   summary      TEXT NOT NULL,
   generated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS article_link_metadata (
+  url         TEXT PRIMARY KEY,
+  status      TEXT NOT NULL,
+  title       TEXT,
+  description TEXT,
+  fetched_at  TEXT NOT NULL
 );
 `;

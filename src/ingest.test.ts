@@ -4,6 +4,8 @@ import { collectNewBookmarks, recategorizeAll, runIngest } from './ingest';
 import type { XClient, BookmarkPage } from './x/client';
 import type { AssignMode, BatchCategorizer } from './categorize/llm';
 import type { TaxonomyDesigner } from './categorize/taxonomy';
+import type { ArticleContext } from './articles/link-metadata';
+import type { ArticleFetcher, ArticleExtractionResult } from './articles/fetch-article';
 import type { Assignment, RawBookmark, TaxonomyNode } from './types';
 
 function bm(postId: string, text = `t-${postId}`): RawBookmark {
@@ -61,13 +63,16 @@ class FakeXClient implements XClient {
 class FakeTaxonomyDesigner implements TaxonomyDesigner {
   seenBookmarkCounts: number[] = [];
   seenExistingTrees: string[] = [];
+  seenArticleContexts: (Map<string, ArticleContext> | undefined)[] = [];
   constructor(private readonly tree: TaxonomyNode[]) {}
   async designTaxonomy(
     bookmarks: RawBookmark[],
     existingTreeText: string,
+    articleContext?: Map<string, ArticleContext>,
   ): Promise<TaxonomyNode[]> {
     this.seenBookmarkCounts.push(bookmarks.length);
     this.seenExistingTrees.push(existingTreeText);
+    this.seenArticleContexts.push(articleContext);
     return this.tree;
   }
 }
@@ -76,17 +81,30 @@ class FakeTaxonomyDesigner implements TaxonomyDesigner {
 class FakeCategorizer implements BatchCategorizer {
   seenTrees: string[] = [];
   seenModes: AssignMode[] = [];
+  seenArticleContexts: (Map<string, ArticleContext> | undefined)[] = [];
   constructor(private readonly map: Record<string, string[][]>) {}
   async categorizeBatch(
     bookmarks: RawBookmark[],
     treeText: string,
     mode: AssignMode = 'strict',
+    articleContext?: Map<string, ArticleContext>,
   ): Promise<Assignment[]> {
     this.seenTrees.push(treeText);
     this.seenModes.push(mode);
+    this.seenArticleContexts.push(articleContext);
     return bookmarks
       .filter((b) => this.map[b.postId])
       .map((b) => ({ postId: b.postId, categories: this.map[b.postId]! }));
+  }
+}
+
+/** Fake article fetcher driven by a fixed url -> result map. */
+class FakeArticleFetcher implements ArticleFetcher {
+  calls: string[] = [];
+  constructor(private readonly map: Record<string, ArticleExtractionResult>) {}
+  async fetch(url: string): Promise<ArticleExtractionResult> {
+    this.calls.push(url);
+    return this.map[url] ?? { status: 'failed', reason: 'not found' };
   }
 }
 
@@ -387,6 +405,91 @@ describe('runIngest (two-pass)', () => {
   });
 });
 
+describe('runIngest article context (issue #25)', () => {
+  let db: Database;
+  beforeEach(() => {
+    db = new Database(':memory:');
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it('fetches the linked article title and feeds it to both categorization passes', async () => {
+    const client = new FakeXClient([bm('1', 'check this out https://example.com/piece')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI']]));
+    const categorizer = new FakeCategorizer({ '1': [['AI']] });
+    const articleFetcher = new FakeArticleFetcher({
+      'https://example.com/piece': {
+        status: 'ok',
+        title: 'A Deep Dive on Transformers',
+        contentHtml: '<p>...</p>',
+        excerpt: 'Sparse attention explained',
+        siteName: 'Example',
+      },
+    });
+
+    await runIngest({
+      db,
+      client,
+      taxonomer,
+      categorizer,
+      articleFetcher,
+      batchSize: 10,
+      maxDepth: 4,
+    });
+
+    expect(articleFetcher.calls).toEqual(['https://example.com/piece']);
+    const taxonomyContext = taxonomer.seenArticleContexts[0];
+    expect(taxonomyContext?.get('1')).toEqual({
+      title: 'A Deep Dive on Transformers',
+      description: 'Sparse attention explained',
+    });
+    const assignContext = categorizer.seenArticleContexts[0];
+    expect(assignContext?.get('1')).toEqual({
+      title: 'A Deep Dive on Transformers',
+      description: 'Sparse attention explained',
+    });
+
+    // The fetch is cached by URL so a later run never re-fetches it.
+    expect(db.getArticleLinkMetadata('https://example.com/piece')?.status).toBe('ok');
+  });
+
+  it('falls back to today\'s behavior (no article context) on a fetch failure, without blocking ingest', async () => {
+    const client = new FakeXClient([bm('1', 'dead link https://example.com/dead')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI']]));
+    const categorizer = new FakeCategorizer({ '1': [['AI']] });
+    const articleFetcher = new FakeArticleFetcher({
+      'https://example.com/dead': { status: 'failed', reason: 'HTTP 404' },
+    });
+
+    const summary = await runIngest({
+      db,
+      client,
+      taxonomer,
+      categorizer,
+      articleFetcher,
+      batchSize: 10,
+      maxDepth: 4,
+    });
+
+    expect(summary.newBookmarks).toBe(1);
+    expect(taxonomer.seenArticleContexts[0]?.has('1')).toBe(false);
+    expect(db.getArticleLinkMetadata('https://example.com/dead')?.status).toBe('failed');
+  });
+
+  it('never fetches or passes article context for bookmarks with no link', async () => {
+    const client = new FakeXClient([bm('1', 'just some plain text, no link')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI']]));
+    const categorizer = new FakeCategorizer({ '1': [['AI']] });
+    const articleFetcher = new FakeArticleFetcher({});
+
+    await runIngest({ db, client, taxonomer, categorizer, articleFetcher, batchSize: 10, maxDepth: 4 });
+
+    expect(articleFetcher.calls).toEqual([]);
+    expect(taxonomer.seenArticleContexts[0]?.size ?? 0).toBe(0);
+  });
+});
+
 describe('deleted bookmarks are never resurrected', () => {
   let db: Database;
   beforeEach(() => {
@@ -527,5 +630,33 @@ describe('recategorizeAll', () => {
     });
     expect(summary).toEqual({ bookmarks: 0, batches: 0, nodesCreated: 0 });
     expect(taxonomer.seenBookmarkCounts).toEqual([]);
+  });
+
+  it('picks up the linked article title on re-run, so a previously Uncategorized link post can be re-sorted (issue #25)', async () => {
+    // Simulate a bookmark stored by pre-#25 code: filed under Uncategorized,
+    // with no article_link_metadata row for its link (the feature did not
+    // exist yet, so it was never fetched).
+    const when = new Date().toISOString();
+    const uncategorized = db.getOrCreateCategory('Uncategorized', null, when);
+    db.storeCategorizedBatch([bm('1', 'https://example.com/piece')], () => [uncategorized.id], when);
+    expect(db.getArticleLinkMetadata('https://example.com/piece')).toBeUndefined();
+
+    // recategorize with an article fetcher now wired up.
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI', 'Transformers']]));
+    const categorizer = new FakeCategorizer({ '1': [['AI', 'Transformers']] });
+    const articleFetcher = new FakeArticleFetcher({
+      'https://example.com/piece': {
+        status: 'ok',
+        title: 'A Deep Dive on Transformers',
+        contentHtml: '<p>...</p>',
+        excerpt: null,
+        siteName: null,
+      },
+    });
+    await recategorizeAll({ db, taxonomer, categorizer, articleFetcher, batchSize: 10, maxDepth: 4 });
+
+    expect(taxonomer.seenArticleContexts[0]?.get('1')?.title).toBe('A Deep Dive on Transformers');
+    const transformers = db.getAllCategories().find((c) => c.name === 'Transformers')!;
+    expect(db.getBookmarksForCategory(transformers.id).map((b) => b.postId)).toEqual(['1']);
   });
 });

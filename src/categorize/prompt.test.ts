@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildPrompt, parseAssignments } from './prompt';
+import { buildExtendPrompt, buildPrompt, parseAssignments } from './prompt';
+import type { ArticleContext } from '../articles/link-metadata';
 import type { RawBookmark } from '../types';
 
 const bm = (postId: string, text = 'hello'): RawBookmark => ({
@@ -25,6 +26,30 @@ describe('buildPrompt', () => {
     const prompt = buildPrompt([bm('1')], '- AI', 4);
     expect(prompt).toContain('do not invent new categories');
     expect(prompt).toContain('never be longer than 4 levels');
+  });
+
+  it('includes the linked article title/description for a link-heavy post (issue #25)', () => {
+    const articleContext = new Map<string, ArticleContext>([
+      ['123', { title: 'New Transformer Architecture', description: 'A paper on sparse attention' }],
+    ]);
+    const prompt = buildPrompt([bm('123', 'https://t.co/abcd')], '- AI', 4, articleContext);
+    expect(prompt).toContain('linked article: New Transformer Architecture - A paper on sparse attention');
+  });
+
+  it('omits the linked-article line for a bookmark with no entry in articleContext', () => {
+    const articleContext = new Map<string, ArticleContext>([['999', { title: 'Unrelated' }]]);
+    const prompt = buildPrompt([bm('123', 'https://t.co/abcd')], '- AI', 4, articleContext);
+    expect(prompt).not.toContain('linked article:');
+  });
+});
+
+describe('buildExtendPrompt', () => {
+  it('includes the linked article title/description for a link-heavy post (issue #25)', () => {
+    const articleContext = new Map<string, ArticleContext>([
+      ['123', { title: 'A Robotics Breakthrough' }],
+    ]);
+    const prompt = buildExtendPrompt([bm('123', 'https://t.co/abcd')], '- Robotics', 4, articleContext);
+    expect(prompt).toContain('linked article: A Robotics Breakthrough');
   });
 });
 

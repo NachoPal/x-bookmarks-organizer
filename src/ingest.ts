@@ -3,6 +3,8 @@ import type { XClient } from './x/client';
 import type { AssignMode, BatchCategorizer } from './categorize/llm';
 import type { TaxonomyDesigner } from './categorize/taxonomy';
 import { buildCategoryTree, materializeTaxonomy, renderTreeForPrompt } from './categorize/tree';
+import { buildArticleContext } from './articles/link-metadata';
+import { HttpArticleFetcher, type ArticleFetcher } from './articles/fetch-article';
 import type { Assignment, RawBookmark } from './types';
 
 /** Root node used when the LLM finds no fitting category, so everything is filed. */
@@ -22,6 +24,13 @@ export interface IngestDeps {
   maxDepth: number;
   /** Safety bound on pages fetched per run. */
   maxPages?: number;
+  /**
+   * Fetches a link post's linked article title/description, fed into both
+   * categorization passes (issue #25). Injectable so tests can fake the
+   * network fetch; defaults to the real HTTP fetcher, mirroring the reader
+   * view's `ServerOptions.articleFetcher` seam.
+   */
+  articleFetcher?: ArticleFetcher;
   logger?: (message: string) => void;
 }
 
@@ -37,6 +46,8 @@ export interface RecategorizeDeps {
   categorizer: BatchCategorizer;
   batchSize: number;
   maxDepth: number;
+  /** Same seam as {@link IngestDeps.articleFetcher} - see there. */
+  articleFetcher?: ArticleFetcher;
   logger?: (message: string) => void;
 }
 
@@ -216,6 +227,10 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
   const ordered = [...newBookmarks].reverse();
   log(`Found ${ordered.length} new bookmark(s).`);
 
+  const articleFetcher = deps.articleFetcher ?? new HttpArticleFetcher();
+  log('Fetching linked article titles for categorization...');
+  const articleContext = await buildArticleContext(ordered, articleFetcher, db);
+
   const when = new Date().toISOString();
   let mode: AssignMode;
   let resolvePath: PathResolver;
@@ -224,7 +239,7 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
     // First run: design the taxonomy holistically over all new bookmarks, then
     // file strictly into the fixed tree.
     log('Designing taxonomy (pass 1)...');
-    const taxonomy = await taxonomer.designTaxonomy(ordered, EMPTY_TREE_TEXT);
+    const taxonomy = await taxonomer.designTaxonomy(ordered, EMPTY_TREE_TEXT, articleContext);
     materializeTaxonomy(db, taxonomy, maxDepth, when);
     mode = 'strict';
     resolvePath = resolveExistingPathToLeafId;
@@ -244,7 +259,7 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
     // Re-render per batch so an extend batch sees nodes created by earlier
     // batches and reuses them instead of minting near-duplicate siblings.
     const treeText = renderTreeForPrompt(buildCategoryTree(db));
-    const assignments = await categorizer.categorizeBatch(batch, treeText, mode);
+    const assignments = await categorizer.categorizeBatch(batch, treeText, mode, articleContext);
     const byPostId = indexAssignments(assignments);
     db.storeCategorizedBatch(batch, makeResolver(db, byPostId, maxDepth, when, resolvePath), when);
     log(`Stored batch ${i + 1}/${batches.length} (${batch.length} bookmark(s)).`);
@@ -275,12 +290,16 @@ export async function recategorizeAll(deps: RecategorizeDeps): Promise<Recategor
 
   log(`Re-categorizing ${bookmarks.length} stored bookmark(s).`);
 
+  const articleFetcher = deps.articleFetcher ?? new HttpArticleFetcher();
+  log('Fetching linked article titles for categorization...');
+  const articleContext = await buildArticleContext(bookmarks, articleFetcher, db);
+
   // Pass 1: design the taxonomy from scratch over all stored bookmarks BEFORE
   // touching the DB. designTaxonomy throws on a malformed LLM response, so
   // clearing first would risk wiping the existing taxonomy with nothing to
   // replace it; only clear once the new taxonomy is in hand.
   log('Designing taxonomy (pass 1)...');
-  const taxonomy = await taxonomer.designTaxonomy(bookmarks, EMPTY_TREE_TEXT);
+  const taxonomy = await taxonomer.designTaxonomy(bookmarks, EMPTY_TREE_TEXT, articleContext);
   const when = new Date().toISOString();
   db.clearCategories();
   materializeTaxonomy(db, taxonomy, maxDepth, when);
@@ -293,7 +312,7 @@ export async function recategorizeAll(deps: RecategorizeDeps): Promise<Recategor
   log(`Assigning ${bookmarks.length} bookmark(s) into the tree in ${batches.length} batch(es) (pass 2).`);
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i]!;
-    const assignments = await categorizer.categorizeBatch(batch, treeText, 'strict');
+    const assignments = await categorizer.categorizeBatch(batch, treeText, 'strict', articleContext);
     const byPostId = indexAssignments(assignments);
     db.storeCategorizedBatch(
       batch,

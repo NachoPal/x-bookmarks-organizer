@@ -48,6 +48,19 @@ export interface SummaryRecord {
   generatedAt: string;
 }
 
+/**
+ * The cached title/description fetched for a link found in a bookmark's post
+ * text, used as extra categorization signal (issue #25). Keyed by URL - see
+ * `article_link_metadata` in `src/db/schema.ts` for why.
+ */
+export interface ArticleLinkMetadata {
+  url: string;
+  status: 'ok' | 'failed';
+  title: string | null;
+  description: string | null;
+  fetchedAt: string;
+}
+
 /** A category tree node as stored. */
 export interface CategoryNode {
   id: number;
