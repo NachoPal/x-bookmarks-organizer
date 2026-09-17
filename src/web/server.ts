@@ -5,7 +5,8 @@ import type { Database, ReadFilter } from '../db/database';
 import { buildCategoryTree } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
 import { HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
-import type { ArticleRecord, StoredBookmark } from '../types';
+import { htmlToPlainText, type SummaryGenerator } from '../summarize/summarizer';
+import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -13,11 +14,21 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 /** Fallback batch size when no explicit page size is configured. */
 const DEFAULT_PAGE_SIZE = 20;
 
+/** Shown when a summary is requested but no summary generator is configured (no Claude token). */
+const SUMMARY_UNAVAILABLE_MESSAGE =
+  'Run the viewer with `av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve` to enable summaries.';
+
 /** Options controlling viewer behavior; page size defaults to {@link DEFAULT_PAGE_SIZE}. */
 export interface ServerOptions {
   pageSize?: number;
   /** Injectable so tests can fake the network fetch; defaults to the real HTTP fetcher. */
   articleFetcher?: ArticleFetcher;
+  /**
+   * Generates on-demand bookmark summaries. Undefined when
+   * `CLAUDE_CODE_OAUTH_TOKEN` is not present in the environment, in which case
+   * the summary endpoint degrades gracefully (503) instead of crashing.
+   */
+  summaryGenerator?: SummaryGenerator;
 }
 
 /**
@@ -49,6 +60,46 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   const app = Fastify({ logger: false });
   const pageSize = opts.pageSize && opts.pageSize > 0 ? opts.pageSize : DEFAULT_PAGE_SIZE;
   const articleFetcher = opts.articleFetcher ?? new HttpArticleFetcher();
+  const summaryGenerator = opts.summaryGenerator;
+
+  /**
+   * The cached extraction for a bookmark's article link, fetching and caching
+   * it first if needed. Shared by the reader endpoint and the summarizer so a
+   * link is still fetched at most once either way.
+   */
+  async function getOrFetchArticle(bookmarkId: number, articleUrl: string): Promise<ArticleRecord> {
+    const cached = db.getArticleForBookmark(bookmarkId);
+    if (cached && cached.url === articleUrl) return cached;
+
+    const result = await articleFetcher.fetch(articleUrl);
+    const fetchedAt = new Date().toISOString();
+    const record: ArticleRecord =
+      result.status === 'ok'
+        ? {
+            bookmarkId,
+            url: articleUrl,
+            status: 'ok',
+            title: result.title,
+            contentHtml: result.contentHtml,
+            excerpt: result.excerpt,
+            siteName: result.siteName,
+            reason: null,
+            fetchedAt,
+          }
+        : {
+            bookmarkId,
+            url: articleUrl,
+            status: 'failed',
+            title: null,
+            contentHtml: null,
+            excerpt: null,
+            siteName: null,
+            reason: result.reason,
+            fetchedAt,
+          };
+    db.saveArticle(record);
+    return record;
+  }
 
   app.register(fastifyStatic, { root: PUBLIC_DIR });
 
@@ -134,37 +185,60 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     const articleUrl = extractArticleLink(bookmark.text);
     if (!articleUrl) return reply.code(404).send({ error: 'no article link' });
 
-    const cached = db.getArticleForBookmark(id);
-    if (cached && cached.url === articleUrl) return { article: cached };
-
-    const result = await articleFetcher.fetch(articleUrl);
-    const fetchedAt = new Date().toISOString();
-    const record: ArticleRecord =
-      result.status === 'ok'
-        ? {
-            bookmarkId: id,
-            url: articleUrl,
-            status: 'ok',
-            title: result.title,
-            contentHtml: result.contentHtml,
-            excerpt: result.excerpt,
-            siteName: result.siteName,
-            reason: null,
-            fetchedAt,
-          }
-        : {
-            bookmarkId: id,
-            url: articleUrl,
-            status: 'failed',
-            title: null,
-            contentHtml: null,
-            excerpt: null,
-            siteName: null,
-            reason: result.reason,
-            fetchedAt,
-          };
-    db.saveArticle(record);
+    const record = await getOrFetchArticle(id, articleUrl);
     return { article: record };
+  });
+
+  // Whether the owner can generate NEW summaries right now (a Claude token is
+  // configured). The client checks this once to disable/tooltip the
+  // Summarize button proactively; the summary endpoint below also degrades
+  // gracefully on its own if called anyway.
+  app.get('/api/summary-status', async () => ({ available: Boolean(summaryGenerator) }));
+
+  // The on-demand LLM summary for a bookmark: served from cache once
+  // generated. Article-aware when the bookmark's link is an article - the
+  // article is fetched/cached the same way the reader view does, so a
+  // bookmark whose article was never opened still gets an article-aware
+  // summary. 503 (not 500) signals the graceful no-token degradation the
+  // owner sees as a clear message rather than a crash or a hang.
+  app.get<{ Params: { id: string } }>('/api/bookmarks/:id/summary', async (req, reply) => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
+
+    const bookmark = db.getBookmarkById(id);
+    if (!bookmark) return reply.code(404).send({ error: 'bookmark not found' });
+
+    const cached = db.getSummaryForBookmark(id);
+    if (cached) return { summary: cached };
+
+    if (!summaryGenerator) {
+      return reply.code(503).send({ error: SUMMARY_UNAVAILABLE_MESSAGE });
+    }
+
+    const articleUrl = extractArticleLink(bookmark.text);
+    const article = articleUrl ? await getOrFetchArticle(id, articleUrl) : undefined;
+    const readableArticle = article && article.status === 'ok' ? article : null;
+
+    let summaryText: string;
+    try {
+      summaryText = await summaryGenerator.summarize({
+        postText: bookmark.text,
+        authorName: bookmark.authorName,
+        authorUsername: bookmark.authorUsername,
+        articleTitle: readableArticle?.title ?? null,
+        articleText: readableArticle ? htmlToPlainText(readableArticle.contentHtml ?? '') : null,
+      });
+    } catch {
+      return reply.code(502).send({ error: 'Could not generate a summary. Please try again.' });
+    }
+
+    const record: SummaryRecord = {
+      bookmarkId: id,
+      summary: summaryText,
+      generatedAt: new Date().toISOString(),
+    };
+    db.saveSummary(record);
+    return { summary: record };
   });
 
   return app;

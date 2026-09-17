@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { SCHEMA_SQL } from './schema';
-import type { ArticleRecord, CategoryNode, RawBookmark, StoredBookmark } from '../types';
+import type { ArticleRecord, CategoryNode, RawBookmark, StoredBookmark, SummaryRecord } from '../types';
 
 /** Read-state filter for the viewer's paged bookmark list. */
 export type ReadFilter = 'all' | 'unread' | 'read';
@@ -63,6 +63,16 @@ function toStoredBookmark(row: BookmarkRow): StoredBookmark {
 
 function toCategoryNode(row: CategoryRow): CategoryNode {
   return { id: row.id, parentId: row.parent_id, name: row.name, createdAt: row.created_at };
+}
+
+interface SummaryRow {
+  bookmark_id: number;
+  summary: string;
+  generated_at: string;
+}
+
+function toSummaryRecord(row: SummaryRow): SummaryRecord {
+  return { bookmarkId: row.bookmark_id, summary: row.summary, generatedAt: row.generated_at };
 }
 
 function toArticleRecord(row: ArticleRow): ArticleRecord {
@@ -461,6 +471,32 @@ export class Database {
            site_name = excluded.site_name,
            reason = excluded.reason,
            fetched_at = excluded.fetched_at`,
+      )
+      .run(record);
+  }
+
+  // --- Summary cache -------------------------------------------------------
+
+  /** The cached on-demand summary for a bookmark, if one has been generated. */
+  getSummaryForBookmark(bookmarkId: number): SummaryRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM summaries WHERE bookmark_id = ?').get(bookmarkId) as
+      | SummaryRow
+      | undefined;
+    return row ? toSummaryRecord(row) : undefined;
+  }
+
+  /**
+   * Store (or replace) the generated summary for a bookmark, so later opens
+   * are served from cache instead of re-generating.
+   */
+  saveSummary(record: SummaryRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO summaries (bookmark_id, summary, generated_at)
+         VALUES (@bookmarkId, @summary, @generatedAt)
+         ON CONFLICT(bookmark_id) DO UPDATE SET
+           summary = excluded.summary,
+           generated_at = excluded.generated_at`,
       )
       .run(record);
   }

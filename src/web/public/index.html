@@ -146,6 +146,31 @@
       </div>
     </div>
 
+    <div id="summary-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="summary-modal"
+      class="reader-modal summary-modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="summary-title"
+    >
+      <div class="reader-panel summary-panel">
+        <div class="reader-header">
+          <div class="reader-heading">
+            <h2 id="summary-title" class="reader-title">Summary</h2>
+            <p id="summary-meta" class="reader-meta" hidden></p>
+          </div>
+          <div class="reader-header-actions">
+            <button id="summary-close" class="icon-btn reader-close" type="button" aria-label="Close summary">
+              <span class="icon-x" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+        <div id="summary-body" class="reader-body"></div>
+      </div>
+    </div>
+
     <script src="https://platform.twitter.com/widgets.js" async></script>
     <script src="tree-color.js" defer></script>
     <script src="app.js" defer></script>
