@@ -544,13 +544,26 @@ describe('GET /api/summary-status', () => {
     db.close();
   });
 
-  it('reports unavailable when no summary generator is configured', async () => {
+  it('reports unavailable, with a reason, when no summary generator is configured', async () => {
     db = new Database(':memory:');
     app = buildServer(db);
     await app.ready();
     const res = await app.inject({ method: 'GET', url: '/api/summary-status' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ available: false });
+    const body = res.json() as { available: boolean; reason: string };
+    expect(body.available).toBe(false);
+    expect(body.reason).toMatch(/provider/i);
+  });
+
+  it("surfaces the provider adapter's own reason so the tooltip says what to fix", async () => {
+    db = new Database(':memory:');
+    app = buildServer(db, { summaryUnavailableReason: 'The `claude` CLI was not found.' });
+    await app.ready();
+    const res = await app.inject({ method: 'GET', url: '/api/summary-status' });
+    expect(res.json()).toEqual({
+      available: false,
+      reason: 'The `claude` CLI was not found.',
+    });
   });
 
   it('reports available when a summary generator is configured', async () => {
@@ -597,14 +610,31 @@ describe('GET /api/bookmarks/:id/summary', () => {
     );
   });
 
-  it('degrades gracefully (503, clear message) when no CLAUDE_CODE_OAUTH_TOKEN/generator is configured', async () => {
+  it('degrades gracefully (503, clear message) when no LLM provider is available', async () => {
     await setup({});
     const b1 = db.getBookmarkByPostId('1')!;
     const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
     expect(res.statusCode).toBe(503);
     const body = res.json() as { error: string };
-    expect(body.error).toMatch(/av inject/i);
-    // Never cached: a token becoming available later should still work.
+    expect(body.error).toMatch(/provider/i);
+    // Never cached: a provider becoming available later should still work.
+    expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
+  });
+
+  it("forwards the adapter's actionable message (502) when a configured provider's call fails", async () => {
+    const failing: SummaryGenerator = {
+      async summarize() {
+        throw new Error(
+          "Couldn't reach Claude: the CLI exited with code 1. Make sure the `claude` CLI is installed and logged in.",
+        );
+      },
+    };
+    await setup({ summaryGenerator: failing });
+    const b1 = db.getBookmarkByPostId('1')!;
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    expect(res.statusCode).toBe(502);
+    expect((res.json() as { error: string }).error).toMatch(/Couldn't reach Claude/);
+    // A failed call is never cached, so a retry can still succeed.
     expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
   });
 

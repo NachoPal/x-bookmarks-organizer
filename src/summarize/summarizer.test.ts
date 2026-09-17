@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { LlmRunner } from '../categorize/llm';
-import { ClaudeSummaryGenerator, buildSummaryPrompt, htmlToPlainText } from './summarizer';
+import { LlmSummaryGenerator, buildSummaryPrompt, htmlToPlainText } from './summarizer';
 
 describe('htmlToPlainText', () => {
   it('strips tags and decodes common entities', () => {
@@ -39,14 +39,14 @@ describe('buildSummaryPrompt', () => {
   });
 });
 
-describe('ClaudeSummaryGenerator', () => {
+describe('LlmSummaryGenerator', () => {
   it('passes the built prompt to the runner and trims the response', async () => {
     let seenPrompt = '';
     const runner: LlmRunner = async (prompt) => {
       seenPrompt = prompt;
       return '  A concise summary.  \n';
     };
-    const gen = new ClaudeSummaryGenerator(runner);
+    const gen = new LlmSummaryGenerator(runner);
     const result = await gen.summarize({ postText: 'hi', authorName: 'A', authorUsername: 'a' });
     expect(result).toBe('A concise summary.');
     expect(seenPrompt).toContain('Post by @a (A)');
@@ -54,7 +54,7 @@ describe('ClaudeSummaryGenerator', () => {
 
   it('throws when the model returns an empty response', async () => {
     const runner: LlmRunner = async () => '   ';
-    const gen = new ClaudeSummaryGenerator(runner);
+    const gen = new LlmSummaryGenerator(runner);
     await expect(gen.summarize({ postText: 'hi', authorName: '', authorUsername: 'a' })).rejects.toThrow(
       /empty summary/i,
     );

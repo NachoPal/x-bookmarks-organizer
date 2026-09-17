@@ -15,9 +15,9 @@ export interface SummaryInput {
 }
 
 /**
- * Generates a summary for a bookmark's content. Abstracted so the real
- * `claude` CLI runner can be swapped for a fake in tests (no network, no
- * subscription usage) - mirrors the {@link import('../categorize/llm').BatchCategorizer} seam.
+ * Generates a summary for a bookmark's content. Abstracted so a provider-backed
+ * runner can be swapped for a fake in tests (no network, no subscription
+ * usage) - mirrors the {@link import('../categorize/llm').BatchCategorizer} seam.
  */
 export interface SummaryGenerator {
   summarize(input: SummaryInput): Promise<string>;
@@ -65,7 +65,7 @@ export function buildSummaryPrompt(input: SummaryInput): string {
 }
 
 /** Runs the summary prompt through an injected {@link LlmRunner}. */
-export class ClaudeSummaryGenerator implements SummaryGenerator {
+export class LlmSummaryGenerator implements SummaryGenerator {
   constructor(private readonly runner: LlmRunner) {}
 
   async summarize(input: SummaryInput): Promise<string> {

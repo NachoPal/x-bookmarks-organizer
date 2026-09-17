@@ -37,11 +37,14 @@
   let summaryReturnFocusEl = null;
   let summaryRequestSeq = 0;
   // Optimistic default: corrected once /api/summary-status resolves. A stale
-  // "true" is still safe - the endpoint itself degrades gracefully (503) if
-  // called without a token, and that renders the same message in the modal.
+  // "true" is still safe - the endpoint itself degrades gracefully (503) if no
+  // provider is available, and that renders the same message in the modal.
   let summaryAvailable = true;
   const SUMMARY_UNAVAILABLE_MESSAGE =
-    "Run the viewer with `av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve` to enable summaries.";
+    "Summaries are disabled: no LLM provider is available.";
+  // The server's reason (the provider adapter's own actionable message), used
+  // for the button tooltip and the modal so the owner is told what to fix.
+  let summaryUnavailableReason = SUMMARY_UNAVAILABLE_MESSAGE;
 
   let selectedCategoryId = null;
   let selectedButton = null;
@@ -746,7 +749,7 @@
     summarizeBtn.appendChild(document.createTextNode("Summarize"));
     if (!summaryAvailable) {
       summarizeBtn.disabled = true;
-      summarizeBtn.title = SUMMARY_UNAVAILABLE_MESSAGE;
+      summarizeBtn.title = summaryUnavailableReason;
     } else {
       summarizeBtn.addEventListener("click", () => openSummary(bm, summarizeBtn));
     }
@@ -1346,10 +1349,14 @@
       .catch((err) => {
         if (seq !== summaryRequestSeq) return;
         if (err && err.status === 503) {
-          summaryAvailable = false; // the token isn't there; stop offering it as available
+          // No provider is available at all - stop offering the control.
+          summaryAvailable = false;
+          if (err.body && err.body.error) summaryUnavailableReason = err.body.error;
           renderSummaryUnavailable(err.body && err.body.error);
         } else {
-          renderSummaryError(bm);
+          // The provider is there but the call failed (CLI not logged in,
+          // quota, network). Keep the button enabled and show what to fix.
+          renderSummaryError(bm, err && err.body && err.body.error);
         }
       });
   }
@@ -1387,15 +1394,23 @@
     const fallback = el("div", "reader-fallback");
     fallback.setAttribute("role", "status");
     fallback.appendChild(el("span", "reader-fallback-icon", "🔑"));
-    fallback.appendChild(el("p", "reader-fallback-msg", message || SUMMARY_UNAVAILABLE_MESSAGE));
+    fallback.appendChild(
+      el("p", "reader-fallback-msg", message || summaryUnavailableReason),
+    );
     summaryBodyEl.replaceChildren(fallback);
   }
 
-  function renderSummaryError(bm) {
+  function renderSummaryError(bm, message) {
     const fallback = el("div", "reader-fallback");
     fallback.setAttribute("role", "alert");
     fallback.appendChild(el("span", "reader-fallback-icon", "⚠️"));
-    fallback.appendChild(el("p", "reader-fallback-msg", "Couldn't generate a summary. Please try again."));
+    fallback.appendChild(
+      el(
+        "p",
+        "reader-fallback-msg",
+        message || "Couldn't generate a summary. Please try again.",
+      ),
+    );
     const retry = el("button", "btn btn-secondary", "Retry");
     retry.type = "button";
     retry.addEventListener("click", () => fetchSummary(bm));
@@ -1417,11 +1432,12 @@
     summaryBackdropEl.addEventListener("click", closeSummary);
   }
 
-  /** Check once whether summaries are enabled server-side (a Claude token is configured). */
+  /** Check once whether summaries are enabled server-side (an LLM provider is available). */
   async function loadSummaryStatus() {
     try {
       const data = await getJSON("/api/summary-status");
       summaryAvailable = Boolean(data.available);
+      if (data.reason) summaryUnavailableReason = data.reason;
     } catch (_) {
       // Leave the optimistic default; the endpoint itself still degrades
       // gracefully (503) if a summary is actually requested.
