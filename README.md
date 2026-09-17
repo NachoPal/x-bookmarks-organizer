@@ -141,6 +141,20 @@ node dist/index.js recategorize
 
 (X credentials are not needed for `recategorize` - it only re-reads the local database.)
 
+**Backfill previews** (optional) - a normal `run` already fetches and caches article link metadata
+for new bookmarks, but bookmarks synced before the previews feature (#26) existed have none, so
+their posts show a bare link instead of a preview card / "Read article". Run this once against an
+existing library to fetch and cache metadata for those without touching categories, the taxonomy,
+or re-fetching from X:
+
+```bash
+node dist/index.js backfill-previews
+# or: node dist/index.js backfill-previews --retry-failed   (also retries links cached as failed)
+```
+
+It is idempotent - safe to re-run; already-cached links (`ok`, and `failed` unless `--retry-failed`
+is passed) are skipped. Prints a summary of links found / fetched / cached / failed.
+
 **3. Browse** (the web viewer needs no X secrets - browsing and cached summaries work without any):
 
 ```bash

@@ -242,7 +242,8 @@ keeps the list endpoint a fast, offline-testable pure cache read with no network
 of its own (and is why `ServerOptions.articleFetcher` is untouched by this feature - it still
 only backs the on-demand `/article` and `/summary` endpoints). A bookmark whose link predates
 issue #25, or hasn't been through `recategorize` yet, shows no preview/control until it has -
-the same documented backfill path issue #25 already established. `resolveManyArticleLinkMetadata`
+see issue #39 below for the lightweight way to backfill this without a full `recategorize`.
+`resolveManyArticleLinkMetadata`
 (concurrency-bounded, dedup'd by URL) is the shared worker-pool ingest uses; the server does
 not call it, since it never fetches.
 
@@ -253,6 +254,22 @@ thumbnail when `preview.image` is null (and hiding it client-side too if the ima
 box. Clicking it calls the same `openReader` as the "Read article" text button. Both are
 gated identically off `bm.hasArticle`, which is `preview !== null` server-side, itself
 `metadata?.status === 'ok' && metadata.title` truthy - see `toPreview` in `server.ts`.
+
+## Metadata backfill for a pre-existing library (issue #39)
+
+`node dist/index.js backfill-previews` (`src/articles/backfill.ts`'s `backfillArticlePreviews`,
+wired in `src/index.ts` next to `run`/`recategorize`) fetches + caches `article_link_metadata` for
+already-stored bookmarks whose link has no cached row (or is cached `failed`, with `--retry-failed`)
+- for a library synced before issues #25/#26 existed, so previews/"Read article" only need this,
+never a full `recategorize` (which would also re-run the Opus taxonomy pass and reshuffle the
+tree). It touches ONLY the URL-keyed metadata cache - no bookmark, category, or taxonomy row is
+read or written - and reuses `resolveManyArticleLinkMetadata`/`resolveArticleLinkMetadata`
+(`src/articles/link-metadata.ts`) exactly as ingest and the viewer do, via a cache view that reports
+the selected urls as uncached so the real fetch-or-cache path runs unmodified; it is not a second
+fetcher. Idempotent and resumable: a url already cached `ok` (or `failed` without `--retry-failed`)
+is skipped, so re-running only touches what's still missing. A normal `run` already backfills new
+bookmarks as it ingests them (via `buildArticleContext`), so this command is only needed once per
+backlog, or again after `--retry-failed` if links were down and are now reachable.
 
 ## Live vs. tested
 

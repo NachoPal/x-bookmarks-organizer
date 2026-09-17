@@ -112,6 +112,14 @@ Re-categorize all stored bookmarks from scratch (optional; no X fetch, read stat
 node dist/index.js recategorize
 ```
 
+If your library predates the article previews feature, backfill link metadata for already-stored
+bookmarks so their preview cards / "Read article" appear (no X fetch, no category/taxonomy
+changes, idempotent - safe to re-run):
+
+```bash
+node dist/index.js backfill-previews
+```
+
 Start the local web viewer (no X secrets needed - browsing and cached summaries work without any)
 and open the printed URL:
 
