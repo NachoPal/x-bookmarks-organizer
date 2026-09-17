@@ -593,6 +593,8 @@ describe('GET /api/bookmarks/:id/summary', () => {
       [
         { ...bm('1'), text: 'Just some thoughts, no links here.' },
         { ...bm('2'), text: 'Read this: https://example.com/articles/one' },
+        // A bare-link post: the whole text is a t.co URL and nothing else.
+        { ...bm('3'), text: 'https://t.co/aBcD1234Xy' },
       ],
       () => [evals.id],
     );
@@ -687,6 +689,74 @@ describe('GET /api/bookmarks/:id/summary', () => {
     expect(generator.calls[0].articleText).toContain('Article body.');
     // The article fetch is cached too, reusing the reader-view cache.
     expect(db.getArticleForBookmark(b2.id)?.status).toBe('ok');
+  });
+
+  // Regression for the "I can't access external URLs, so I'm unable to read the
+  // content of that X post" refusal the owner saw in the summary modal. The
+  // `claude-cli` adapter runs hardened with `--tools ""` (no web fetch, by
+  // design), so a prompt whose only content is a link is unanswerable: the
+  // model asked for the text to be pasted in, and that refusal was then stored
+  // as the bookmark's summary. The endpoint must settle this itself instead.
+  it('returns a clean "nothing to summarize" message, without calling the model, for a bare-link post whose link is not a readable article', async () => {
+    const generator = new FakeSummaryGenerator('should never be generated');
+    const fetcher = new FakeArticleFetcher({
+      status: 'failed',
+      reason: 'This link points to a post on X, not an article.',
+    });
+    await setup({ summaryGenerator: generator, articleFetcher: fetcher });
+    const b3 = db.getBookmarkByPostId('3')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b3.id}/summary` });
+
+    expect(res.statusCode).toBe(422);
+    const body = res.json() as { error: string };
+    expect(body.error).toMatch(/nothing to summarize/i);
+    expect(body.error).not.toMatch(/paste|unable to read|can't access/i);
+    // The model is never asked to summarize a URL it cannot open...
+    expect(generator.calls).toHaveLength(0);
+    // ...and nothing is cached, so a later backfill of the link's metadata can
+    // still produce a real summary.
+    expect(db.getSummaryForBookmark(b3.id)).toBeUndefined();
+  });
+
+  it('summarizes a bare-link post from the cached link metadata when the article body could not be read', async () => {
+    const generator = new FakeSummaryGenerator('A metadata-based summary.');
+    const fetcher = new FakeArticleFetcher({ status: 'failed', reason: 'Fetch timed out.' });
+    await setup({ summaryGenerator: generator, articleFetcher: fetcher });
+    db.saveArticleLinkMetadata({
+      url: 'https://t.co/aBcD1234Xy',
+      status: 'ok',
+      title: 'Why Evals Beat Vibes',
+      description: 'A case for treating prompt edits like code edits.',
+      image: null,
+      siteName: 'Example',
+      fetchedAt: new Date().toISOString(),
+    });
+    const b3 = db.getBookmarkByPostId('3')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b3.id}/summary` });
+
+    expect(res.statusCode).toBe(200);
+    expect(generator.calls).toHaveLength(1);
+    expect(generator.calls[0].articleTitle).toBe('Why Evals Beat Vibes');
+    expect(generator.calls[0].articleDescription).toBe(
+      'A case for treating prompt edits like code edits.',
+    );
+  });
+
+  it('still summarizes a post that has prose alongside its link', async () => {
+    const generator = new FakeSummaryGenerator('A summary from the prose.');
+    const fetcher = new FakeArticleFetcher({ status: 'failed', reason: 'Fetch timed out.' });
+    await setup({ summaryGenerator: generator, articleFetcher: fetcher });
+    const b2 = db.getBookmarkByPostId('2')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b2.id}/summary` });
+
+    expect(res.statusCode).toBe(200);
+    expect(generator.calls).toHaveLength(1);
+    expect((res.json() as { summary: { summary: string } }).summary.summary).toBe(
+      'A summary from the prose.',
+    );
   });
 
   it('returns 502 (not a crash) when the generator fails, and does not cache the failure', async () => {

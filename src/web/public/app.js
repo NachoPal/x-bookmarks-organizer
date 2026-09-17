@@ -1353,6 +1353,11 @@
           summaryAvailable = false;
           if (err.body && err.body.error) summaryUnavailableReason = err.body.error;
           renderSummaryUnavailable(err.body && err.body.error);
+        } else if (err && err.status === 422) {
+          // The bookmark holds nothing summarizable (a link-only post whose
+          // link could not be read). Not a failure - an explanation, with no
+          // Retry, since retrying cannot change the answer.
+          renderSummaryNothing(err.body && err.body.error);
         } else {
           // The provider is there but the call failed (CLI not logged in,
           // quota, network). Keep the button enabled and show what to fix.
@@ -1396,6 +1401,27 @@
     fallback.appendChild(el("span", "reader-fallback-icon", "🔑"));
     fallback.appendChild(
       el("p", "reader-fallback-msg", message || summaryUnavailableReason),
+    );
+    summaryBodyEl.replaceChildren(fallback);
+  }
+
+  /**
+   * The "nothing to summarize" state: a calm explanation, not an error. Reuses
+   * the reader modal's fallback layout (and its tokens) and deliberately omits
+   * a Retry - the server settled this without calling the model, so a repeat
+   * request returns the same answer.
+   */
+  function renderSummaryNothing(message) {
+    const fallback = el("div", "reader-fallback");
+    fallback.setAttribute("role", "status");
+    fallback.appendChild(el("span", "reader-fallback-icon", "📄"));
+    fallback.appendChild(
+      el(
+        "p",
+        "reader-fallback-msg",
+        message ||
+          "Nothing to summarize: this bookmark has no readable text or article content.",
+      ),
     );
     summaryBodyEl.replaceChildren(fallback);
   }
