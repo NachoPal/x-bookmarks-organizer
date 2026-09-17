@@ -14,9 +14,13 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 /** Fallback batch size when no explicit page size is configured. */
 const DEFAULT_PAGE_SIZE = 20;
 
-/** Shown when a summary is requested but no summary generator is configured (no Claude token). */
+/** Shown when a summary is requested but Claude isn't available (no CLI on PATH, no token). */
 const SUMMARY_UNAVAILABLE_MESSAGE =
-  'Run the viewer with `av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve` to enable summaries.';
+  "Claude isn't available - install and log in to the `claude` CLI, or set CLAUDE_CODE_OAUTH_TOKEN, then restart the viewer.";
+
+/** Shown when Claude is available but a specific call genuinely failed (auth, CLI missing, etc). */
+const SUMMARY_CALL_FAILED_MESSAGE =
+  "Couldn't reach Claude - make sure the `claude` CLI is installed and logged in (or CLAUDE_CODE_OAUTH_TOKEN is set), then try again.";
 
 /** Options controlling viewer behavior; page size defaults to {@link DEFAULT_PAGE_SIZE}. */
 export interface ServerOptions {
@@ -24,9 +28,9 @@ export interface ServerOptions {
   /** Injectable so tests can fake the network fetch; defaults to the real HTTP fetcher. */
   articleFetcher?: ArticleFetcher;
   /**
-   * Generates on-demand bookmark summaries. Undefined when
-   * `CLAUDE_CODE_OAUTH_TOKEN` is not present in the environment, in which case
-   * the summary endpoint degrades gracefully (503) instead of crashing.
+   * Generates on-demand bookmark summaries. Undefined when Claude isn't
+   * available (no `claude` CLI on PATH and no token), in which case the
+   * summary endpoint degrades gracefully (503) instead of crashing.
    */
   summaryGenerator?: SummaryGenerator;
 }
@@ -248,17 +252,17 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     return { article: record };
   });
 
-  // Whether the owner can generate NEW summaries right now (a Claude token is
-  // configured). The client checks this once to disable/tooltip the
-  // Summarize button proactively; the summary endpoint below also degrades
-  // gracefully on its own if called anyway.
+  // Whether the owner can generate NEW summaries right now (Claude is
+  // available - CLI on PATH, or a token set). The client checks this once to
+  // disable/tooltip the Summarize button proactively; the summary endpoint
+  // below also degrades gracefully on its own if called anyway.
   app.get('/api/summary-status', async () => ({ available: Boolean(summaryGenerator) }));
 
   // The on-demand LLM summary for a bookmark: served from cache once
   // generated. Article-aware when the bookmark's link is an article - the
   // article is fetched/cached the same way the reader view does, so a
   // bookmark whose article was never opened still gets an article-aware
-  // summary. 503 (not 500) signals the graceful no-token degradation the
+  // summary. 503 (not 500) signals the graceful unavailable-Claude degradation the
   // owner sees as a clear message rather than a crash or a hang.
   app.get<{ Params: { id: string } }>('/api/bookmarks/:id/summary', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10);
@@ -288,7 +292,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         articleText: readableArticle ? htmlToPlainText(readableArticle.contentHtml ?? '') : null,
       });
     } catch {
-      return reply.code(502).send({ error: 'Could not generate a summary. Please try again.' });
+      return reply.code(502).send({ error: SUMMARY_CALL_FAILED_MESSAGE });
     }
 
     const record: SummaryRecord = {

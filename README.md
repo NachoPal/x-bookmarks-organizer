@@ -15,9 +15,10 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
   user context). Incremental: it pages the bookmark timeline newest-first and stops as soon as it
   reaches a bookmark it has already stored, so previously seen bookmarks are never re-fetched or
   re-categorized.
-- **Categorization** - runs on your **Claude subscription** (via the `claude` CLI in headless mode
-  with `CLAUDE_CODE_OAUTH_TOKEN`), **not** the pay-per-use Anthropic API - so it adds no per-call
-  dollar cost. It works in **two passes**:
+- **Categorization** - runs on your **Claude subscription** (via the `claude` CLI in headless mode),
+  **not** the pay-per-use Anthropic API - so it adds no per-call dollar cost. It works whenever the
+  `claude` CLI is installed and logged in; a headless machine with no interactive login can instead
+  set `CLAUDE_CODE_OAUTH_TOKEN`. It works in **two passes**:
   1. **Taxonomy design (holistic).** All bookmarks are shown to the model at once, as a compact
      list, and it designs one coherent, genuinely nested category tree with complete freedom over
      the labels and structure, targeting a minimum nesting depth (`XBOOKMARKS_MIN_DEPTH`, default
@@ -47,15 +48,19 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
 - **Summaries** - click "Summarize" on a bookmark for an on-demand LLM summary of its content (the
   post, plus its extracted article when the reader view can read it) in a large modal. Generated on
   the Claude subscription the same way categorization is, and cached in SQLite so re-opening is
-  instant and free. Needs `CLAUDE_CODE_OAUTH_TOKEN` at `serve` time (see Secrets below); without it
+  instant and free. Enabled whenever Claude is available at `serve` time - the `claude` CLI is
+  installed and logged in, or `CLAUDE_CODE_OAUTH_TOKEN` is set (see Secrets below); without either
   the button is disabled with a tooltip explaining why, and everything else in the viewer still
-  works.
+  works. If a call genuinely fails (not logged in, CLI missing, etc.) the modal shows a clear error
+  with a retry, instead of the button being pre-disabled.
 
 ## Prerequisites
 
 - Node.js >= 20
-- The `claude` CLI on your `PATH` (used for categorization on your subscription)
-- [Automic Vault](docs/setup.md) (`av`) holding the three secrets below
+- The `claude` CLI on your `PATH`, logged in (used for categorization and summaries, on your
+  subscription) - or `CLAUDE_CODE_OAUTH_TOKEN` set for a headless machine
+- The two X app secrets below, from any source that sets env vars (Automic Vault, a `.env` file,
+  your shell, CI secrets, ...) - see [`docs/setup.md`](docs/setup.md)
 - A pay-per-use X API app - see [`docs/setup.md`](docs/setup.md)
 
 ## Install & build
@@ -67,20 +72,31 @@ npm run build
 
 ## Secrets
 
-All secrets are injected at run time from Automic Vault into the process environment. They are
-**never** read from a committed file and **never** written to disk.
+The X app credentials are the only secrets this tool must hold; they are read **only** from the
+process environment, **never** from a committed file, and **never** written to disk. Claude is
+different: it is not a secret this tool holds at all, just a capability it probes - see "Claude
+availability" below.
 
 | Env var                   | What                                             |
 | ------------------------- | ------------------------------------------------ |
 | `XBOOKMARKS_CLIENT_ID`     | X OAuth 2.0 app Client ID                        |
 | `XBOOKMARKS_CLIENT_SECRET` | X OAuth 2.0 app Client Secret                    |
-| `CLAUDE_CODE_OAUTH_TOKEN`  | Claude subscription token (for categorization)   |
+| `CLAUDE_CODE_OAUTH_TOKEN`  | Optional: Claude subscription token, only needed on a headless machine with no interactive `claude` login |
 
-The documented run command wraps every invocation with `av inject`:
+Set these however you provide env vars - export them, a `.env` file, your CI's secrets, or a
+secrets manager (e.g. Automic Vault's `av inject`). The commands below use `av inject` as one
+example; swap in whatever you use:
 
 ```bash
-av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js
+av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
 ```
+
+### Claude availability
+
+Categorization and summaries need Claude to be usable - they check for the `claude` CLI on `PATH`
+(logged in) or `CLAUDE_CODE_OAUTH_TOKEN` in the environment, whichever is present. If you already
+use the `claude` CLI interactively, no token is needed at all: the app just works. Set
+`CLAUDE_CODE_OAUTH_TOKEN` only for a headless box with no interactive login.
 
 ## Usage
 
@@ -88,13 +104,13 @@ av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOK
 runs are headless):
 
 ```bash
-av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js login
+av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js login
 ```
 
 **2. Ingest + categorize** (the default command; run this whenever - roughly weekly):
 
 ```bash
-av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js
+av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
 ```
 
 It prints a summary: how many new bookmarks, how many batches, how many new categories.
@@ -104,24 +120,21 @@ from scratch, without re-fetching from X. Use this to redo a shallow earlier run
 the taxonomy model / depth settings. Read state and read dates are preserved:
 
 ```bash
-av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js recategorize
+node dist/index.js recategorize
 ```
 
 (X credentials are not needed for `recategorize` - it only re-reads the local database.)
 
 **3. Browse** (the web viewer does not need any secrets - browsing and cached summaries work
-without one):
+regardless, and new summaries work automatically if Claude is available):
 
 ```bash
 node dist/index.js serve
 # then open http://127.0.0.1:5173
 ```
 
-To also generate NEW summaries, run `serve` with the Claude token:
-
-```bash
-av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve
-```
+If the `claude` CLI isn't installed/logged in and no token is set, the Summarize button is
+disabled with a tooltip explaining why; everything else keeps working.
 
 ## Configuration (optional env vars)
 

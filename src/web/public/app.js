@@ -38,10 +38,10 @@
   let summaryRequestSeq = 0;
   // Optimistic default: corrected once /api/summary-status resolves. A stale
   // "true" is still safe - the endpoint itself degrades gracefully (503) if
-  // called without a token, and that renders the same message in the modal.
+  // Claude isn't available, and that renders the same message in the modal.
   let summaryAvailable = true;
   const SUMMARY_UNAVAILABLE_MESSAGE =
-    "Run the viewer with `av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve` to enable summaries.";
+    "Claude isn't available - install and log in to the `claude` CLI, or set CLAUDE_CODE_OAUTH_TOKEN.";
 
   let selectedCategoryId = null;
   let selectedButton = null;
@@ -1346,7 +1346,7 @@
       .catch((err) => {
         if (seq !== summaryRequestSeq) return;
         if (err && err.status === 503) {
-          summaryAvailable = false; // the token isn't there; stop offering it as available
+          summaryAvailable = false; // Claude isn't available; stop offering it as available
           renderSummaryUnavailable(err.body && err.body.error);
         } else {
           renderSummaryError(bm);
@@ -1417,7 +1417,7 @@
     summaryBackdropEl.addEventListener("click", closeSummary);
   }
 
-  /** Check once whether summaries are enabled server-side (a Claude token is configured). */
+  /** Check once whether summaries are enabled server-side (Claude is available). */
   async function loadSummaryStatus() {
     try {
       const data = await getJSON("/api/summary-status");

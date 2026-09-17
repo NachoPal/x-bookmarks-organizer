@@ -2,7 +2,7 @@
 import { loadConfig, requireXCredentials, type Config } from './config';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
-import { Categorizer, createClaudeCliRunner } from './categorize/llm';
+import { Categorizer, createClaudeCliRunner, isClaudeAvailable } from './categorize/llm';
 import { LlmTaxonomyDesigner } from './categorize/taxonomy';
 import { recategorizeAll, runIngest } from './ingest';
 import { startServer } from './web/server';
@@ -18,8 +18,12 @@ Usage:
   node dist/index.js serve       Start the local web viewer
   node dist/index.js help        Show this help
 
-Secrets are injected via Automic Vault, e.g.:
-  av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js
+X credentials (XBOOKMARKS_CLIENT_ID / XBOOKMARKS_CLIENT_SECRET) must be in the environment.
+Provide them however you like - e.g. via Automic Vault:
+  av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
+
+Categorization needs Claude to be usable: either the \`claude\` CLI is installed and logged
+in, or CLAUDE_CODE_OAUTH_TOKEN is set for a headless machine.
 `;
 
 /** Build the two categorization passes' collaborators from config. */
@@ -39,11 +43,13 @@ function buildCategorizers(config: Config) {
   return { taxonomer, categorizer };
 }
 
-/** Assert the Claude subscription token is present (categorization needs it). */
-function requireClaudeToken(config: Config): void {
-  if (!config.claudeToken) {
+/** Assert Claude is usable (categorization needs it): CLI on PATH, or a token set. */
+function requireClaudeAvailable(config: Config): void {
+  if (!isClaudeAvailable(config)) {
     throw new Error(
-      'Missing CLAUDE_CODE_OAUTH_TOKEN. Categorization runs on your Claude subscription, so this token is required.',
+      'Claude is not available: the `claude` CLI was not found on PATH and no CLAUDE_CODE_OAUTH_TOKEN ' +
+        'is set. Install and log in to the `claude` CLI (https://claude.com/claude-code), or set ' +
+        'CLAUDE_CODE_OAUTH_TOKEN however you provide env vars, e.g. `av inject +CLAUDE_CODE_OAUTH_TOKEN -- ...`.',
     );
   }
 }
@@ -56,7 +62,7 @@ async function cmdLogin(config: Config, db: Database): Promise<void> {
 
 async function cmdRun(config: Config, db: Database): Promise<void> {
   requireXCredentials(config);
-  requireClaudeToken(config);
+  requireClaudeAvailable(config);
   const client = await getAuthenticatedClient(config, db);
   const { taxonomer, categorizer } = buildCategorizers(config);
 
@@ -78,7 +84,7 @@ async function cmdRun(config: Config, db: Database): Promise<void> {
 }
 
 async function cmdRecategorize(config: Config, db: Database): Promise<void> {
-  requireClaudeToken(config);
+  requireClaudeAvailable(config);
   const { taxonomer, categorizer } = buildCategorizers(config);
 
   const summary = await recategorizeAll({
@@ -100,10 +106,12 @@ async function cmdRecategorize(config: Config, db: Database): Promise<void> {
 
 async function cmdServe(config: Config, db: Database): Promise<void> {
   // Summaries reuse the assignment-pass model (Haiku-class, for cost) and the
-  // same subscription-only `claude` CLI runner as categorization. Without a
-  // token the viewer still serves everything else - the summary endpoint
-  // degrades gracefully instead of the server needing this secret to start.
-  const summaryGenerator = config.claudeToken
+  // same subscription-only `claude` CLI runner as categorization. Claude is
+  // probed as a capability (CLI on PATH, or a token for a headless box), not
+  // required as a secret - without either, the viewer still serves everything
+  // else and the summary endpoint degrades gracefully instead of the server
+  // needing this to start.
+  const summaryGenerator = isClaudeAvailable(config)
     ? new ClaudeSummaryGenerator(createClaudeCliRunner(config.categorizeModel))
     : undefined;
   const app = await startServer(db, config.webPort, '127.0.0.1', {
@@ -113,8 +121,8 @@ async function cmdServe(config: Config, db: Database): Promise<void> {
   console.log(`Web viewer running at http://127.0.0.1:${config.webPort}`);
   if (!summaryGenerator) {
     console.log(
-      'Summaries disabled (no CLAUDE_CODE_OAUTH_TOKEN). Run with ' +
-        '`av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve` to enable them.',
+      'Summaries disabled: the `claude` CLI was not found on PATH and no CLAUDE_CODE_OAUTH_TOKEN is set. ' +
+        'Install and log in to the `claude` CLI, or set CLAUDE_CODE_OAUTH_TOKEN, then restart `serve`.',
     );
   }
   console.log('Press Ctrl+C to stop.');

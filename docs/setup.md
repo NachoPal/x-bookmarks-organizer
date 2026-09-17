@@ -29,35 +29,40 @@ bookmark reads.
 > Categorization is separate and costs **no** X credit and **no** Anthropic API dollars - it runs on
 > your existing Claude subscription. See step 4.
 
-## 3. Store the three secrets in Automic Vault (one time)
+## 3. Provide the two X app secrets (one time)
 
-The tool reads all secrets from the environment; Automic Vault (`av`) injects them at run time so
-nothing is ever written to disk or committed. Store these three keys in your vault:
+The tool reads these **only** from the process environment - never from a committed file, never
+written to disk. Provide them however you already manage secrets (export them, a `.env` file, CI
+secrets, or a manager such as Automic Vault's `av inject`):
 
-| Vault key                  | Value                                                            |
-| -------------------------- | ---------------------------------------------------------------- |
+| Env var                    | Value                                                            |
+| --------------------------- | ---------------------------------------------------------------- |
 | `XBOOKMARKS_CLIENT_ID`      | X app OAuth 2.0 Client ID (from step 1)                          |
 | `XBOOKMARKS_CLIENT_SECRET`  | X app OAuth 2.0 Client Secret (from step 1)                      |
-| `CLAUDE_CODE_OAUTH_TOKEN`   | Your Claude subscription token (from step 4)                     |
 
-Every command that touches X or the LLM is wrapped with:
+Using Automic Vault as an example, every command that touches X is wrapped with:
 
 ```bash
-av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- <command>
+av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- <command>
 ```
 
-## 4. Get the Claude subscription token (one time)
+## 4. Claude availability (usually nothing to do)
 
-Categorization runs on your Claude subscription via the `claude` CLI, not the paid Anthropic API.
-Generate a long-lived subscription token:
+Categorization and summaries run on your Claude subscription via the `claude` CLI, not the paid
+Anthropic API. The tool **probes** for Claude rather than requiring a secret: if the `claude` CLI
+is on your `PATH` and logged in (which it is if you already use it interactively), everything
+just works - no token, no vault entry needed.
+
+Only on a **headless** machine with no interactive `claude` login do you need a token. Generate
+one:
 
 ```bash
 claude setup-token
 ```
 
-Store the resulting token in the vault as `CLAUDE_CODE_OAUTH_TOKEN` (step 3). The tool passes this
-to the `claude` CLI in headless mode and never sets `ANTHROPIC_API_KEY`, so no pay-per-use API
-billing can occur.
+and set it as `CLAUDE_CODE_OAUTH_TOKEN` however you provide env vars (e.g. `av inject
++CLAUDE_CODE_OAUTH_TOKEN -- <command>`). The tool passes this through to the `claude` CLI in
+headless mode and never sets `ANTHROPIC_API_KEY`, so no pay-per-use API billing can occur.
 
 ## 5. Build the tool
 
@@ -73,7 +78,7 @@ Run the login command once. It opens your browser to X's consent screen, receive
 (gitignored). All later runs are headless.
 
 ```bash
-av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js login
+av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js login
 ```
 
 ## 7. Run and browse
@@ -81,34 +86,34 @@ av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOK
 Ingest + categorize (repeat whenever, roughly weekly):
 
 ```bash
-av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js
+av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
 ```
 
 Re-categorize all stored bookmarks from scratch (optional; no X fetch, read state preserved):
 
 ```bash
-av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js recategorize
+node dist/index.js recategorize
 ```
 
-Start the local web viewer (no secrets needed - browsing and cached summaries work without one)
-and open the printed URL:
+Start the local web viewer and open the printed URL. It needs no secrets to browse; if Claude is
+available (per step 4), on-demand summaries work automatically too:
 
 ```bash
 node dist/index.js serve
 # http://127.0.0.1:5173
 ```
 
-To also generate NEW on-demand summaries (the "Summarize" button), pass the Claude token:
-
-```bash
-av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve
-```
+If Claude isn't available (`claude` CLI missing/not logged in, and no token set), the "Summarize"
+button is disabled with a tooltip explaining why - everything else still works.
 
 ## Troubleshooting
 
 - **"Not logged in to X yet"** - run the `login` command (step 6) first.
-- **"Missing required secret(s)"** - you ran the command without `av inject`, or a key is missing
-  from the vault.
+- **"Missing required secret(s)"** - `XBOOKMARKS_CLIENT_ID`/`XBOOKMARKS_CLIENT_SECRET` are not in
+  the environment; provide them via `av inject` or however you set env vars.
+- **"Claude is not available" / Summarize button disabled** - the `claude` CLI isn't on `PATH` or
+  isn't logged in, and `CLAUDE_CODE_OAUTH_TOKEN` isn't set. Run `claude` interactively to check
+  your login, or set the token per step 4.
 - **No refresh token returned at login** - confirm the X app is a *confidential* client and the
   `offline.access` scope is allowed.
 - **Embeds show only a link** - the post is deleted or from a protected account and cannot be

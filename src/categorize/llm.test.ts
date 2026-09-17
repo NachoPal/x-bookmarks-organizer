@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Categorizer, type LlmRunner } from './llm';
+import { Categorizer, isClaudeAvailable, isClaudeCliAvailable, type LlmRunner } from './llm';
 import type { RawBookmark } from '../types';
 
 const bm = (postId: string): RawBookmark => ({
@@ -52,5 +52,29 @@ describe('Categorizer', () => {
     expect(prompts[0]).not.toMatch(/create a NEW category/i);
     expect(prompts[1]).toMatch(/create a NEW category/i);
     expect(prompts[1]).toMatch(/prefer existing nodes/i);
+  });
+});
+
+describe('isClaudeCliAvailable', () => {
+  it('is true when the binary resolves and runs (using `node --version` as a stand-in)', () => {
+    expect(isClaudeCliAvailable('node')).toBe(true);
+  });
+
+  it('is false when the binary does not exist on PATH', () => {
+    expect(isClaudeCliAvailable('this-binary-does-not-exist-xyz')).toBe(false);
+  });
+});
+
+describe('isClaudeAvailable', () => {
+  it('is available when a token is set, even if the CLI probe fails', () => {
+    expect(isClaudeAvailable({ claudeToken: 'tok' }, () => false)).toBe(true);
+  });
+
+  it('is available when the CLI probe succeeds, even with no token set', () => {
+    expect(isClaudeAvailable({ claudeToken: undefined }, () => true)).toBe(true);
+  });
+
+  it('is unavailable when there is no token and the CLI probe fails', () => {
+    expect(isClaudeAvailable({ claudeToken: undefined }, () => false)).toBe(false);
   });
 });

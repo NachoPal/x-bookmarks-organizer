@@ -3,9 +3,12 @@ import path from 'node:path';
 /**
  * Runtime configuration for the tool.
  *
- * Secrets are ONLY ever read from the process environment (injected by Automic
- * Vault at run time). They are never read from a committed file and never
- * written to disk. See README "Secrets" for the `av inject` run command.
+ * The X app secrets are ONLY ever read from the process environment (however
+ * you provide it - `av inject`, a `.env` file, your shell, CI secrets, ...).
+ * They are never read from a committed file and never written to disk. See
+ * README "Secrets". Claude is not held as a secret at all: it is a probed
+ * capability (see {@link import('./categorize/llm').isClaudeAvailable}) -
+ * `claudeToken` below is only an optional override for a headless machine.
  */
 export interface Config {
   /** X OAuth 2.0 app Client ID (env: XBOOKMARKS_CLIENT_ID). */
@@ -13,9 +16,10 @@ export interface Config {
   /** X OAuth 2.0 app Client Secret (env: XBOOKMARKS_CLIENT_SECRET). */
   xClientSecret: string;
   /**
-   * Claude subscription token (env: CLAUDE_CODE_OAUTH_TOKEN). Passed through to
-   * the `claude` CLI so categorization runs on the subscription, not the paid
-   * API. NOT required for the web viewer.
+   * Claude subscription token (env: CLAUDE_CODE_OAUTH_TOKEN). Optional -
+   * passed through to the `claude` CLI when set, for a headless machine with
+   * no interactive login. Most users need neither this nor the web viewer:
+   * an already-logged-in `claude` CLI is enough (see `isClaudeAvailable`).
    */
   claudeToken: string | undefined;
   /** Absolute path to the local SQLite database file. */
@@ -111,8 +115,8 @@ export function requireXCredentials(config: Config): void {
   if (missing.length > 0) {
     throw new Error(
       `Missing required secret(s): ${missing.join(', ')}. ` +
-        'Run via Automic Vault, e.g.\n' +
-        '  av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js',
+        'Set them however you provide env vars, e.g. via Automic Vault:\n' +
+        '  av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js',
     );
   }
 }

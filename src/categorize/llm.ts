@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import type { ArticleContext } from '../articles/link-metadata';
 import type { Assignment, RawBookmark } from '../types';
 import { buildExtendPrompt, buildPrompt, parseAssignments } from './prompt';
@@ -53,6 +53,32 @@ export interface ClaudeCliOptions {
   effort?: string;
   /** Override the `claude` binary (defaults to `claude` on PATH). */
   claudeBin?: string;
+}
+
+/**
+ * Cheap capability probe: does the `claude` binary resolve on PATH and run at
+ * all? This only proves the binary is present and executable - not that it is
+ * authenticated. A user with the CLI installed has, by definition, logged in
+ * to it already; a genuine auth failure still surfaces at call time with a
+ * clear error rather than being pre-guessed here.
+ */
+export function isClaudeCliAvailable(claudeBin = 'claude'): boolean {
+  const result = spawnSync(claudeBin, ['--version'], { stdio: 'ignore', timeout: 5000 });
+  return result.error === undefined && result.status === 0;
+}
+
+/**
+ * Whether Claude is usable at all right now: either a token is configured
+ * (for a headless box with no interactive `claude` login), or the CLI itself
+ * resolves and runs. This is the single gate every LLM feature (summaries,
+ * categorization, future features) should check instead of requiring a token
+ * outright.
+ */
+export function isClaudeAvailable(
+  config: { claudeToken?: string },
+  probe: () => boolean = isClaudeCliAvailable,
+): boolean {
+  return Boolean(config.claudeToken) || probe();
 }
 
 export function createClaudeCliRunner(model: string, options: ClaudeCliOptions = {}): LlmRunner {

@@ -597,14 +597,29 @@ describe('GET /api/bookmarks/:id/summary', () => {
     );
   });
 
-  it('degrades gracefully (503, clear message) when no CLAUDE_CODE_OAUTH_TOKEN/generator is configured', async () => {
+  it('degrades gracefully (503, clear message) when no summary generator is configured', async () => {
     await setup({});
     const b1 = db.getBookmarkByPostId('1')!;
     const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
     expect(res.statusCode).toBe(503);
     const body = res.json() as { error: string };
-    expect(body.error).toMatch(/av inject/i);
-    // Never cached: a token becoming available later should still work.
+    expect(body.error).toMatch(/claude/i);
+    expect(body.error).not.toMatch(/av inject/i);
+    // Never cached: Claude becoming available later should still work.
+    expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
+  });
+
+  it('returns a clear, tool-agnostic error (502) when the generator call genuinely fails', async () => {
+    const generator = new FakeSummaryGenerator(new Error('claude CLI exited with code 1: not logged in'));
+    await setup({ summaryGenerator: generator });
+    const b1 = db.getBookmarkByPostId('1')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    expect(res.statusCode).toBe(502);
+    const body = res.json() as { error: string };
+    expect(body.error).toMatch(/claude/i);
+    expect(body.error).not.toMatch(/av inject/i);
+    // Never cached: a transient failure should still be retryable.
     expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
   });
 
