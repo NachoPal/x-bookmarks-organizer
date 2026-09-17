@@ -11,6 +11,8 @@ import { LlmSummaryGenerator } from './summarize/summarizer';
 import { billingLabel, createLlmFactory, type LlmFactory } from './llm/factory';
 import { toRunner } from './llm/runner';
 import type { LlmRole } from './llm/types';
+import { backfillArticlePreviews } from './articles/backfill';
+import { HttpArticleFetcher } from './articles/fetch-article';
 
 const HELP = `X Bookmarks Organizer
 
@@ -20,6 +22,13 @@ Usage:
   node dist/index.js recategorize  Rebuild the taxonomy and reassign ALL stored
                                    bookmarks from scratch (no re-fetch from X)
   node dist/index.js serve       Start the local web viewer
+  node dist/index.js backfill-previews [--retry-failed]
+                                  Fetch + cache article link metadata for
+                                  already-stored bookmarks that predate the
+                                  previews feature. No categorization, no
+                                  taxonomy changes, no re-fetch from X.
+                                  --retry-failed also re-fetches links
+                                  previously cached as failed.
   node dist/index.js help        Show this help
 
 Secrets resolve through a layered chain, first hit wins: the environment (a
@@ -119,6 +128,18 @@ async function cmdRecategorize(config: Config, db: Database, store: CredentialSt
   console.log('Browse them with:  node dist/index.js serve');
 }
 
+async function cmdBackfillPreviews(db: Database): Promise<void> {
+  const retryFailed = process.argv.includes('--retry-failed');
+  const summary = await backfillArticlePreviews(db, new HttpArticleFetcher(), {
+    retryFailed,
+    logger: (msg) => console.log(msg),
+  });
+  console.log(
+    `\nDone. ${summary.totalLinks} article link(s) found, ${summary.fetched} fetched ` +
+      `(${summary.ok} ok, ${summary.failed} failed), ${summary.skipped} already cached.`,
+  );
+}
+
 async function cmdServe(config: Config, db: Database, store: CredentialStore): Promise<void> {
   // Summaries go through the same provider abstraction as categorization, on
   // the summary role's model. The button is offered whenever the provider says
@@ -174,6 +195,9 @@ async function main(): Promise<void> {
         break;
       case 'recategorize':
         await cmdRecategorize(config, db, store);
+        break;
+      case 'backfill-previews':
+        await cmdBackfillPreviews(db);
         break;
       case 'serve':
         await cmdServe(config, db, store);

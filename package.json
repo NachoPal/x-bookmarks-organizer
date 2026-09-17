@@ -18,6 +18,7 @@
     "start": "node dist/index.js",
     "serve": "node dist/index.js serve",
     "login": "node dist/index.js login",
+    "backfill-previews": "node dist/index.js backfill-previews",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
