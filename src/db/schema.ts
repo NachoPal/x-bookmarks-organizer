@@ -12,6 +12,10 @@
  *   several branches at once).
  * - `run_state` holds the incremental cursor/marker and the persisted X OAuth
  *   refresh token, so later runs are headless. The DB file is gitignored.
+ * - `deleted_bookmarks` is a tombstone of permanently-deleted post ids. A
+ *   deleted bookmark is removed from `bookmarks` outright (cascading its
+ *   category links), but its post id is kept here so incremental ingest never
+ *   mistakes it for new and re-fetches/re-stores it.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -55,5 +59,10 @@ CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
 CREATE TABLE IF NOT EXISTS run_state (
   key   TEXT PRIMARY KEY,
   value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS deleted_bookmarks (
+  post_id    TEXT PRIMARY KEY,
+  deleted_at TEXT NOT NULL
 );
 `;

@@ -387,6 +387,71 @@ describe('runIngest (two-pass)', () => {
   });
 });
 
+describe('deleted bookmarks are never resurrected', () => {
+  let db: Database;
+  beforeEach(() => {
+    db = new Database(':memory:');
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it('an incremental run never re-fetches/re-stores a deleted post', async () => {
+    // First run stores '1' and '2'.
+    const firstClient = new FakeXClient([bm('2'), bm('1')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['Everything']]));
+    const categorizer = new FakeCategorizer({ '1': [['Everything']], '2': [['Everything']] });
+    await runIngest({ db, client: firstClient, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+
+    const deleted = db.getBookmarkByPostId('1')!;
+    expect(db.deleteBookmark(deleted.id)).toBe(true);
+
+    // A later sync sees the same timeline again (X still has the bookmark -
+    // the tool is read-only against X and never un-bookmarks it there), plus
+    // one genuinely new post.
+    const secondClient = new FakeXClient([bm('3'), bm('2'), bm('1')]);
+    const summary = await runIngest({
+      db,
+      client: secondClient,
+      taxonomer,
+      categorizer: new FakeCategorizer({ '1': [['Everything']], '3': [['Everything']] }),
+      batchSize: 10,
+      maxDepth: 4,
+    });
+
+    // Only '3' is new; '1' must not come back despite still being on X.
+    expect(summary.newBookmarks).toBe(1);
+    expect(db.getBookmarkByPostId('1')).toBeUndefined();
+    expect(db.getBookmarkByPostId('3')).toBeDefined();
+  });
+
+  it('recategorize never reassigns or resurrects a deleted post', async () => {
+    const client = new FakeXClient([bm('2'), bm('1')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['Everything']]));
+    const categorizer = new FakeCategorizer({ '1': [['Everything']], '2': [['Everything']] });
+    await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+
+    const deleted = db.getBookmarkByPostId('1')!;
+    db.deleteBookmark(deleted.id);
+
+    const recatTaxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI']]));
+    const recatCategorizer = new FakeCategorizer({ '1': [['AI']], '2': [['AI']] });
+    const summary = await recategorizeAll({
+      db,
+      taxonomer: recatTaxonomer,
+      categorizer: recatCategorizer,
+      batchSize: 10,
+      maxDepth: 4,
+    });
+
+    // Recategorize never re-fetches from X; it only reassigns what is still
+    // stored, so the deleted post is neither seen nor brought back.
+    expect(summary.bookmarks).toBe(1);
+    expect(db.getBookmarkByPostId('1')).toBeUndefined();
+    expect(db.getBookmarkByPostId('2')).toBeDefined();
+  });
+});
+
 describe('recategorizeAll', () => {
   let db: Database;
   beforeEach(() => {

@@ -561,47 +561,66 @@
     if (!bm.read) card.classList.add("is-unread");
     card.dataset.bookmarkId = String(bm.id);
 
-    // Head: author + read pill
+    // Head: author + read/unread toggle chip
     const head = el("div", "bookmark-head");
     const author = el("span", "bookmark-author");
     author.append(document.createTextNode(bm.authorName || bm.authorUsername));
     author.appendChild(el("span", "bookmark-handle", ` @${bm.authorUsername}`));
-    const pill = renderPill(bm);
+    const pill = renderPill(bm, card);
     head.append(author, pill);
 
     // Embed slot with link fallback. Opening the fallback link also marks read.
     const slot = el("div", "embed-slot");
-    renderEmbed(slot, bm, () => markRead(bm, card));
+    renderEmbed(slot, bm, () => setRead(bm, card, true));
 
-    // Foot: open link (also marks read) + mark-read button
+    // Foot: open link (also marks read) + delete
     const foot = el("div", "bookmark-foot");
     const openLink = el("a", "link-external", "Open on X ↗");
     openLink.href = bm.url;
     openLink.target = "_blank";
     openLink.rel = "noopener noreferrer";
-    openLink.addEventListener("click", () => markRead(bm, card));
+    openLink.addEventListener("click", () => setRead(bm, card, true));
     foot.appendChild(openLink);
 
-    const readBtn = el("button", "btn btn-secondary mark-read-btn", "Mark as read");
-    readBtn.type = "button";
-    readBtn.addEventListener("click", () => markRead(bm, card, readBtn));
-    if (bm.read) readBtn.hidden = true;
-    foot.appendChild(readBtn);
+    const deleteBtn = el("button", "icon-btn delete-btn");
+    deleteBtn.type = "button";
+    deleteBtn.setAttribute("aria-label", "Delete bookmark");
+    deleteBtn.title = "Delete bookmark";
+    deleteBtn.appendChild(trashIcon());
+    deleteBtn.addEventListener("click", () => deleteBookmark(bm, card));
+    foot.appendChild(deleteBtn);
 
     card.append(head, slot, foot);
     return card;
   }
 
-  function renderPill(bm) {
-    const pill = el("span", "read-pill");
+  function trashIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-trash");
+    svg.innerHTML =
+      '<path d="M7.5 3.5h5M4 6h12M6 6l.6 9.4a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9L14 6M8.3 9v4M11.7 9v4" ' +
+      'fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />';
+    return svg;
+  }
+
+  /** The read/unread status chip, also the toggle button: a click flips it. */
+  function renderPill(bm, card) {
+    const pill = el("button", "read-pill");
+    pill.type = "button";
     if (bm.read) {
       const date = formatDate(bm.readAt);
       pill.textContent = date ? `Read ${date}` : "Read";
+      pill.setAttribute("aria-label", "Mark as unread");
     } else {
       pill.classList.add("is-unread");
       pill.appendChild(el("span", "dot"));
       pill.appendChild(document.createTextNode("Unread"));
+      pill.setAttribute("aria-label", "Mark as read");
     }
+    pill.addEventListener("click", () => setRead(bm, card, !bm.read));
     return pill;
   }
 
@@ -712,29 +731,43 @@
 
   // ---- read tracking -----------------------------------------------------
 
-  async function markRead(bm, card, button) {
-    if (bm.read) return;
-    if (button) {
-      button.classList.add("is-loading");
-      button.disabled = true;
+  /**
+   * Set a bookmark's read state (the chip toggles both ways; opening a post
+   * only ever sets it to read). Reflects the change immediately: the pill is
+   * swapped, counts are kept in step, the sidebar badges refresh, and a card
+   * that no longer matches the active Unread/Read filter drops out of view.
+   */
+  async function setRead(bm, card, read) {
+    if (bm.read === read) return;
+    const pillBtn = card.querySelector(".read-pill");
+    if (pillBtn) {
+      pillBtn.classList.add("is-loading");
+      pillBtn.disabled = true;
     }
     try {
-      const data = await getJSON2(`/api/bookmarks/${bm.id}/read`);
+      const data = await postJSON(`/api/bookmarks/${bm.id}/read`, { read });
       const updated = data.bookmark;
-      bm.read = true;
+      bm.read = updated.read;
       bm.readAt = updated.readAt;
-      // Keep local counts in step, then refresh the sidebar unread badges
-      // (preserving the active search query).
-      if (categoryCounts.unread > 0) categoryCounts.unread -= 1;
+      if (read) {
+        if (categoryCounts.unread > 0) categoryCounts.unread -= 1;
+      } else {
+        categoryCounts.unread += 1;
+      }
+      // Refresh the sidebar unread badges (preserving the active search query).
       loadTree();
-      if (readFilter === "unread") {
+
+      const dropsOut =
+        (readFilter === "unread" && bm.read) || (readFilter === "read" && !bm.read);
+      if (dropsOut) {
         // The card no longer belongs in the filtered view: drop it out. That
-        // row also leaves the server-side unread set, so shift the offset back
-        // by one to keep the next batch aligned.
+        // row also leaves the server-side filtered set, so shift the offset
+        // back by one to keep the next batch aligned.
         card.remove();
         pageOffset = Math.max(0, pageOffset - 1);
         if (listEl.querySelector(".bookmark-card")) {
           renderCountLine();
+          updateTail(); // keep the "N shown" end-of-list marker in step
         } else if (pageHasMore) {
           // Emptied the visible view but more remain: pull the next batch in.
           renderCountLine();
@@ -745,27 +778,123 @@
           stateMessage(listEl, "empty", emptyFilterMessage());
         }
       } else {
-        card.classList.remove("is-unread");
+        card.classList.toggle("is-unread", !bm.read);
         const head = card.querySelector(".bookmark-head");
         const oldPill = head.querySelector(".read-pill");
-        if (oldPill) oldPill.replaceWith(renderPill(bm));
-        const btn = card.querySelector(".mark-read-btn");
-        if (btn) btn.hidden = true;
+        if (oldPill) oldPill.replaceWith(renderPill(bm, card));
         renderCountLine();
       }
     } catch (err) {
-      if (button) {
-        button.classList.remove("is-loading");
-        button.disabled = false;
+      if (pillBtn) {
+        pillBtn.classList.remove("is-loading");
+        pillBtn.disabled = false;
       }
     }
   }
 
   // POST helper (kept separate so GET caching semantics stay obvious above).
-  async function getJSON2(url) {
-    const res = await fetch(url, { method: "POST" });
+  async function postJSON(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
     if (!res.ok) throw new Error(`Request failed (${res.status})`);
     return res.json();
+  }
+
+  // ---- delete forever (bin icon) ------------------------------------------
+  // Safe-delete UX: the card is removed from view immediately and a toast
+  // offers Undo; the DELETE call (which permanently drops the local row and
+  // tombstones its post id so it can never come back on a later sync) only
+  // fires once the undo window elapses without a click.
+  const UNDO_WINDOW_MS = 6000;
+  const toastContainerEl = document.getElementById("toast-container");
+
+  function showToast(message, actionLabel, onAction) {
+    const toast = el("div", "toast");
+    toast.setAttribute("role", "status");
+    toast.appendChild(el("span", "toast-msg", message));
+    if (actionLabel && onAction) {
+      const actionBtn = el("button", "btn btn-ghost toast-action", actionLabel);
+      actionBtn.type = "button";
+      actionBtn.addEventListener("click", () => {
+        toast.remove();
+        onAction();
+      });
+      toast.appendChild(actionBtn);
+    }
+    toastContainerEl.appendChild(toast);
+    if (!onAction) setTimeout(() => toast.remove(), 4000);
+    return toast;
+  }
+
+  function deleteBookmark(bm, card) {
+    const parent = card.parentNode;
+    const nextSibling = card.nextSibling;
+    const wasUnread = !bm.read;
+
+    card.remove();
+    categoryCounts.total = Math.max(0, categoryCounts.total - 1);
+    if (wasUnread && categoryCounts.unread > 0) categoryCounts.unread -= 1;
+    pageOffset = Math.max(0, pageOffset - 1);
+    renderCountLine();
+    if (!listEl.querySelector(".bookmark-card")) {
+      if (pageHasMore) {
+        loadMore();
+      } else {
+        removeTail();
+        stateMessage(listEl, "empty", emptyFilterMessage());
+      }
+    } else {
+      updateTail(); // keep the "N shown" end-of-list marker in step
+    }
+
+    function restore() {
+      // Deleting the last visible card swaps the list to the empty-state
+      // message; clear it before putting the card back.
+      const emptyMsg = parent.querySelector(":scope > .state-empty");
+      if (emptyMsg) emptyMsg.remove();
+      // nextSibling may no longer be attached (e.g. the tail/sentinel was
+      // replaced by that empty-state message while the card sat in its
+      // toast's undo window), so fall back to appending rather than throwing.
+      if (nextSibling && nextSibling.parentNode === parent) {
+        parent.insertBefore(card, nextSibling);
+      } else {
+        parent.appendChild(card);
+      }
+      categoryCounts.total += 1;
+      if (wasUnread) categoryCounts.unread += 1;
+      pageOffset += 1;
+      renderCountLine();
+      updateTail();
+    }
+
+    let undone = false;
+    const toast = showToast(
+      `Deleted @${bm.authorUsername}’s post.`,
+      "Undo",
+      () => {
+        undone = true;
+        clearTimeout(timer);
+        restore();
+      },
+    );
+
+    const timer = setTimeout(async () => {
+      if (undone) return;
+      toast.remove();
+      try {
+        const res = await fetch(`/api/bookmarks/${bm.id}`, { method: "DELETE" });
+        if (!res.ok && res.status !== 404) throw new Error(`Request failed (${res.status})`);
+        loadTree();
+      } catch (err) {
+        // Deletion failed server-side: restore the card so nothing silently
+        // vanishes, and let the owner know so they can retry.
+        restore();
+        showToast("Couldn't delete that post. Please try again.");
+      }
+    }, UNDO_WINDOW_MS);
   }
 
   // ---- filters -----------------------------------------------------------

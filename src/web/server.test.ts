@@ -84,6 +84,43 @@ describe('web server API', () => {
     expect((await app.inject({ method: 'POST', url: '/api/bookmarks/9999/read' })).statusCode).toBe(404);
     expect((await app.inject({ method: 'POST', url: '/api/bookmarks/abc/read' })).statusCode).toBe(400);
   });
+
+  it('POST /api/bookmarks/:id/read with { read: false } clears read state (the chip toggle)', async () => {
+    const b1 = db.getBookmarkByPostId('1')!;
+    await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/read` });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/bookmarks/${b1.id}/read`,
+      payload: { read: false },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { bookmark: { read: boolean; readAt: string | null } };
+    expect(body.bookmark.read).toBe(false);
+    expect(body.bookmark.readAt).toBeNull();
+
+    const tree = (await app.inject({ method: 'GET', url: '/api/tree' })).json() as {
+      tree: { name: string; unread: number }[];
+    };
+    expect(tree.tree.find((n) => n.name === 'AI')!.unread).toBe(2);
+  });
+
+  it('DELETE /api/bookmarks/:id permanently removes it and updates category counts', async () => {
+    const b1 = db.getBookmarkByPostId('1')!;
+    const res = await app.inject({ method: 'DELETE', url: `/api/bookmarks/${b1.id}` });
+    expect(res.statusCode).toBe(204);
+    expect(db.getBookmarkByPostId('1')).toBeUndefined();
+
+    const tree = (await app.inject({ method: 'GET', url: '/api/tree' })).json() as {
+      tree: { name: string; total: number }[];
+    };
+    expect(tree.tree.find((n) => n.name === 'AI')!.total).toBe(1);
+  });
+
+  it('DELETE /api/bookmarks/:id returns 404 for an unknown id and 400 for a bad id', async () => {
+    expect((await app.inject({ method: 'DELETE', url: '/api/bookmarks/9999' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'DELETE', url: '/api/bookmarks/abc' })).statusCode).toBe(400);
+  });
 });
 
 describe('GET /api/sync-status', () => {
