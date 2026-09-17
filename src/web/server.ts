@@ -3,6 +3,9 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import type { Database, ReadFilter } from '../db/database';
 import { buildCategoryTree } from '../categorize/tree';
+import { extractArticleLink } from '../articles/extract-link';
+import { HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
+import type { ArticleRecord, StoredBookmark } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -13,6 +16,19 @@ const DEFAULT_PAGE_SIZE = 20;
 /** Options controlling viewer behavior; page size defaults to {@link DEFAULT_PAGE_SIZE}. */
 export interface ServerOptions {
   pageSize?: number;
+  /** Injectable so tests can fake the network fetch; defaults to the real HTTP fetcher. */
+  articleFetcher?: ArticleFetcher;
+}
+
+/**
+ * A bookmark as shipped to the viewer, with the primary article link (if any)
+ * computed from its text so a card can show the "Read" affordance without a
+ * separate round trip.
+ */
+type BookmarkWithArticleLink = StoredBookmark & { articleUrl: string | null };
+
+function withArticleLink(bookmark: StoredBookmark): BookmarkWithArticleLink {
+  return { ...bookmark, articleUrl: extractArticleLink(bookmark.text) };
 }
 
 function parseReadFilter(raw: unknown): ReadFilter {
@@ -32,6 +48,7 @@ function parseNonNegInt(raw: unknown, fallback: number): number {
 export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
   const pageSize = opts.pageSize && opts.pageSize > 0 ? opts.pageSize : DEFAULT_PAGE_SIZE;
+  const articleFetcher = opts.articleFetcher ?? new HttpArticleFetcher();
 
   app.register(fastifyStatic, { root: PUBLIC_DIR });
 
@@ -66,7 +83,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       const bookmarks = db.getBookmarksForCategory(id, { filter, offset, limit });
 
       return {
-        bookmarks,
+        bookmarks: bookmarks.map(withArticleLink),
         counts,
         offset,
         limit,
@@ -100,6 +117,54 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     const deleted = db.deleteBookmark(id);
     if (!deleted) return reply.code(404).send({ error: 'bookmark not found' });
     return reply.code(204).send();
+  });
+
+  // The reader view's article for a bookmark's primary link: served from the
+  // cache once fetched. 404 covers both an unknown bookmark and a bookmark
+  // whose post has no article link (there is nothing to read either way); a
+  // successful fetch and a graceful extraction failure both come back as 200,
+  // since the request itself succeeded - `article.status` tells them apart.
+  app.get<{ Params: { id: string } }>('/api/bookmarks/:id/article', async (req, reply) => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
+
+    const bookmark = db.getBookmarkById(id);
+    if (!bookmark) return reply.code(404).send({ error: 'bookmark not found' });
+
+    const articleUrl = extractArticleLink(bookmark.text);
+    if (!articleUrl) return reply.code(404).send({ error: 'no article link' });
+
+    const cached = db.getArticleForBookmark(id);
+    if (cached && cached.url === articleUrl) return { article: cached };
+
+    const result = await articleFetcher.fetch(articleUrl);
+    const fetchedAt = new Date().toISOString();
+    const record: ArticleRecord =
+      result.status === 'ok'
+        ? {
+            bookmarkId: id,
+            url: articleUrl,
+            status: 'ok',
+            title: result.title,
+            contentHtml: result.contentHtml,
+            excerpt: result.excerpt,
+            siteName: result.siteName,
+            reason: null,
+            fetchedAt,
+          }
+        : {
+            bookmarkId: id,
+            url: articleUrl,
+            status: 'failed',
+            title: null,
+            contentHtml: null,
+            excerpt: null,
+            siteName: null,
+            reason: result.reason,
+            fetchedAt,
+          };
+    db.saveArticle(record);
+    return { article: record };
   });
 
   return app;

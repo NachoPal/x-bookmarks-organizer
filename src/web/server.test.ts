@@ -3,6 +3,7 @@ import { buildServer } from './server';
 import { Database } from '../db/database';
 import type { FastifyInstance } from 'fastify';
 import type { RawBookmark } from '../types';
+import type { ArticleFetcher, ArticleExtractionResult } from '../articles/fetch-article';
 
 const bm = (postId: string): RawBookmark => ({
   postId,
@@ -12,6 +13,16 @@ const bm = (postId: string): RawBookmark => ({
   url: `https://x.com/a/status/${postId}`,
   postCreatedAt: '',
 });
+
+/** A fake, offline article fetcher - mirrors the fake XClient/Categorizer pattern used elsewhere. */
+class FakeArticleFetcher implements ArticleFetcher {
+  calls: string[] = [];
+  constructor(private readonly result: ArticleExtractionResult) {}
+  async fetch(url: string): Promise<ArticleExtractionResult> {
+    this.calls.push(url);
+    return this.result;
+  }
+}
 
 describe('web server API', () => {
   let db: Database;
@@ -242,5 +253,144 @@ describe('web server bookmark paging & filtering', () => {
     const body = res.json() as { bookmarks: unknown[]; limit: number };
     expect(body.limit).toBe(20);
     expect(body.bookmarks).toHaveLength(20);
+  });
+});
+
+describe('bookmark list exposes the primary article link', () => {
+  let db: Database;
+  let app: FastifyInstance;
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it('adds articleUrl when the post text contains a link, and null otherwise', async () => {
+    db = new Database(':memory:');
+    const when = new Date().toISOString();
+    const evals = db.getOrCreateCategory('Evals', null, when);
+    db.storeCategorizedBatch(
+      [
+        { ...bm('1'), text: 'Great read: https://example.com/articles/one' },
+        { ...bm('2'), text: 'Just thoughts, no links here.' },
+      ],
+      () => [evals.id],
+    );
+    app = buildServer(db);
+    await app.ready();
+
+    const res = await app.inject({ method: 'GET', url: `/api/categories/${evals.id}/bookmarks` });
+    const body = res.json() as { bookmarks: { postId: string; articleUrl: string | null }[] };
+    const byId = new Map(body.bookmarks.map((b) => [b.postId, b.articleUrl]));
+    expect(byId.get('1')).toBe('https://example.com/articles/one');
+    expect(byId.get('2')).toBeNull();
+  });
+});
+
+describe('GET /api/bookmarks/:id/article', () => {
+  let db: Database;
+  let app: FastifyInstance;
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  function setup(fetcher: ArticleFetcher) {
+    db = new Database(':memory:');
+    const when = new Date().toISOString();
+    const evals = db.getOrCreateCategory('Evals', null, when);
+    db.storeCategorizedBatch(
+      [
+        { ...bm('1'), text: 'Read this: https://example.com/articles/one' },
+        { ...bm('2'), text: 'No link in this one.' },
+      ],
+      () => [evals.id],
+    );
+    app = buildServer(db, { articleFetcher: fetcher });
+    return app.ready();
+  }
+
+  it('returns 404 for an unknown bookmark and 400 for a bad id', async () => {
+    await setup(new FakeArticleFetcher({ status: 'failed', reason: 'unused' }));
+    expect((await app.inject({ method: 'GET', url: '/api/bookmarks/9999/article' })).statusCode).toBe(
+      404,
+    );
+    expect((await app.inject({ method: 'GET', url: '/api/bookmarks/abc/article' })).statusCode).toBe(
+      400,
+    );
+  });
+
+  it('returns 404 for a bookmark whose post has no article link (fetcher never called)', async () => {
+    const fetcher = new FakeArticleFetcher({ status: 'failed', reason: 'unused' });
+    await setup(fetcher);
+    const b2 = db.getBookmarkByPostId('2')!;
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b2.id}/article` });
+    expect(res.statusCode).toBe(404);
+    expect(fetcher.calls).toHaveLength(0);
+  });
+
+  it('fetches, caches, and returns a successful extraction', async () => {
+    const fetcher = new FakeArticleFetcher({
+      status: 'ok',
+      title: 'A Great Article',
+      contentHtml: '<p>Body</p>',
+      excerpt: 'Body',
+      siteName: 'Example',
+    });
+    await setup(fetcher);
+    const b1 = db.getBookmarkByPostId('1')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { article: { status: string; title: string; url: string } };
+    expect(body.article.status).toBe('ok');
+    expect(body.article.title).toBe('A Great Article');
+    expect(body.article.url).toBe('https://example.com/articles/one');
+    expect(fetcher.calls).toEqual(['https://example.com/articles/one']);
+
+    // Cached in the DB after the first fetch.
+    expect(db.getArticleForBookmark(b1.id)?.status).toBe('ok');
+  });
+
+  it('serves the cached article on a second request without calling the fetcher again', async () => {
+    const fetcher = new FakeArticleFetcher({
+      status: 'ok',
+      title: 'A Great Article',
+      contentHtml: '<p>Body</p>',
+      excerpt: null,
+      siteName: null,
+    });
+    await setup(fetcher);
+    const b1 = db.getBookmarkByPostId('1')!;
+
+    await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
+    const second = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
+
+    expect(second.statusCode).toBe(200);
+    expect(fetcher.calls).toHaveLength(1); // still just the first call - cache hit path
+    const body = second.json() as { article: { title: string } };
+    expect(body.article.title).toBe('A Great Article');
+  });
+
+  it('returns a graceful failure result (200, status: failed) rather than an error for an unreachable/non-article page', async () => {
+    const fetcher = new FakeArticleFetcher({
+      status: 'failed',
+      reason: 'Could not fetch this page. It may be blocked, offline, or require a login.',
+    });
+    await setup(fetcher);
+    const b1 = db.getBookmarkByPostId('1')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { article: { status: string; reason: string; title: string | null } };
+    expect(body.article.status).toBe('failed');
+    expect(body.article.reason).toMatch(/blocked|offline|login/);
+    expect(body.article.title).toBeNull();
+
+    // The failure is cached too, so a dead link isn't re-fetched on every open.
+    const again = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
+    expect(again.statusCode).toBe(200);
+    expect(fetcher.calls).toHaveLength(1);
   });
 });

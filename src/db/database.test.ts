@@ -241,4 +241,105 @@ describe('Database', () => {
       expect(db.getBookmarksForCategory(id)).toHaveLength(3);
     });
   });
+
+  describe('article reader cache', () => {
+    function seedBookmark(): number {
+      db.storeCategorizedBatch([bookmark('1')], () => []);
+      return db.getBookmarkByPostId('1')!.id;
+    }
+
+    it('has no cached article for a bookmark until one is saved', () => {
+      const id = seedBookmark();
+      expect(db.getArticleForBookmark(id)).toBeUndefined();
+    });
+
+    it('round-trips a successful extraction', () => {
+      const id = seedBookmark();
+      db.saveArticle({
+        bookmarkId: id,
+        url: 'https://example.com/article',
+        status: 'ok',
+        title: 'A Great Article',
+        contentHtml: '<p>Body</p>',
+        excerpt: 'Body',
+        siteName: 'Example',
+        reason: null,
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+      expect(db.getArticleForBookmark(id)).toEqual({
+        bookmarkId: id,
+        url: 'https://example.com/article',
+        status: 'ok',
+        title: 'A Great Article',
+        contentHtml: '<p>Body</p>',
+        excerpt: 'Body',
+        siteName: 'Example',
+        reason: null,
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+    });
+
+    it('round-trips a failed extraction', () => {
+      const id = seedBookmark();
+      db.saveArticle({
+        bookmarkId: id,
+        url: 'https://example.com/dead',
+        status: 'failed',
+        title: null,
+        contentHtml: null,
+        excerpt: null,
+        siteName: null,
+        reason: 'The page returned an error (HTTP 404).',
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+      const cached = db.getArticleForBookmark(id);
+      expect(cached?.status).toBe('failed');
+      expect(cached?.reason).toBe('The page returned an error (HTTP 404).');
+    });
+
+    it('overwrites the previous record for the same bookmark rather than duplicating it', () => {
+      const id = seedBookmark();
+      db.saveArticle({
+        bookmarkId: id,
+        url: 'https://example.com/a',
+        status: 'failed',
+        title: null,
+        contentHtml: null,
+        excerpt: null,
+        siteName: null,
+        reason: 'first attempt failed',
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+      db.saveArticle({
+        bookmarkId: id,
+        url: 'https://example.com/a',
+        status: 'ok',
+        title: 'Now it works',
+        contentHtml: '<p>Body</p>',
+        excerpt: null,
+        siteName: null,
+        reason: null,
+        fetchedAt: '2026-09-17T01:00:00.000Z',
+      });
+      expect(db.getArticleForBookmark(id)?.status).toBe('ok');
+      expect(db.getArticleForBookmark(id)?.title).toBe('Now it works');
+    });
+
+    it('deletes the cached article when its bookmark is deleted (cascade)', () => {
+      const id = seedBookmark();
+      db.saveArticle({
+        bookmarkId: id,
+        url: 'https://example.com/a',
+        status: 'ok',
+        title: 'T',
+        contentHtml: '<p>T</p>',
+        excerpt: null,
+        siteName: null,
+        reason: null,
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+      db.deleteBookmark(id);
+      expect(db.getArticleForBookmark(id)).toBeUndefined();
+    });
+  });
 });

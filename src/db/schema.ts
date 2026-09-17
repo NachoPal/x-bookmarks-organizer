@@ -16,6 +16,11 @@
  *   deleted bookmark is removed from `bookmarks` outright (cascading its
  *   category links), but its post id is kept here so incremental ingest never
  *   mistakes it for new and re-fetches/re-stores it.
+ * - `articles` caches the reader-view extraction (readability + sanitize) for
+ *   a bookmark's primary article link, keyed by bookmark - so a card's "Read"
+ *   view is fetched from the source at most once. Both a successful
+ *   extraction and a failure are cached (status distinguishes them) so a
+ *   dead/paywalled link isn't re-fetched on every open either.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -64,5 +69,17 @@ CREATE TABLE IF NOT EXISTS run_state (
 CREATE TABLE IF NOT EXISTS deleted_bookmarks (
   post_id    TEXT PRIMARY KEY,
   deleted_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS articles (
+  bookmark_id  INTEGER PRIMARY KEY REFERENCES bookmarks(id) ON DELETE CASCADE,
+  url          TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  title        TEXT,
+  content_html TEXT,
+  excerpt      TEXT,
+  site_name    TEXT,
+  reason       TEXT,
+  fetched_at   TEXT NOT NULL
 );
 `;

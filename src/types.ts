@@ -21,6 +21,23 @@ export interface StoredBookmark extends RawBookmark {
   readAt: string | null;
 }
 
+/**
+ * The cached reader-view extraction for a bookmark's primary article link.
+ * `status: 'ok'` carries the extracted title/content; `status: 'failed'`
+ * carries a human-readable reason instead so the reader can show it directly.
+ */
+export interface ArticleRecord {
+  bookmarkId: number;
+  url: string;
+  status: 'ok' | 'failed';
+  title: string | null;
+  contentHtml: string | null;
+  excerpt: string | null;
+  siteName: string | null;
+  reason: string | null;
+  fetchedAt: string;
+}
+
 /** A category tree node as stored. */
 export interface CategoryNode {
   id: number;

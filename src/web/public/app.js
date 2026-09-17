@@ -15,6 +15,19 @@
   const searchClear = document.getElementById("category-search-clear");
   const readFilterEl = document.getElementById("read-filter");
 
+  // ---- reader (article) modal --------------------------------------------
+  const readerBackdropEl = document.getElementById("reader-backdrop");
+  const readerModalEl = document.getElementById("reader-modal");
+  const readerTitleEl = document.getElementById("reader-title");
+  const readerMetaEl = document.getElementById("reader-meta");
+  const readerBodyEl = document.getElementById("reader-body");
+  const readerOriginalLinkEl = document.getElementById("reader-original-link");
+  const readerCloseBtn = document.getElementById("reader-close");
+  let readerReturnFocusEl = null;
+  // Bumped on every open so a slow in-flight fetch from a previously opened
+  // article can't render into a reader that has since moved on to another one.
+  let readerRequestSeq = 0;
+
   let selectedCategoryId = null;
   let selectedButton = null;
   // Manual expand/collapse state (category id -> expanded), preserved across
@@ -579,8 +592,18 @@
     const slot = el("div", "embed-slot");
     renderEmbed(slot, bm, () => setRead(bm, card, true));
 
-    // Foot: open link (also marks read) + delete
+    // Foot: read-in-app (article link only) + open link (also marks read) + delete
     const foot = el("div", "bookmark-foot");
+
+    if (bm.articleUrl) {
+      const readBtn = el("button", "link-external read-link");
+      readBtn.type = "button";
+      readBtn.appendChild(bookIcon());
+      readBtn.appendChild(document.createTextNode("Read"));
+      readBtn.addEventListener("click", () => openReader(bm, card, readBtn));
+      foot.appendChild(readBtn);
+    }
+
     const openLink = el("a", "link-external", "Open on X ↗");
     openLink.href = bm.url;
     openLink.target = "_blank";
@@ -598,6 +621,18 @@
 
     card.append(head, slot, foot);
     return card;
+  }
+
+  function bookIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-book");
+    svg.innerHTML =
+      '<path d="M4 4.5c0-.6.4-1 1-1h4.5v13H5a1 1 0 0 1-1-1v-11ZM15.5 3.5c.6 0 1 .4 1 1v11a1 1 0 0 1-1 1h-4.5v-13h4.5Z" ' +
+      'fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />';
+    return svg;
   }
 
   function trashIcon() {
@@ -903,6 +938,132 @@
     }, UNDO_WINDOW_MS);
   }
 
+  // ---- reader (article) modal ---------------------------------------------
+  // Fetches and shows the extracted article for a bookmark's primary link in
+  // an in-app panel: a skeleton while loading, the sanitized article content
+  // on success (server-sanitized - see src/articles/fetch-article.ts - so it
+  // is safe to insert as HTML here), or a clear message + the original link
+  // on any failure (paywalled, blocked, dead, or not actually an article).
+  function isReaderOpen() {
+    return !readerModalEl.hidden;
+  }
+
+  function openReader(bm, card, triggerEl) {
+    const seq = ++readerRequestSeq;
+    readerReturnFocusEl = triggerEl;
+
+    readerTitleEl.textContent = "Loading article…";
+    readerMetaEl.textContent = "";
+    readerMetaEl.hidden = true;
+    readerOriginalLinkEl.href = bm.articleUrl;
+    renderReaderLoading();
+
+    readerBackdropEl.hidden = false;
+    readerModalEl.hidden = false;
+    readerCloseBtn.focus();
+    document.addEventListener("keydown", onReaderKeydown);
+
+    // Opening the reader is at least as strong a "read" signal as opening the
+    // embed or the external link, so it marks the bookmark read the same way.
+    setRead(bm, card, true);
+
+    getJSON(`/api/bookmarks/${bm.id}/article`)
+      .then((data) => {
+        if (seq !== readerRequestSeq) return; // superseded by a newer open
+        renderReaderResult(data.article, bm.articleUrl);
+      })
+      .catch(() => {
+        if (seq !== readerRequestSeq) return;
+        renderReaderFallback(
+          "Couldn't load this article. Please try again, or open the original link.",
+          bm.articleUrl,
+        );
+      });
+  }
+
+  function closeReader() {
+    if (!isReaderOpen()) return;
+    readerModalEl.hidden = true;
+    readerBackdropEl.hidden = true;
+    readerRequestSeq += 1; // discard any in-flight fetch's result
+    document.removeEventListener("keydown", onReaderKeydown);
+    if (readerReturnFocusEl && readerReturnFocusEl.isConnected) readerReturnFocusEl.focus();
+    readerReturnFocusEl = null;
+  }
+
+  function renderReaderLoading() {
+    const loading = el("div", "reader-loading");
+    loading.setAttribute("role", "status");
+    const spinner = el("span", "reader-spinner");
+    spinner.setAttribute("aria-hidden", "true");
+    loading.append(spinner, el("span", null, "Loading article…"));
+    readerBodyEl.replaceChildren(loading);
+  }
+
+  function renderReaderResult(article, articleUrl) {
+    if (article && article.status === "ok") {
+      readerTitleEl.textContent = article.title || "Untitled article";
+      if (article.siteName) {
+        readerMetaEl.textContent = article.siteName;
+        readerMetaEl.hidden = false;
+      }
+      const content = el("div", "reader-content");
+      content.innerHTML = article.contentHtml || "";
+      readerBodyEl.replaceChildren(content);
+    } else {
+      readerTitleEl.textContent = "Couldn't load article";
+      renderReaderFallback(
+        (article && article.reason) || "This page couldn't be read.",
+        articleUrl,
+      );
+    }
+  }
+
+  function renderReaderFallback(message, articleUrl) {
+    const fallback = el("div", "reader-fallback");
+    fallback.setAttribute("role", "status");
+    fallback.appendChild(el("span", "reader-fallback-icon", "📄"));
+    fallback.appendChild(el("p", "reader-fallback-msg", message));
+    const link = el("a", "link-external", "View original ↗");
+    link.href = articleUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    fallback.appendChild(link);
+    readerBodyEl.replaceChildren(fallback);
+  }
+
+  /** Tab/Shift+Tab wraps within the panel while the reader is open (a real modal). */
+  function trapReaderFocus(e) {
+    if (e.key !== "Tab") return;
+    const focusable = readerModalEl.querySelectorAll(
+      'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  function onReaderKeydown(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeReader();
+      return;
+    }
+    trapReaderFocus(e);
+  }
+
+  function initReader() {
+    readerCloseBtn.addEventListener("click", closeReader);
+    readerBackdropEl.addEventListener("click", closeReader);
+  }
+
   // ---- filters -----------------------------------------------------------
 
   function initSearch() {
@@ -997,6 +1158,7 @@
   initSidebar();
   initSearch();
   initReadFilter();
+  initReader();
   loadTree();
   loadSyncStatus();
 })();

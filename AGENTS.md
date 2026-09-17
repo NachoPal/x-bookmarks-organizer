@@ -74,6 +74,28 @@ To iterate on the viewer without the owner's private DB, seed a throwaway one an
 (`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit
 real data).
 
+## Article reader (issue #4)
+
+A bookmark whose post text contains a link gets a "Read" affordance that opens the
+extracted article in an in-app modal. `src/articles/extract-link.ts` finds the primary
+link in the stored post text (all links are t.co-shortened by X, so this cannot tell an
+article from a link back to a post until it is fetched); `src/articles/fetch-article.ts`
+fetches it server-side (timeout, UA, `NON_ARTICLE_HOSTS` short-circuits an x.com/
+twitter.com link) and extracts it with `@mozilla/readability` over a `linkedom` DOM,
+sanitizing the result with `sanitize-html` before it is ever cached or served - never trust
+fetched HTML. Results (success or failure) are cached in the `articles` table
+(`src/db/schema.ts`, keyed by `bookmark_id`) via `Database.getArticleForBookmark` /
+`saveArticle`, so a bookmark's link is fetched at most once. Server surface:
+`GET /api/bookmarks/:id/article` (`src/web/server.ts`); the bookmark list endpoint also
+adds a computed `articleUrl` per bookmark so a card knows whether to show "Read" without
+an extra request. `ServerOptions.articleFetcher` is the injection seam for offline tests
+(mirrors the `XClient`/`BatchCategorizer` pattern) - never let a test hit the real network.
+`scripts/copy-assets.js` copies `public/` recursively (`fs.cpSync`), which is what lets
+`src/web/public/fixtures/sample-article.html` (a fixture article page with nav/ads/scripts
+Readability must strip) ship as a servable asset; both the article tests and the dev seed
+(`scripts/seed-dev-db.js`'s "Reader View Demo" category) point at it so extraction is
+exercised fully offline, end to end, with zero real network calls.
+
 ## Live vs. tested
 
 The live OAuth browser consent and the vault-injected run are performed by the operator. Automated

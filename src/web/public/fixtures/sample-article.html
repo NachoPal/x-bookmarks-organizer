@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Reader View, and Why Bookmarking Isn't the Same as Reading</title>
+    <meta name="description" content="A short piece on the gap between saving an article and actually reading it." />
+    <script>
+      // Simulates real-world page scripts (analytics, ads) that a reader view
+      // must never execute - readability strips this, and sanitize-html would
+      // strip it again even if it slipped through.
+      window.dataLayer = window.dataLayer || [];
+      function trackClick() { window.dataLayer.push({ event: 'click' }); }
+    </script>
+    <style>body { font-family: sans-serif; }</style>
+  </head>
+  <body onload="trackClick()">
+    <header class="site-header">
+      <nav>
+        <a href="/">Home</a>
+        <a href="/topics">Topics</a>
+        <a href="/subscribe" onclick="trackClick()">Subscribe</a>
+      </nav>
+    </header>
+    <aside class="sidebar">
+      <div class="ad-slot">Advertisement</div>
+      <ul class="related-links">
+        <li><a href="/posts/other-1">Related post one</a></li>
+        <li><a href="/posts/other-2">Related post two</a></li>
+      </ul>
+    </aside>
+
+    <main>
+      <article>
+        <h1>Reader View, and Why Bookmarking Isn't the Same as Reading</h1>
+        <p class="byline">By The Sample Author &middot; Sample Times</p>
+
+        <p>
+          Half the value of a bookmarking tool disappears the moment "save for later" quietly
+          becomes "never open again." The tab dies, the link rots, or the page behind it turns
+          into three sidebars and a paywall banner before you get to the second sentence. The
+          bookmark did its job - it remembered the link - but it never actually got you any
+          closer to reading the thing.
+        </p>
+
+        <p>
+          A reader view closes that gap by doing, locally and on demand, the one thing a raw
+          link never promises: turning a page into an actual article. Fetch it once, strip the
+          navigation and the ad slots and the cookie banners, keep the title and the body, and
+          cache the result so opening it a second time costs nothing. What is left afterward is
+          exactly the two things you bookmarked it for in the first place - the words, and a way
+          back to the source if you want the full page.
+        </p>
+
+        <h2>What extraction actually has to survive</h2>
+        <p>
+          Real pages are hostile to this in small, boring ways rather than dramatic ones.
+          Inline scripts and click handlers are the obvious hazard, but the quieter failure mode
+          is a page that is not an article at all - a redirect back to a social network, a video
+          player with three lines of caption, a login wall. A reader view earns trust less by
+          how well it renders a clean blog post, and more by how calmly it fails on everything
+          that is not one: a clear message, a link to the original, never a blank panel and never
+          a spinner that spins forever.
+        </p>
+
+        <blockquote>
+          The measure of a reading feature is not the article it renders beautifully - it's the
+          one it fails on gracefully.
+        </blockquote>
+
+        <p>
+          None of this requires much cleverness. It requires doing the fetch on a server instead
+          of in the reader's browser, giving it a real timeout, caching what comes back, and
+          being honest with the reader when a page simply isn't readable. The rest is typography.
+        </p>
+
+        <ul>
+          <li>Fetch server-side, with a sane timeout and user agent.</li>
+          <li>Extract with a maintained readability library, not a bespoke scraper.</li>
+          <li>Cache the result so a re-open is instant.</li>
+          <li>Sanitize before rendering - it's still untrusted HTML.</li>
+          <li>Fail visibly, with a link out, never silently.</li>
+        </ul>
+
+        <p>
+          Do those five things and "read later" starts meaning what it says.
+        </p>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <p>&copy; 2026 Sample Times. All rights reserved.</p>
+      <nav>
+        <a href="/privacy">Privacy</a>
+        <a href="/terms">Terms</a>
+      </nav>
+    </footer>
+  </body>
+</html>
