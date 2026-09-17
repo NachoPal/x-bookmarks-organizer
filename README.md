@@ -44,6 +44,12 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
   scroll), so a large category never renders every post - or every X embed - at once; paging
   follows the active read-state filter and resets to the top when you change it
   (`XBOOKMARKS_PAGE_SIZE`, default 20).
+- **Summaries** - click "Summarize" on a bookmark for an on-demand LLM summary of its content (the
+  post, plus its extracted article when the reader view can read it) in a large modal. Generated on
+  the Claude subscription the same way categorization is, and cached in SQLite so re-opening is
+  instant and free. Needs `CLAUDE_CODE_OAUTH_TOKEN` at `serve` time (see Secrets below); without it
+  the button is disabled with a tooltip explaining why, and everything else in the viewer still
+  works.
 
 ## Prerequisites
 
@@ -103,11 +109,18 @@ av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js recategorize
 
 (X credentials are not needed for `recategorize` - it only re-reads the local database.)
 
-**3. Browse** (the web viewer does not need any secrets):
+**3. Browse** (the web viewer does not need any secrets - browsing and cached summaries work
+without one):
 
 ```bash
 node dist/index.js serve
 # then open http://127.0.0.1:5173
+```
+
+To also generate NEW summaries, run `serve` with the Claude token:
+
+```bash
+av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve
 ```
 
 ## Configuration (optional env vars)

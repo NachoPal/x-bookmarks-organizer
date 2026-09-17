@@ -4,6 +4,7 @@ import { Database } from '../db/database';
 import type { FastifyInstance } from 'fastify';
 import type { RawBookmark } from '../types';
 import type { ArticleFetcher, ArticleExtractionResult } from '../articles/fetch-article';
+import type { SummaryGenerator, SummaryInput } from '../summarize/summarizer';
 
 const bm = (postId: string): RawBookmark => ({
   postId,
@@ -20,6 +21,17 @@ class FakeArticleFetcher implements ArticleFetcher {
   constructor(private readonly result: ArticleExtractionResult) {}
   async fetch(url: string): Promise<ArticleExtractionResult> {
     this.calls.push(url);
+    return this.result;
+  }
+}
+
+/** A fake, offline summary generator - no LLM/network involved. */
+class FakeSummaryGenerator implements SummaryGenerator {
+  calls: SummaryInput[] = [];
+  constructor(private readonly result: string | Error) {}
+  async summarize(input: SummaryInput): Promise<string> {
+    this.calls.push(input);
+    if (this.result instanceof Error) throw this.result;
     return this.result;
   }
 }
@@ -392,5 +404,140 @@ describe('GET /api/bookmarks/:id/article', () => {
     const again = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
     expect(again.statusCode).toBe(200);
     expect(fetcher.calls).toHaveLength(1);
+  });
+});
+
+describe('GET /api/summary-status', () => {
+  let db: Database;
+  let app: FastifyInstance;
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it('reports unavailable when no summary generator is configured', async () => {
+    db = new Database(':memory:');
+    app = buildServer(db);
+    await app.ready();
+    const res = await app.inject({ method: 'GET', url: '/api/summary-status' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+  });
+
+  it('reports available when a summary generator is configured', async () => {
+    db = new Database(':memory:');
+    app = buildServer(db, { summaryGenerator: new FakeSummaryGenerator('x') });
+    await app.ready();
+    const res = await app.inject({ method: 'GET', url: '/api/summary-status' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true });
+  });
+});
+
+describe('GET /api/bookmarks/:id/summary', () => {
+  let db: Database;
+  let app: FastifyInstance;
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  function setup(opts: { summaryGenerator?: SummaryGenerator; articleFetcher?: ArticleFetcher }) {
+    db = new Database(':memory:');
+    const when = new Date().toISOString();
+    const evals = db.getOrCreateCategory('Evals', null, when);
+    db.storeCategorizedBatch(
+      [
+        { ...bm('1'), text: 'Just some thoughts, no links here.' },
+        { ...bm('2'), text: 'Read this: https://example.com/articles/one' },
+      ],
+      () => [evals.id],
+    );
+    app = buildServer(db, opts);
+    return app.ready();
+  }
+
+  it('returns 404 for an unknown bookmark and 400 for a bad id', async () => {
+    await setup({ summaryGenerator: new FakeSummaryGenerator('unused') });
+    expect((await app.inject({ method: 'GET', url: '/api/bookmarks/9999/summary' })).statusCode).toBe(
+      404,
+    );
+    expect((await app.inject({ method: 'GET', url: '/api/bookmarks/abc/summary' })).statusCode).toBe(
+      400,
+    );
+  });
+
+  it('degrades gracefully (503, clear message) when no CLAUDE_CODE_OAUTH_TOKEN/generator is configured', async () => {
+    await setup({});
+    const b1 = db.getBookmarkByPostId('1')!;
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    expect(res.statusCode).toBe(503);
+    const body = res.json() as { error: string };
+    expect(body.error).toMatch(/av inject/i);
+    // Never cached: a token becoming available later should still work.
+    expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
+  });
+
+  it('generates, caches, and returns a summary for a post with no article link', async () => {
+    const generator = new FakeSummaryGenerator('A concise summary of the post.');
+    await setup({ summaryGenerator: generator });
+    const b1 = db.getBookmarkByPostId('1')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { summary: { summary: string; bookmarkId: number } };
+    expect(body.summary.summary).toBe('A concise summary of the post.');
+    expect(generator.calls).toHaveLength(1);
+    expect(generator.calls[0].articleText).toBeNull();
+
+    // Cached in the DB after the first generation.
+    expect(db.getSummaryForBookmark(b1.id)?.summary).toBe('A concise summary of the post.');
+  });
+
+  it('serves the cached summary on a second request without calling the generator again', async () => {
+    const generator = new FakeSummaryGenerator('Cached summary.');
+    await setup({ summaryGenerator: generator });
+    const b1 = db.getBookmarkByPostId('1')!;
+
+    await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    const second = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+
+    expect(second.statusCode).toBe(200);
+    expect(generator.calls).toHaveLength(1); // still just the first call - cache hit path
+    const body = second.json() as { summary: { summary: string } };
+    expect(body.summary.summary).toBe('Cached summary.');
+  });
+
+  it('fetches the linked article and passes its content to the generator (article-aware summary)', async () => {
+    const generator = new FakeSummaryGenerator('An article-aware summary.');
+    const fetcher = new FakeArticleFetcher({
+      status: 'ok',
+      title: 'A Great Article',
+      contentHtml: '<p>Article body.</p>',
+      excerpt: 'Article body.',
+      siteName: 'Example',
+    });
+    await setup({ summaryGenerator: generator, articleFetcher: fetcher });
+    const b2 = db.getBookmarkByPostId('2')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b2.id}/summary` });
+    expect(res.statusCode).toBe(200);
+    expect(fetcher.calls).toEqual(['https://example.com/articles/one']);
+    expect(generator.calls[0].articleTitle).toBe('A Great Article');
+    expect(generator.calls[0].articleText).toContain('Article body.');
+    // The article fetch is cached too, reusing the reader-view cache.
+    expect(db.getArticleForBookmark(b2.id)?.status).toBe('ok');
+  });
+
+  it('returns 502 (not a crash) when the generator fails, and does not cache the failure', async () => {
+    const generator = new FakeSummaryGenerator(new Error('claude CLI exited with code 1'));
+    await setup({ summaryGenerator: generator });
+    const b1 = db.getBookmarkByPostId('1')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    expect(res.statusCode).toBe(502);
+    expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
   });
 });

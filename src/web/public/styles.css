@@ -932,6 +932,34 @@ body[data-sidebar="collapsed"] .app-body {
   width: 1rem;
   height: 1rem;
 }
+/* Opens the summary modal. Styled like .read-link (a plain in-app action,
+   not a navigating link); disabled with a tooltip rather than hidden when no
+   Claude token is configured, so the owner always sees the affordance and
+   why it's off. */
+.summarize-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-right: 0; /* only the LAST left-aligned action pushes the rest right */
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.summarize-link:hover:not(:disabled) {
+  border-bottom-color: currentColor;
+}
+.summarize-link:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+.summarize-link .icon-sparkle {
+  width: 1rem;
+  height: 1rem;
+}
 .delete-btn {
   width: 2.25rem;
   height: 2.25rem;
@@ -1351,6 +1379,23 @@ body[data-sidebar="collapsed"] .app-body {
   .reader-header-actions {
     margin-left: auto;
   }
+}
+
+/* ============================================================
+   Summary modal - shares the reader modal's structure/states
+   (backdrop, header, loading/fallback body) but sized larger, and
+   full-screen under the same 640px breakpoint as the reader.
+   ============================================================ */
+.summary-panel {
+  width: min(60rem, 96vw);
+  max-height: min(92vh, 100%);
+}
+.summary-text {
+  max-width: var(--reader-measure);
+  margin: 0 auto;
+  font-size: var(--text-reader);
+  line-height: var(--leading-reader);
+  white-space: pre-wrap;
 }
 
 /* ============================================================

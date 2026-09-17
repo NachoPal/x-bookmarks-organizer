@@ -6,6 +6,7 @@ import { Categorizer, createClaudeCliRunner } from './categorize/llm';
 import { LlmTaxonomyDesigner } from './categorize/taxonomy';
 import { recategorizeAll, runIngest } from './ingest';
 import { startServer } from './web/server';
+import { ClaudeSummaryGenerator } from './summarize/summarizer';
 
 const HELP = `X Bookmarks Organizer
 
@@ -98,8 +99,24 @@ async function cmdRecategorize(config: Config, db: Database): Promise<void> {
 }
 
 async function cmdServe(config: Config, db: Database): Promise<void> {
-  const app = await startServer(db, config.webPort, '127.0.0.1', { pageSize: config.pageSize });
+  // Summaries reuse the assignment-pass model (Haiku-class, for cost) and the
+  // same subscription-only `claude` CLI runner as categorization. Without a
+  // token the viewer still serves everything else - the summary endpoint
+  // degrades gracefully instead of the server needing this secret to start.
+  const summaryGenerator = config.claudeToken
+    ? new ClaudeSummaryGenerator(createClaudeCliRunner(config.categorizeModel))
+    : undefined;
+  const app = await startServer(db, config.webPort, '127.0.0.1', {
+    pageSize: config.pageSize,
+    summaryGenerator,
+  });
   console.log(`Web viewer running at http://127.0.0.1:${config.webPort}`);
+  if (!summaryGenerator) {
+    console.log(
+      'Summaries disabled (no CLAUDE_CODE_OAUTH_TOKEN). Run with ' +
+        '`av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve` to enable them.',
+    );
+  }
   console.log('Press Ctrl+C to stop.');
   const shutdown = () => {
     app.close().finally(() => {

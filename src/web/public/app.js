@@ -28,6 +28,21 @@
   // article can't render into a reader that has since moved on to another one.
   let readerRequestSeq = 0;
 
+  // ---- summary modal ------------------------------------------------------
+  const summaryBackdropEl = document.getElementById("summary-backdrop");
+  const summaryModalEl = document.getElementById("summary-modal");
+  const summaryMetaEl = document.getElementById("summary-meta");
+  const summaryBodyEl = document.getElementById("summary-body");
+  const summaryCloseBtn = document.getElementById("summary-close");
+  let summaryReturnFocusEl = null;
+  let summaryRequestSeq = 0;
+  // Optimistic default: corrected once /api/summary-status resolves. A stale
+  // "true" is still safe - the endpoint itself degrades gracefully (503) if
+  // called without a token, and that renders the same message in the modal.
+  let summaryAvailable = true;
+  const SUMMARY_UNAVAILABLE_MESSAGE =
+    "Run the viewer with `av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve` to enable summaries.";
+
   let selectedCategoryId = null;
   let selectedButton = null;
   // Manual expand/collapse state (category id -> expanded), preserved across
@@ -150,7 +165,16 @@
 
   async function getJSON(url) {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`Request failed (${res.status})`);
+    if (!res.ok) {
+      const err = new Error(`Request failed (${res.status})`);
+      err.status = res.status;
+      try {
+        err.body = await res.json();
+      } catch (_) {
+        /* no JSON body to attach */
+      }
+      throw err;
+    }
     return res.json();
   }
 
@@ -604,6 +628,18 @@
       foot.appendChild(readBtn);
     }
 
+    const summarizeBtn = el("button", "link-external summarize-link");
+    summarizeBtn.type = "button";
+    summarizeBtn.appendChild(sparkleIcon());
+    summarizeBtn.appendChild(document.createTextNode("Summarize"));
+    if (!summaryAvailable) {
+      summarizeBtn.disabled = true;
+      summarizeBtn.title = SUMMARY_UNAVAILABLE_MESSAGE;
+    } else {
+      summarizeBtn.addEventListener("click", () => openSummary(bm, summarizeBtn));
+    }
+    foot.appendChild(summarizeBtn);
+
     const openLink = el("a", "link-external", "Open on X ↗");
     openLink.href = bm.url;
     openLink.target = "_blank";
@@ -644,6 +680,19 @@
     svg.innerHTML =
       '<path d="M7.5 3.5h5M4 6h12M6 6l.6 9.4a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9L14 6M8.3 9v4M11.7 9v4" ' +
       'fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />';
+    return svg;
+  }
+
+  function sparkleIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-sparkle");
+    svg.innerHTML =
+      '<path d="M9.5 3l1.1 3.4L14 7.5l-3.4 1.1L9.5 12l-1.1-3.4L5 7.5l3.4-1.1L9.5 3z ' +
+      'M15 12.5l.55 1.7L17.25 15l-1.7.55L15 17.25l-.55-1.7L12.75 15l1.7-.55L15 12.5z" ' +
+      'fill="currentColor" stroke="currentColor" stroke-width="0.6" stroke-linejoin="round" />';
     return svg;
   }
 
@@ -1032,10 +1081,10 @@
     readerBodyEl.replaceChildren(fallback);
   }
 
-  /** Tab/Shift+Tab wraps within the panel while the reader is open (a real modal). */
-  function trapReaderFocus(e) {
+  /** Tab/Shift+Tab wraps within `modalEl` while it is open (a real modal). Shared by the reader and summary modals. */
+  function trapModalFocus(modalEl, e) {
     if (e.key !== "Tab") return;
-    const focusable = readerModalEl.querySelectorAll(
+    const focusable = modalEl.querySelectorAll(
       'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
     );
     if (focusable.length === 0) return;
@@ -1056,12 +1105,131 @@
       closeReader();
       return;
     }
-    trapReaderFocus(e);
+    trapModalFocus(readerModalEl, e);
   }
 
   function initReader() {
     readerCloseBtn.addEventListener("click", closeReader);
     readerBackdropEl.addEventListener("click", closeReader);
+  }
+
+  // ---- summary modal -------------------------------------------------------
+  // Fetches (or serves from cache) an on-demand LLM summary of a bookmark's
+  // content - the post text, plus its extracted article when available (see
+  // the reader view above) - in a large in-app modal: a spinner while
+  // generating, the summary text once ready, a clear no-token message when
+  // summaries are disabled, or a retryable error on failure. Mirrors the
+  // reader modal's shape and states.
+  function isSummaryOpen() {
+    return !summaryModalEl.hidden;
+  }
+
+  function openSummary(bm, triggerEl) {
+    summaryReturnFocusEl = triggerEl;
+    summaryMetaEl.hidden = true;
+    summaryMetaEl.textContent = "";
+    renderSummaryLoading();
+
+    summaryBackdropEl.hidden = false;
+    summaryModalEl.hidden = false;
+    summaryCloseBtn.focus();
+    document.addEventListener("keydown", onSummaryKeydown);
+
+    fetchSummary(bm);
+  }
+
+  function fetchSummary(bm) {
+    const seq = ++summaryRequestSeq;
+    renderSummaryLoading();
+
+    getJSON(`/api/bookmarks/${bm.id}/summary`)
+      .then((data) => {
+        if (seq !== summaryRequestSeq) return; // superseded by a newer open/retry
+        renderSummaryResult(data.summary);
+      })
+      .catch((err) => {
+        if (seq !== summaryRequestSeq) return;
+        if (err && err.status === 503) {
+          summaryAvailable = false; // the token isn't there; stop offering it as available
+          renderSummaryUnavailable(err.body && err.body.error);
+        } else {
+          renderSummaryError(bm);
+        }
+      });
+  }
+
+  function closeSummary() {
+    if (!isSummaryOpen()) return;
+    summaryModalEl.hidden = true;
+    summaryBackdropEl.hidden = true;
+    summaryRequestSeq += 1; // discard any in-flight fetch's result
+    document.removeEventListener("keydown", onSummaryKeydown);
+    if (summaryReturnFocusEl && summaryReturnFocusEl.isConnected) summaryReturnFocusEl.focus();
+    summaryReturnFocusEl = null;
+  }
+
+  function renderSummaryLoading() {
+    const loading = el("div", "reader-loading");
+    loading.setAttribute("role", "status");
+    const spinner = el("span", "reader-spinner");
+    spinner.setAttribute("aria-hidden", "true");
+    loading.append(spinner, el("span", null, "Generating summary…"));
+    summaryBodyEl.replaceChildren(loading);
+  }
+
+  function renderSummaryResult(record) {
+    summaryMetaEl.textContent = record.generatedAt
+      ? `Summarized ${formatDate(record.generatedAt)}`
+      : "";
+    summaryMetaEl.hidden = !record.generatedAt;
+    const content = el("div", "summary-text");
+    content.textContent = record.summary;
+    summaryBodyEl.replaceChildren(content);
+  }
+
+  function renderSummaryUnavailable(message) {
+    const fallback = el("div", "reader-fallback");
+    fallback.setAttribute("role", "status");
+    fallback.appendChild(el("span", "reader-fallback-icon", "🔑"));
+    fallback.appendChild(el("p", "reader-fallback-msg", message || SUMMARY_UNAVAILABLE_MESSAGE));
+    summaryBodyEl.replaceChildren(fallback);
+  }
+
+  function renderSummaryError(bm) {
+    const fallback = el("div", "reader-fallback");
+    fallback.setAttribute("role", "alert");
+    fallback.appendChild(el("span", "reader-fallback-icon", "⚠️"));
+    fallback.appendChild(el("p", "reader-fallback-msg", "Couldn't generate a summary. Please try again."));
+    const retry = el("button", "btn btn-secondary", "Retry");
+    retry.type = "button";
+    retry.addEventListener("click", () => fetchSummary(bm));
+    fallback.appendChild(retry);
+    summaryBodyEl.replaceChildren(fallback);
+  }
+
+  function onSummaryKeydown(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeSummary();
+      return;
+    }
+    trapModalFocus(summaryModalEl, e);
+  }
+
+  function initSummary() {
+    summaryCloseBtn.addEventListener("click", closeSummary);
+    summaryBackdropEl.addEventListener("click", closeSummary);
+  }
+
+  /** Check once whether summaries are enabled server-side (a Claude token is configured). */
+  async function loadSummaryStatus() {
+    try {
+      const data = await getJSON("/api/summary-status");
+      summaryAvailable = Boolean(data.available);
+    } catch (_) {
+      // Leave the optimistic default; the endpoint itself still degrades
+      // gracefully (503) if a summary is actually requested.
+    }
   }
 
   // ---- filters -----------------------------------------------------------
@@ -1159,6 +1327,8 @@
   initSearch();
   initReadFilter();
   initReader();
+  initSummary();
   loadTree();
   loadSyncStatus();
+  loadSummaryStatus();
 })();

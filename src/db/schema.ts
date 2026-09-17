@@ -21,6 +21,9 @@
  *   view is fetched from the source at most once. Both a successful
  *   extraction and a failure are cached (status distinguishes them) so a
  *   dead/paywalled link isn't re-fetched on every open either.
+ * - `summaries` caches the on-demand LLM summary for a bookmark, keyed by
+ *   bookmark, so re-opening the summary modal is instant and spends no extra
+ *   subscription usage after the first generation.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -81,5 +84,11 @@ CREATE TABLE IF NOT EXISTS articles (
   site_name    TEXT,
   reason       TEXT,
   fetched_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS summaries (
+  bookmark_id  INTEGER PRIMARY KEY REFERENCES bookmarks(id) ON DELETE CASCADE,
+  summary      TEXT NOT NULL,
+  generated_at TEXT NOT NULL
 );
 `;

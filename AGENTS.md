@@ -96,6 +96,26 @@ Readability must strip) ship as a servable asset; both the article tests and the
 (`scripts/seed-dev-db.js`'s "Reader View Demo" category) point at it so extraction is
 exercised fully offline, end to end, with zero real network calls.
 
+## On-demand bookmark summaries (issue #5)
+
+Clicking "Summarize" on a card opens a large in-app modal with an on-demand LLM summary of the
+bookmark: the post text, plus its extracted article content (reusing the reader-view cache/fetch
+above) when the link is an article. Generated via `ClaudeSummaryGenerator`
+(`src/summarize/summarizer.ts`), which runs on the same subscription-only `claude` CLI runner as
+categorization (`createClaudeCliRunner`, Haiku-class model) - never the paid API. Cached in the
+`summaries` table (`src/db/schema.ts`, keyed by `bookmark_id`) via `Database.getSummaryForBookmark`
+/ `saveSummary`, so a bookmark is summarized at most once. Server surface:
+`GET /api/bookmarks/:id/summary` (cache-or-generate, mirrors the article endpoint's shape) and
+`GET /api/summary-status` (`{ available: boolean }`, used by the client to disable/tooltip the
+button up front). `ServerOptions.summaryGenerator` is the injection seam for offline tests.
+
+Unlike ingestion/categorization, the web viewer historically needed no secrets - summaries change
+that only when the owner wants them: `cmdServe` (`src/index.ts`) wires a real
+`ClaudeSummaryGenerator` only when `CLAUDE_CODE_OAUTH_TOKEN` is present, leaving it `undefined`
+otherwise. Without it, `/api/bookmarks/:id/summary` returns 503 with an actionable message instead
+of crashing or hanging, and the client disables the button with that message as its tooltip
+(`XBookmarksOrganizer` never requires the token to browse or to read already-cached summaries).
+
 ## Live vs. tested
 
 The live OAuth browser consent and the vault-injected run are performed by the operator. Automated

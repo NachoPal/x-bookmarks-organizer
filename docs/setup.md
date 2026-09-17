@@ -90,11 +90,18 @@ Re-categorize all stored bookmarks from scratch (optional; no X fetch, read stat
 av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js recategorize
 ```
 
-Start the local web viewer (no secrets needed) and open the printed URL:
+Start the local web viewer (no secrets needed - browsing and cached summaries work without one)
+and open the printed URL:
 
 ```bash
 node dist/index.js serve
 # http://127.0.0.1:5173
+```
+
+To also generate NEW on-demand summaries (the "Summarize" button), pass the Claude token:
+
+```bash
+av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve
 ```
 
 ## Troubleshooting

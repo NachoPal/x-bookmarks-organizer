@@ -38,6 +38,16 @@ export interface ArticleRecord {
   fetchedAt: string;
 }
 
+/**
+ * The cached on-demand summary for a bookmark, generated the first time the
+ * owner clicks "Summarize" and served from cache on every later open.
+ */
+export interface SummaryRecord {
+  bookmarkId: number;
+  summary: string;
+  generatedAt: string;
+}
+
 /** A category tree node as stored. */
 export interface CategoryNode {
   id: number;
