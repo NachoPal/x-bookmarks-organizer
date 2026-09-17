@@ -38,6 +38,18 @@
           <div class="sidebar-topbar">
             <h2 class="sidebar-heading">Categories</h2>
             <button
+              id="category-color-toggle"
+              class="color-toggle"
+              type="button"
+              role="switch"
+              aria-checked="true"
+            >
+              <span class="color-toggle-track" aria-hidden="true">
+                <span class="color-toggle-thumb"></span>
+              </span>
+              <span class="color-toggle-label">Colors</span>
+            </button>
+            <button
               id="sidebar-close"
               class="icon-btn sidebar-close"
               type="button"
@@ -173,6 +185,7 @@
 
     <script src="https://platform.twitter.com/widgets.js" async></script>
     <script src="tree-color.js" defer></script>
+    <script src="tree-counts.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

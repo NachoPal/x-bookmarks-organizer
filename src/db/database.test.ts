@@ -199,6 +199,28 @@ describe('Database', () => {
     });
   });
 
+  describe('getCategoryIdsForBookmarks', () => {
+    it('maps each bookmark to the categories it is directly filed under', () => {
+      const when = new Date().toISOString();
+      const ai = db.getOrCreateCategory('AI', null, when);
+      const evals = db.getOrCreateCategory('Evals', ai.id, when);
+      const harnesses = db.getOrCreateCategory('Harnesses', ai.id, when);
+      db.storeCategorizedBatch([bookmark('1'), bookmark('2')], (bm) =>
+        bm.postId === '1' ? [evals.id, harnesses.id] : [harnesses.id],
+      );
+      const b1 = db.getBookmarkByPostId('1')!;
+      const b2 = db.getBookmarkByPostId('2')!;
+
+      const map = db.getCategoryIdsForBookmarks([b1.id, b2.id]);
+      expect(map.get(b1.id)?.sort()).toEqual([evals.id, harnesses.id].sort());
+      expect(map.get(b2.id)).toEqual([harnesses.id]);
+    });
+
+    it('returns an empty map for an empty input', () => {
+      expect(db.getCategoryIdsForBookmarks([])).toEqual(new Map());
+    });
+  });
+
   describe('paging and counts for the viewer', () => {
     function seedEvals(count: number, readCount = 0) {
       const when = new Date().toISOString();

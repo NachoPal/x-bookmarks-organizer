@@ -51,6 +51,10 @@
   // Full category tree (roots) kept in memory so the search filter can
   // re-render from source without re-fetching.
   let treeRoots = [];
+  // id -> node, flattened from treeRoots (same object references) so a
+  // read-state toggle or delete can walk straight to a category's ancestors
+  // and patch counts in place, without touching the rest of the sidebar DOM.
+  let categoryIndex = new Map();
   let readFilter = "all"; // "all" | "unread" | "read"
 
   // ---- lazy loading (paged, filtered, infinite scroll) ------------------
@@ -147,6 +151,36 @@
     else if (drawerQuery.addListener) drawerQuery.addListener(onModeChange);
   }
 
+  // ---- category-color toggle ---------------------------------------------
+  // Lets the owner compare the per-root-hue tree against a plain
+  // (indentation + guide lines only) one and persists the choice, so a
+  // reload keeps whichever they picked. Defaults to on (the current colored
+  // look).
+  const colorToggleBtn = document.getElementById("category-color-toggle");
+
+  function isColorEnabled() {
+    return bodyEl.getAttribute("data-tree-colors") !== "off";
+  }
+
+  function setColorEnabled(enabled, opts) {
+    if (enabled) bodyEl.removeAttribute("data-tree-colors");
+    else bodyEl.setAttribute("data-tree-colors", "off");
+    // The visible label stays "Colors"; aria-checked alone communicates
+    // on/off to assistive tech (the standard switch pattern), so the
+    // accessible name keeps matching the visible text.
+    if (colorToggleBtn) colorToggleBtn.setAttribute("aria-checked", String(enabled));
+    if (!(opts && opts.silent) && window.XBOTreeColor) {
+      window.XBOTreeColor.writeColorEnabled(window.localStorage, enabled);
+    }
+  }
+
+  function initColorToggle() {
+    if (!colorToggleBtn) return;
+    const stored = window.XBOTreeColor ? window.XBOTreeColor.readColorEnabled(window.localStorage) : true;
+    setColorEnabled(stored, { silent: true });
+    colorToggleBtn.addEventListener("click", () => setColorEnabled(!isColorEnabled()));
+  }
+
   // ---- helpers -----------------------------------------------------------
 
   function el(tag, className, text) {
@@ -205,7 +239,53 @@
       return;
     }
     treeRoots = data.tree || [];
+    categoryIndex = window.XBOTreeCounts ? window.XBOTreeCounts.buildCategoryIndex(treeRoots) : new Map();
     renderTree();
+  }
+
+  /**
+   * Patch a single category button's counters in the DOM (no-op if the node
+   * is not currently rendered, e.g. filtered out by an active search).
+   */
+  function patchCategoryCountDom(node) {
+    const button = treeEl.querySelector(`[data-category-id="${node.id}"]`);
+    if (!button) return;
+    const counts = button.querySelector(".tree-counts");
+    if (!counts) return;
+    const totalEl = counts.querySelector(".count-total");
+    if (totalEl) {
+      totalEl.textContent = String(node.total);
+      totalEl.setAttribute("aria-label", `${node.total} bookmarks`);
+    }
+    let badge = counts.querySelector(".badge-unread");
+    if (node.unread > 0) {
+      if (!badge) {
+        badge = el("span", "badge-unread");
+        counts.appendChild(badge);
+      }
+      badge.textContent = String(node.unread);
+      badge.setAttribute("aria-label", `${node.unread} unread`);
+    } else if (badge) {
+      badge.remove();
+    }
+  }
+
+  /**
+   * Apply a total/unread delta to a bookmark's categories (and their
+   * ancestors, counts roll up) and patch only those sidebar counters in
+   * place. This is the fix for the bug where toggling read state or
+   * deleting a bookmark used to reload and re-render the whole tree,
+   * flickering the sidebar and losing scroll/expand state.
+   */
+  function updateSidebarCounts(bm, totalDelta, unreadDelta) {
+    if (!window.XBOTreeCounts) return;
+    const updated = window.XBOTreeCounts.applyCountDelta(
+      categoryIndex,
+      bm.categoryIds,
+      totalDelta,
+      unreadDelta,
+    );
+    for (const node of updated) patchCategoryCountDom(node);
   }
 
   /**
@@ -361,8 +441,10 @@
       const childList = renderNodeList(node.children, depth + 1, options);
       const saved = expansionState.get(String(node.id));
       // While searching, every surviving branch is forced open so matches show;
-      // that transient state is not written back to expansionState.
-      const expanded = searching ? true : saved !== undefined ? saved : depth < 1;
+      // that transient state is not written back to expansionState. Absent a
+      // saved choice, every node - including root categories - starts
+      // collapsed; the owner expands each one to navigate.
+      const expanded = searching ? true : saved !== undefined ? saved : false;
       childList.hidden = !expanded;
       toggle.setAttribute("aria-expanded", String(expanded));
       toggle.setAttribute("aria-label", `Toggle ${node.name}`);
@@ -599,34 +681,21 @@
     }
   }
 
+  /**
+   * A single action row above the post: a left-aligned group (read/unread
+   * chip, Summarize, then the article Read button) and a right-aligned group
+   * (Open on X, then delete last). No author line - the embed (or the
+   * fallback's own byline) already carries who posted it.
+   */
   function renderCard(bm) {
     const card = el("article", "bookmark-card");
     if (!bm.read) card.classList.add("is-unread");
     card.dataset.bookmarkId = String(bm.id);
 
-    // Head: author + read/unread toggle chip
-    const head = el("div", "bookmark-head");
-    const author = el("span", "bookmark-author");
-    author.append(document.createTextNode(bm.authorName || bm.authorUsername));
-    author.appendChild(el("span", "bookmark-handle", ` @${bm.authorUsername}`));
-    const pill = renderPill(bm, card);
-    head.append(author, pill);
+    const actions = el("div", "bookmark-actions");
 
-    // Embed slot with link fallback. Opening the fallback link also marks read.
-    const slot = el("div", "embed-slot");
-    renderEmbed(slot, bm, () => setRead(bm, card, true));
-
-    // Foot: read-in-app (article link only) + open link (also marks read) + delete
-    const foot = el("div", "bookmark-foot");
-
-    if (bm.articleUrl) {
-      const readBtn = el("button", "link-external read-link");
-      readBtn.type = "button";
-      readBtn.appendChild(bookIcon());
-      readBtn.appendChild(document.createTextNode("Read"));
-      readBtn.addEventListener("click", () => openReader(bm, card, readBtn));
-      foot.appendChild(readBtn);
-    }
+    const left = el("div", "bookmark-actions-group bookmark-actions-left");
+    left.appendChild(renderPill(bm, card));
 
     const summarizeBtn = el("button", "link-external summarize-link");
     summarizeBtn.type = "button";
@@ -638,14 +707,25 @@
     } else {
       summarizeBtn.addEventListener("click", () => openSummary(bm, summarizeBtn));
     }
-    foot.appendChild(summarizeBtn);
+    left.appendChild(summarizeBtn);
+
+    if (bm.articleUrl) {
+      const readBtn = el("button", "link-external read-link");
+      readBtn.type = "button";
+      readBtn.appendChild(bookIcon());
+      readBtn.appendChild(document.createTextNode("Read"));
+      readBtn.addEventListener("click", () => openReader(bm, card, readBtn));
+      left.appendChild(readBtn);
+    }
+
+    const right = el("div", "bookmark-actions-group bookmark-actions-right");
 
     const openLink = el("a", "link-external", "Open on X ↗");
     openLink.href = bm.url;
     openLink.target = "_blank";
     openLink.rel = "noopener noreferrer";
     openLink.addEventListener("click", () => setRead(bm, card, true));
-    foot.appendChild(openLink);
+    right.appendChild(openLink);
 
     const deleteBtn = el("button", "icon-btn delete-btn");
     deleteBtn.type = "button";
@@ -653,9 +733,15 @@
     deleteBtn.title = "Delete bookmark";
     deleteBtn.appendChild(trashIcon());
     deleteBtn.addEventListener("click", () => deleteBookmark(bm, card));
-    foot.appendChild(deleteBtn);
+    right.appendChild(deleteBtn);
 
-    card.append(head, slot, foot);
+    actions.append(left, right);
+
+    // Embed slot with link fallback. Opening the fallback link also marks read.
+    const slot = el("div", "embed-slot");
+    renderEmbed(slot, bm, () => setRead(bm, card, true));
+
+    card.append(actions, slot);
     return card;
   }
 
@@ -696,17 +782,22 @@
     return svg;
   }
 
-  /** The read/unread status chip, also the toggle button: a click flips it. */
+  /**
+   * The read/unread status chip, also the toggle button: a click flips it.
+   * Both states render as a colored dot + short label, in distinct colors;
+   * the read timestamp is still stored (see `bm.readAt`) but never shown on
+   * the chip itself.
+   */
   function renderPill(bm, card) {
     const pill = el("button", "read-pill");
     pill.type = "button";
+    pill.appendChild(el("span", "dot"));
     if (bm.read) {
-      const date = formatDate(bm.readAt);
-      pill.textContent = date ? `Read ${date}` : "Read";
+      pill.classList.add("is-read");
+      pill.appendChild(document.createTextNode("Read"));
       pill.setAttribute("aria-label", "Mark as unread");
     } else {
       pill.classList.add("is-unread");
-      pill.appendChild(el("span", "dot"));
       pill.appendChild(document.createTextNode("Unread"));
       pill.setAttribute("aria-label", "Mark as read");
     }
@@ -744,6 +835,13 @@
       loader.remove();
       embedHost.remove();
       const fallback = el("div", "embed-fallback");
+      // The card itself carries no author line (the embed normally shows
+      // it); a fallback has no embed, so it needs its own byline to avoid
+      // leaving the post with zero context about who posted it.
+      const author = el("p", "embed-fallback-author");
+      author.append(document.createTextNode(bm.authorName || bm.authorUsername));
+      author.appendChild(el("span", "bookmark-handle", ` @${bm.authorUsername}`));
+      fallback.appendChild(author);
       if (bm.text) fallback.appendChild(el("p", null, bm.text));
       const link = el("a", "link-external", "View this post on X ↗");
       link.href = bm.url;
@@ -844,8 +942,10 @@
       } else {
         categoryCounts.unread += 1;
       }
-      // Refresh the sidebar unread badges (preserving the active search query).
-      loadTree();
+      // Patch only the sidebar counters for this bookmark's categories (and
+      // their ancestors) in place - NOT a full tree reload, which used to
+      // flicker the whole sidebar and lose scroll/expand-collapse state.
+      updateSidebarCounts(bm, 0, read ? -1 : 1);
 
       const dropsOut =
         (readFilter === "unread" && bm.read) || (readFilter === "read" && !bm.read);
@@ -869,8 +969,7 @@
         }
       } else {
         card.classList.toggle("is-unread", !bm.read);
-        const head = card.querySelector(".bookmark-head");
-        const oldPill = head.querySelector(".read-pill");
+        const oldPill = card.querySelector(".read-pill");
         if (oldPill) oldPill.replaceWith(renderPill(bm, card));
         renderCountLine();
       }
@@ -976,8 +1075,13 @@
       toast.remove();
       try {
         const res = await fetch(`/api/bookmarks/${bm.id}`, { method: "DELETE" });
-        if (!res.ok && res.status !== 404) throw new Error(`Request failed (${res.status})`);
-        loadTree();
+        if (res.ok) {
+          // Patch only the sidebar counters for this bookmark's categories
+          // (and their ancestors) in place - not a full tree reload.
+          updateSidebarCounts(bm, -1, wasUnread ? -1 : 0);
+        } else if (res.status !== 404) {
+          throw new Error(`Request failed (${res.status})`);
+        }
       } catch (err) {
         // Deletion failed server-side: restore the card so nothing silently
         // vanishes, and let the owner know so they can retry.
@@ -1324,6 +1428,7 @@
 
   // ---- init --------------------------------------------------------------
   initSidebar();
+  initColorToggle();
   initSearch();
   initReadFilter();
   initReader();

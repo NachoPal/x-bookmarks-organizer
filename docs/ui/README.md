@@ -72,3 +72,26 @@ offline), the other to a domain reserved by RFC 2606 to never resolve - never re
 | `reader-dark.png` | **Dark mode.** Same article, dark surfaces and text via the token layer. |
 | `reader-fallback.png` | **Graceful failure.** An unreachable link (`.invalid` domain) shows a clear message and a link to the original - never a blank or stuck panel. |
 | `reader-mobile.png` | **~390px.** The reader becomes a full-screen panel; header wraps the title above the actions; reading measure and line-height hold. |
+
+## Card + sidebar polish (issues #21, #22)
+
+Read/unread chips are a colored dot + short label with no date, in distinct colors; the
+delete/Summarize/Read/Open-on-X actions sit in a single row above the post; the author
+line is gone (the embed, or the fallback's own byline, carries it); the post is centered
+and the card is sized to its natural width instead of stretching full-width. The sidebar
+now starts with every root category collapsed, a read-state toggle updates only the
+affected counters in place (no whole-tree re-render/flicker, scroll and expand state
+preserved), and a persisted toggle switches the per-root category coloring on/off. The
+reader and summary modals are now near-full-screen with a comfortable responsive margin.
+Same seeded dataset (`npm run seed:dev`), never real bookmarks.
+
+| File | What it shows |
+| --- | --- |
+| `sidebar-collapsed-light.png` | **Initial load, light.** Every root category collapsed; the Colors toggle in the sidebar header. |
+| `cards-light.png` | **Light.** Action row (chip, Summarize, Read, Open on X, delete) above each post; no author line; posts centered and sized to their own width. |
+| `cards-dark.png` | **Dark.** Same cards; Read (green dot) vs. Unread (blue dot) chips stay distinct and legible. |
+| `sidebar-colors-off-dark.png` | **Category-color toggle off, dark.** Tree falls back to plain indentation + guide lines; selection highlight still reads clearly. |
+| `reader-modal-fullscreen.png` | **Reader modal.** Near-full-screen with a comfortable margin on all sides; content scrolls inside. |
+| `narrow-collapsed.png` | **~390px, initial load.** Sidebar drawer closed by default. |
+| `narrow-drawer-sidebar.png` | **~390px, drawer open.** Roots collapsed; Colors toggle and close button fit the header row. |
+| `narrow-card.png` | **~390px, card layout.** Action row wraps into two lines (chip/Summarize/Read, then Open on X/delete); fallback cards show their own author byline. |

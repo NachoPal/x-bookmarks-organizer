@@ -34,12 +34,15 @@ export interface ServerOptions {
 /**
  * A bookmark as shipped to the viewer, with the primary article link (if any)
  * computed from its text so a card can show the "Read" affordance without a
- * separate round trip.
+ * separate round trip, and the ids of the categories it is directly filed
+ * under so the client can patch only the affected sidebar counters (plus
+ * their ancestors) on a read-state toggle or delete, instead of reloading
+ * the whole tree.
  */
-type BookmarkWithArticleLink = StoredBookmark & { articleUrl: string | null };
+type BookmarkForViewer = StoredBookmark & { articleUrl: string | null; categoryIds: number[] };
 
-function withArticleLink(bookmark: StoredBookmark): BookmarkWithArticleLink {
-  return { ...bookmark, articleUrl: extractArticleLink(bookmark.text) };
+function toViewerBookmark(bookmark: StoredBookmark, categoryIds: number[]): BookmarkForViewer {
+  return { ...bookmark, articleUrl: extractArticleLink(bookmark.text), categoryIds };
 }
 
 function parseReadFilter(raw: unknown): ReadFilter {
@@ -132,9 +135,10 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
             ? counts.total - counts.unread
             : counts.total;
       const bookmarks = db.getBookmarksForCategory(id, { filter, offset, limit });
+      const categoryIdsByBookmark = db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id));
 
       return {
-        bookmarks: bookmarks.map(withArticleLink),
+        bookmarks: bookmarks.map((b) => toViewerBookmark(b, categoryIdsByBookmark.get(b.id) ?? [])),
         counts,
         offset,
         limit,

@@ -214,6 +214,29 @@ export class Database {
   }
 
   /**
+   * The category ids a bookmark is directly filed under, for each id in
+   * `bookmarkIds`. Lets the viewer patch only the sidebar counters affected
+   * by a read-state toggle or delete (that bookmark's categories and their
+   * ancestors) instead of reloading the whole tree.
+   */
+  getCategoryIdsForBookmarks(bookmarkIds: number[]): Map<number, number[]> {
+    const map = new Map<number, number[]>();
+    if (bookmarkIds.length === 0) return map;
+    const placeholders = bookmarkIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT bookmark_id, category_id FROM bookmark_categories WHERE bookmark_id IN (${placeholders})`,
+      )
+      .all(...bookmarkIds) as { bookmark_id: number; category_id: number }[];
+    for (const row of rows) {
+      const list = map.get(row.bookmark_id);
+      if (list) list.push(row.category_id);
+      else map.set(row.bookmark_id, [row.category_id]);
+    }
+    return map;
+  }
+
+  /**
    * Rolled-up counts for a category subtree: total bookmarks and how many are
    * unread. Lets the viewer show accurate totals and page the filtered set
    * without downloading every row.
