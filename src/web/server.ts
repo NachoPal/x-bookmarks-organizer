@@ -38,6 +38,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // The category tree with rolled-up total/unread counts per node.
   app.get('/api/tree', async () => ({ tree: buildCategoryTree(db) }));
 
+  // When bookmarks were last successfully synced with X, or null if never.
+  app.get('/api/sync-status', async () => ({ lastSyncedAt: db.getLastSyncedAt() ?? null }));
+
   // One page of a category's bookmarks, filtered by read state. Paging the
   // filtered set server-side keeps a large category from shipping all at once.
   app.get<{ Params: { id: string }; Querystring: { filter?: string; offset?: string; limit?: string } }>(

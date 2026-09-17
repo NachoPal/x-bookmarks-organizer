@@ -86,6 +86,37 @@ describe('web server API', () => {
   });
 });
 
+describe('GET /api/sync-status', () => {
+  let db: Database;
+  let app: FastifyInstance;
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it('returns null when the database has never been synced', async () => {
+    db = new Database(':memory:');
+    app = buildServer(db);
+    await app.ready();
+
+    const res = await app.inject({ method: 'GET', url: '/api/sync-status' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ lastSyncedAt: null });
+  });
+
+  it('returns the last-synced timestamp once one is recorded', async () => {
+    db = new Database(':memory:');
+    db.setLastSyncedAt('2026-09-16T10:00:00.000Z');
+    app = buildServer(db);
+    await app.ready();
+
+    const res = await app.inject({ method: 'GET', url: '/api/sync-status' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ lastSyncedAt: '2026-09-16T10:00:00.000Z' });
+  });
+});
+
 describe('web server bookmark paging & filtering', () => {
   let db: Database;
   let app: FastifyInstance;

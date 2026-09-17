@@ -55,6 +55,7 @@ function toCategoryNode(row: CategoryRow): CategoryNode {
 
 const MARKER_KEY = 'newest_seen_post_id';
 const REFRESH_TOKEN_KEY = 'x_refresh_token';
+const LAST_SYNCED_AT_KEY = 'last_synced_at';
 
 /**
  * Thin, well-typed wrapper over the SQLite database.
@@ -334,6 +335,15 @@ export class Database {
 
   setRefreshToken(token: string): void {
     this.setState(REFRESH_TOKEN_KEY, token);
+  }
+
+  /** ISO timestamp of the last successful sync with X, or undefined if never synced. */
+  getLastSyncedAt(): string | undefined {
+    return this.getState(LAST_SYNCED_AT_KEY);
+  }
+
+  setLastSyncedAt(when: string): void {
+    this.setState(LAST_SYNCED_AT_KEY, when);
   }
 
   // --- Counts (raw, per node) -------------------------------------------

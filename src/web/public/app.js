@@ -807,9 +807,61 @@
     });
   }
 
+  // ---- last-sync indicator ------------------------------------------------
+  // Absolute date comes from the server; the "N ago" part is computed here so
+  // it stays current across reloads (and is refreshed on an interval) without
+  // needing another round trip.
+  const syncStatusEl = document.getElementById("sync-status");
+  const syncStatusDateEl = document.getElementById("sync-status-date");
+  const syncStatusRelEl = document.getElementById("sync-status-rel");
+  let lastSyncedAt = null;
+
+  function formatRelativeTime(iso) {
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const diffMin = Math.round(diffMs / 60000);
+    if (diffMin < 1) return "just now";
+    if (diffMin < 60) return `${diffMin} minute${diffMin === 1 ? "" : "s"} ago`;
+    const diffHour = Math.round(diffMin / 60);
+    if (diffHour < 24) return `${diffHour} hour${diffHour === 1 ? "" : "s"} ago`;
+    const diffDay = Math.round(diffHour / 24);
+    return `${diffDay} day${diffDay === 1 ? "" : "s"} ago`;
+  }
+
+  function renderSyncStatus() {
+    if (!syncStatusEl || !syncStatusDateEl || !syncStatusRelEl) return;
+    if (!lastSyncedAt) {
+      syncStatusDateEl.textContent = "Never synced";
+      syncStatusRelEl.textContent = "";
+    } else {
+      const dateText = new Date(lastSyncedAt).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      });
+      syncStatusDateEl.textContent = `Last synced: ${dateText}`;
+      syncStatusRelEl.textContent = formatRelativeTime(lastSyncedAt);
+    }
+    syncStatusEl.hidden = false;
+  }
+
+  async function loadSyncStatus() {
+    if (!syncStatusEl) return;
+    try {
+      const res = await fetch("/api/sync-status");
+      if (!res.ok) return;
+      const data = await res.json();
+      lastSyncedAt = data.lastSyncedAt;
+      renderSyncStatus();
+      if (lastSyncedAt) setInterval(renderSyncStatus, 60000);
+    } catch (_) {
+      /* leave the indicator hidden rather than show a stale/misleading state */
+    }
+  }
+
   // ---- init --------------------------------------------------------------
   initSidebar();
   initSearch();
   initReadFilter();
   loadTree();
+  loadSyncStatus();
 })();
