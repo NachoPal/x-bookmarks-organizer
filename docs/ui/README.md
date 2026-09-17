@@ -95,3 +95,19 @@ Same seeded dataset (`npm run seed:dev`), never real bookmarks.
 | `narrow-collapsed.png` | **~390px, initial load.** Sidebar drawer closed by default. |
 | `narrow-drawer-sidebar.png` | **~390px, drawer open.** Roots collapsed; Colors toggle and close button fit the header row. |
 | `narrow-card.png` | **~390px, card layout.** Action row wraps into two lines (chip/Summarize/Read, then Open on X/delete); fallback cards show their own author byline. |
+
+## Viewer tweaks: uniform cards, no chip shift, colors off, theme toggle (issue #30)
+
+Every bookmark card now renders at the same fixed-width column regardless of its post's
+length; the read/unread chip reserves the wider "Unread" label's width so toggling it
+causes zero reflow of the row's other controls; the category-color toggle now defaults
+off (a plain tree) instead of on; and a new sun/moon control in the top menu bar sets an
+explicit light/dark preference (persisted), overriding the system default. Same seeded
+dataset (`npm run seed:dev`, posts of very different lengths), never real bookmarks.
+
+| File | What it shows |
+| --- | --- |
+| `uniform-cards.png` | **Light, colors off (new default).** Cards of very different post lengths (a one-line note next to multi-line posts) all render at the same fixed width. |
+| `colors-on.png` | **Colors toggled on.** The per-root tree tint from issue #15, still available via the sidebar toggle. |
+| `theme-light.png` | **Light theme, explicit.** The header toggle shows a sun icon (click switches to dark). |
+| `theme-dark.png` | **Dark theme, explicit.** The header toggle shows a moon icon (click switches to light); preference persists across reloads. |

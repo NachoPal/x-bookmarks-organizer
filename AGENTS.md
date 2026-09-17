@@ -74,8 +74,24 @@ must not double-adjust a shared ancestor. The category tree renders with every n
 roots - collapsed by default until the owner expands it or a search match forces ancestors open.
 
 The per-root tree tint (`tree-color.js`) has a paired on/off toggle, persisted in localStorage
-(`readColorEnabled`/`writeColorEnabled`, default on) via a `body[data-tree-colors="off"]` CSS
-attribute; guard every localStorage access in try/catch (private mode / blocked storage).
+(`readColorEnabled`/`writeColorEnabled`, default **off** - a plain tree - since issue #30) via a
+`body[data-tree-colors="on"]` CSS attribute; guard every localStorage access in try/catch (private
+mode / blocked storage).
+
+The light/dark theme toggle (`theme.js`'s `readStoredTheme`/`writeTheme`/`effectiveTheme`, wired in
+`app.js`'s `initThemeToggle`) sets `data-theme="light"|"dark"` on `<html>`, overriding the
+`prefers-color-scheme` media query default until the owner picks explicitly; persisted the same
+guarded-localStorage way. The toggle's sun/moon icon visibility is driven purely by CSS keyed off
+that same `data-theme` attribute (`:root[data-theme="dark"] .theme-toggle .icon-sun { display:
+none; }` and the inverse) rather than JS toggling the SVG's `hidden` property - that property was
+observed to silently desync from the attribute in an automated test session, so any per-state
+icon/visual swap in this viewer should prefer a CSS attribute selector over JS-driven `hidden`/
+`style.display`.
+
+Every bookmark card renders at the same fixed-width column (`--post-card-measure`, centered) no
+matter its post's length - a bug fix from issue #30 after cards had drifted to shrink-wrapping
+short posts; the read/unread chip (`.read-pill`) reserves a `min-width` sized to the wider "Unread"
+label so toggling it never reflows the row's other controls.
 
 Each embed slot (`renderEmbed` in `app.js`) shows a skeleton + spinner immediately and reveals
 only the finished result: it renders into a hidden host and swaps to the embed when

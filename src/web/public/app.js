@@ -152,19 +152,18 @@
   }
 
   // ---- category-color toggle ---------------------------------------------
-  // Lets the owner compare the per-root-hue tree against a plain
-  // (indentation + guide lines only) one and persists the choice, so a
-  // reload keeps whichever they picked. Defaults to on (the current colored
-  // look).
+  // Lets the owner compare a plain (indentation + guide lines only) tree
+  // against the per-root-hue colored one and persists the choice, so a
+  // reload keeps whichever they picked. Defaults to off (the plain tree).
   const colorToggleBtn = document.getElementById("category-color-toggle");
 
   function isColorEnabled() {
-    return bodyEl.getAttribute("data-tree-colors") !== "off";
+    return bodyEl.getAttribute("data-tree-colors") === "on";
   }
 
   function setColorEnabled(enabled, opts) {
-    if (enabled) bodyEl.removeAttribute("data-tree-colors");
-    else bodyEl.setAttribute("data-tree-colors", "off");
+    if (enabled) bodyEl.setAttribute("data-tree-colors", "on");
+    else bodyEl.removeAttribute("data-tree-colors");
     // The visible label stays "Colors"; aria-checked alone communicates
     // on/off to assistive tech (the standard switch pattern), so the
     // accessible name keeps matching the visible text.
@@ -176,7 +175,7 @@
 
   function initColorToggle() {
     if (!colorToggleBtn) return;
-    const stored = window.XBOTreeColor ? window.XBOTreeColor.readColorEnabled(window.localStorage) : true;
+    const stored = window.XBOTreeColor ? window.XBOTreeColor.readColorEnabled(window.localStorage) : false;
     setColorEnabled(stored, { silent: true });
     colorToggleBtn.addEventListener("click", () => setColorEnabled(!isColorEnabled()));
   }
@@ -219,8 +218,52 @@
     return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   }
 
+  function systemPrefersDark() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+
   function isDarkTheme() {
-    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    return window.XBOTheme
+      ? window.XBOTheme.effectiveTheme(window.localStorage, systemPrefersDark()) === "dark"
+      : systemPrefersDark();
+  }
+
+  // ---- light/dark theme toggle --------------------------------------------
+  // Explicit light/dark preference in the top menu bar, overriding the system
+  // default. Defaults to following the system theme until the owner picks.
+  const themeToggleBtn = document.getElementById("theme-toggle");
+
+  function applyTheme(theme) {
+    // The icon shown is driven by CSS off this same attribute (see
+    // styles.css), so setting it here is the single source of truth for
+    // both the active theme and the toggle's icon/label.
+    document.documentElement.setAttribute("data-theme", theme);
+    if (!themeToggleBtn) return;
+    const isDark = theme === "dark";
+    themeToggleBtn.setAttribute("aria-pressed", String(isDark));
+    themeToggleBtn.setAttribute("aria-label", isDark ? "Switch to light theme" : "Switch to dark theme");
+  }
+
+  function initThemeToggle() {
+    if (!themeToggleBtn || !window.XBOTheme) return;
+    applyTheme(window.XBOTheme.effectiveTheme(window.localStorage, systemPrefersDark()));
+
+    themeToggleBtn.addEventListener("click", () => {
+      const next = isDarkTheme() ? "light" : "dark";
+      window.XBOTheme.writeTheme(window.localStorage, next);
+      applyTheme(next);
+    });
+
+    // Keep the toggle in sync if the system theme changes while following it
+    // (no explicit preference stored yet).
+    const media = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+    const onSystemChange = () => {
+      if (!window.XBOTheme.readStoredTheme(window.localStorage)) {
+        applyTheme(window.XBOTheme.effectiveTheme(window.localStorage, systemPrefersDark()));
+      }
+    };
+    if (media && media.addEventListener) media.addEventListener("change", onSystemChange);
+    else if (media && media.addListener) media.addListener(onSystemChange);
   }
 
   // ---- category tree -----------------------------------------------------
@@ -1428,6 +1471,7 @@
 
   // ---- init --------------------------------------------------------------
   initSidebar();
+  initThemeToggle();
   initColorToggle();
   initSearch();
   initReadFilter();
