@@ -1,23 +1,19 @@
 import path from 'node:path';
+import type { LlmConfig } from './llm/types';
 
 /**
  * Runtime configuration for the tool.
  *
- * Secrets are ONLY ever read from the process environment (injected by Automic
- * Vault at run time). They are never read from a committed file and never
- * written to disk. See README "Secrets" for the `av inject` run command.
+ * Secrets are ONLY ever read from the process environment. They are never read
+ * from a committed file and never written to disk - how they get into the
+ * environment (a vault such as `av inject`, a shell export, a systemd unit) is
+ * the operator's choice. See README "Secrets".
  */
 export interface Config {
   /** X OAuth 2.0 app Client ID (env: XBOOKMARKS_CLIENT_ID). */
   xClientId: string;
   /** X OAuth 2.0 app Client Secret (env: XBOOKMARKS_CLIENT_SECRET). */
   xClientSecret: string;
-  /**
-   * Claude subscription token (env: CLAUDE_CODE_OAUTH_TOKEN). Passed through to
-   * the `claude` CLI so categorization runs on the subscription, not the paid
-   * API. NOT required for the web viewer.
-   */
-  claudeToken: string | undefined;
   /** Absolute path to the local SQLite database file. */
   dbPath: string;
   /** OAuth redirect URI. Must match the value registered on the X app exactly. */
@@ -26,12 +22,12 @@ export interface Config {
   authCallbackPort: number;
   /** Port for the local web viewer. */
   webPort: number;
-  /** Claude model used for the assignment pass (Haiku-class for cost/quota efficiency). */
-  categorizeModel: string;
-  /** Claude model used for the holistic taxonomy-design pass (Opus-class). */
-  taxonomyModel: string;
-  /** Effort level for the taxonomy-design pass (low|medium|high|xhigh|max). */
-  taxonomyEffort: string;
+  /**
+   * Which LLM provider runs, and with which model per role. Model names and
+   * effort levels are provider-specific, so they are resolved by the provider
+   * adapter (`src/llm/`), not here.
+   */
+  llm: LlmConfig;
   /** How many bookmarks to send to the assignment LLM per request. */
   batchSize: number;
   /** Best-effort minimum nesting depth the taxonomy pass targets. */
@@ -49,16 +45,12 @@ export interface Config {
 const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:3000/callback';
 const DEFAULT_AUTH_PORT = 3000;
 const DEFAULT_WEB_PORT = 5173;
-const DEFAULT_MODEL = 'claude-haiku-4-5';
-const DEFAULT_TAXONOMY_MODEL = 'claude-opus-4-8';
+const DEFAULT_LLM_PROVIDER = 'claude-cli';
 const DEFAULT_TAXONOMY_EFFORT = 'high';
 const DEFAULT_BATCH_SIZE = 15;
 const DEFAULT_MIN_DEPTH = 3;
 const DEFAULT_MAX_DEPTH = 4;
 const DEFAULT_PAGE_SIZE = 20;
-
-/** Effort levels the `claude` CLI accepts for `--effort`. */
-const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 function intFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -67,10 +59,47 @@ function intFromEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-/** Read an effort level from the env, falling back if unset or invalid. */
-function effortFromEnv(env: NodeJS.ProcessEnv, name: string, fallback: string): string {
-  const raw = env[name]?.trim().toLowerCase();
-  return raw && VALID_EFFORTS.has(raw) ? raw : fallback;
+/** A trimmed env value, or undefined when unset or blank (so "" never overrides a default). */
+function optionalFromEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  return env[name]?.trim() || undefined;
+}
+
+/**
+ * Build the per-role LLM config from the environment.
+ *
+ * The historical vars keep their exact meaning against the default provider:
+ * `XBOOKMARKS_MODEL` is the assignment (and, unless overridden, summary) model,
+ * `XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT` drive pass 1.
+ * Whether a level is a *valid* effort is the adapter's business, not this
+ * file's - the same environment may one day target several providers.
+ */
+function llmFromEnv(env: NodeJS.ProcessEnv): LlmConfig {
+  const assignmentModel = optionalFromEnv(env, 'XBOOKMARKS_MODEL');
+  return {
+    defaultProvider: optionalFromEnv(env, 'XBOOKMARKS_LLM_PROVIDER') ?? DEFAULT_LLM_PROVIDER,
+    defaultModel: optionalFromEnv(env, 'XBOOKMARKS_LLM_MODEL'),
+    roles: {
+      taxonomy: {
+        provider: optionalFromEnv(env, 'XBOOKMARKS_TAXONOMY_PROVIDER'),
+        model: optionalFromEnv(env, 'XBOOKMARKS_TAXONOMY_MODEL'),
+        params: {
+          effort: optionalFromEnv(env, 'XBOOKMARKS_TAXONOMY_EFFORT') ?? DEFAULT_TAXONOMY_EFFORT,
+        },
+      },
+      assignment: {
+        provider: optionalFromEnv(env, 'XBOOKMARKS_ASSIGNMENT_PROVIDER'),
+        model: assignmentModel,
+      },
+      summary: {
+        provider: optionalFromEnv(env, 'XBOOKMARKS_SUMMARY_PROVIDER'),
+        model: optionalFromEnv(env, 'XBOOKMARKS_SUMMARY_MODEL') ?? assignmentModel,
+      },
+      chat: {
+        provider: optionalFromEnv(env, 'XBOOKMARKS_CHAT_PROVIDER'),
+        model: optionalFromEnv(env, 'XBOOKMARKS_CHAT_MODEL'),
+      },
+    },
+  };
 }
 
 /**
@@ -88,14 +117,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     xClientId: env.XBOOKMARKS_CLIENT_ID ?? '',
     xClientSecret: env.XBOOKMARKS_CLIENT_SECRET ?? '',
-    claudeToken: env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
     dbPath,
     redirectUri: env.XBOOKMARKS_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
     authCallbackPort: intFromEnv('XBOOKMARKS_AUTH_PORT', DEFAULT_AUTH_PORT),
     webPort: intFromEnv('XBOOKMARKS_WEB_PORT', DEFAULT_WEB_PORT),
-    categorizeModel: env.XBOOKMARKS_MODEL ?? DEFAULT_MODEL,
-    taxonomyModel: env.XBOOKMARKS_TAXONOMY_MODEL ?? DEFAULT_TAXONOMY_MODEL,
-    taxonomyEffort: effortFromEnv(env, 'XBOOKMARKS_TAXONOMY_EFFORT', DEFAULT_TAXONOMY_EFFORT),
+    llm: llmFromEnv(env),
     batchSize: intFromEnv('XBOOKMARKS_BATCH_SIZE', DEFAULT_BATCH_SIZE),
     minCategoryDepth: intFromEnv('XBOOKMARKS_MIN_DEPTH', DEFAULT_MIN_DEPTH),
     maxCategoryDepth: intFromEnv('XBOOKMARKS_MAX_DEPTH', DEFAULT_MAX_DEPTH),
@@ -111,8 +137,8 @@ export function requireXCredentials(config: Config): void {
   if (missing.length > 0) {
     throw new Error(
       `Missing required secret(s): ${missing.join(', ')}. ` +
-        'Run via Automic Vault, e.g.\n' +
-        '  av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js',
+        'Provide them in the environment - however you prefer, e.g. a vault:\n' +
+        '  av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js',
     );
   }
 }

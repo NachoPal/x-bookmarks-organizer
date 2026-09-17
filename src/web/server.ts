@@ -14,9 +14,18 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 /** Fallback batch size when no explicit page size is configured. */
 const DEFAULT_PAGE_SIZE = 20;
 
-/** Shown when a summary is requested but no summary generator is configured (no Claude token). */
+/**
+ * Shown when a summary is requested but no generator is wired. The real reason
+ * normally comes from the provider's own health check
+ * (`ServerOptions.summaryUnavailableReason`); this is the fallback when the
+ * viewer was started without one.
+ */
 const SUMMARY_UNAVAILABLE_MESSAGE =
-  'Run the viewer with `av inject +CLAUDE_CODE_OAUTH_TOKEN -- node dist/index.js serve` to enable summaries.';
+  'Summaries are disabled: no LLM provider is available. Install and log in to the `claude` CLI, ' +
+  'or set XBOOKMARKS_LLM_PROVIDER to a provider you have configured.';
+
+/** Cap on how much of an adapter's failure message is forwarded to the browser. */
+const MAX_ERROR_CHARS = 300;
 
 /** Options controlling viewer behavior; page size defaults to {@link DEFAULT_PAGE_SIZE}. */
 export interface ServerOptions {
@@ -24,11 +33,17 @@ export interface ServerOptions {
   /** Injectable so tests can fake the network fetch; defaults to the real HTTP fetcher. */
   articleFetcher?: ArticleFetcher;
   /**
-   * Generates on-demand bookmark summaries. Undefined when
-   * `CLAUDE_CODE_OAUTH_TOKEN` is not present in the environment, in which case
-   * the summary endpoint degrades gracefully (503) instead of crashing.
+   * Generates on-demand bookmark summaries. Undefined when the configured LLM
+   * provider reported itself unavailable, in which case the summary endpoint
+   * degrades gracefully (503) instead of crashing.
    */
   summaryGenerator?: SummaryGenerator;
+  /**
+   * Why summaries are off, when no generator is wired - the provider adapter's
+   * own actionable message, surfaced as the button's tooltip and the modal's
+   * text so the viewer never has to guess at a fix.
+   */
+  summaryUnavailableReason?: string;
 }
 
 /** The link-preview card data shipped alongside a bookmark that has a confirmed article link. */
@@ -119,6 +134,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   const pageSize = opts.pageSize && opts.pageSize > 0 ? opts.pageSize : DEFAULT_PAGE_SIZE;
   const articleFetcher = opts.articleFetcher ?? new HttpArticleFetcher();
   const summaryGenerator = opts.summaryGenerator;
+  const unavailableReason = opts.summaryUnavailableReason ?? SUMMARY_UNAVAILABLE_MESSAGE;
 
   /**
    * The cached extraction for a bookmark's article link, fetching and caching
@@ -248,11 +264,16 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     return { article: record };
   });
 
-  // Whether the owner can generate NEW summaries right now (a Claude token is
-  // configured). The client checks this once to disable/tooltip the
-  // Summarize button proactively; the summary endpoint below also degrades
-  // gracefully on its own if called anyway.
-  app.get('/api/summary-status', async () => ({ available: Boolean(summaryGenerator) }));
+  // Whether the owner can generate NEW summaries right now - i.e. whether the
+  // configured LLM provider reported itself available at startup. The client
+  // checks this once to disable/tooltip the Summarize button proactively (with
+  // `reason` as the tooltip); the summary endpoint below also degrades
+  // gracefully on its own if called anyway. A provider that is available but
+  // whose call then fails keeps the button enabled and reports the failure in
+  // the modal, so a retry is possible.
+  app.get('/api/summary-status', async () =>
+    summaryGenerator ? { available: true } : { available: false, reason: unavailableReason },
+  );
 
   // The on-demand LLM summary for a bookmark: served from cache once
   // generated. Article-aware when the bookmark's link is an article - the
@@ -271,7 +292,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (cached) return { summary: cached };
 
     if (!summaryGenerator) {
-      return reply.code(503).send({ error: SUMMARY_UNAVAILABLE_MESSAGE });
+      return reply.code(503).send({ error: unavailableReason });
     }
 
     const articleUrl = extractArticleLink(bookmark.text);
@@ -287,8 +308,14 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         articleTitle: readableArticle?.title ?? null,
         articleText: readableArticle ? htmlToPlainText(readableArticle.contentHtml ?? '') : null,
       });
-    } catch {
-      return reply.code(502).send({ error: 'Could not generate a summary. Please try again.' });
+    } catch (err) {
+      // Forward the adapter's message: it is written to be user-facing and is
+      // redacted at the adapter boundary, so it tells the owner what to fix
+      // instead of a generic failure they cannot act on.
+      const detail = err instanceof Error ? err.message.slice(0, MAX_ERROR_CHARS) : '';
+      return reply
+        .code(502)
+        .send({ error: detail || 'Could not generate a summary. Please try again.' });
     }
 
     const record: SummaryRecord = {

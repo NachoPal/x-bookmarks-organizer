@@ -19,10 +19,12 @@ Setup steps: `docs/setup.md`.
 
 ## Hard constraints (do not regress)
 
-- **Categorization must run on the Claude subscription, never the paid API.** It shells out to the
-  `claude` CLI in print mode (`src/categorize/llm.ts`) using `CLAUDE_CODE_OAUTH_TOKEN`. Never
-  introduce `@anthropic-ai/sdk` or require `ANTHROPIC_API_KEY` (the runner even strips it from the
-  child env).
+- **Categorization must run on the Claude subscription, never the paid API.** It now routes through
+  the provider abstraction (`src/llm/`, see below), whose ONE adapter - `claude-cli` - shells out to
+  the `claude` CLI in print mode. Never introduce `@anthropic-ai/sdk` or require
+  `ANTHROPIC_API_KEY`; the adapter strips it from the child env as its subscription-only invariant.
+  A hosted, pay-per-token adapter is a future issue and would have to be an explicit, separately
+  approved change - no code path may silently spend money.
 - **Categorization is two passes** (`src/ingest.ts`): pass 1 designs a taxonomy holistically over
   ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus-class + high effort, configurable) so
   the tree is genuinely deep; pass 2 files each bookmark into that fixed tree in batches
@@ -35,14 +37,46 @@ Setup steps: `docs/setup.md`.
   nodes - off-tree paths fall back to `Uncategorized`. `recategorize` rebuilds both passes over all
   stored bookmarks without re-fetching, preserving read state/dates (it designs the new taxonomy
   BEFORE clearing the old one, so a failed LLM call never wipes the DB).
-- **Secrets come only from the environment (Automic Vault `av inject`).** Never read a committed
-  `.env`, never write secrets to disk. The X refresh token is persisted in the (gitignored) SQLite
-  DB via `run_state`.
+- **Secrets come only from the environment.** How they get there is the operator's choice (`av
+  inject` is one example, not a requirement) - so keep user-facing strings and docs tool-agnostic.
+  Never read a committed `.env`, never write secrets to disk. The X refresh token is persisted in
+  the (gitignored) SQLite DB via `run_state`.
 - **Incremental detection is by DB membership, not post date.** `collectNewBookmarks`
   (`src/ingest.ts`) pages the bookmark timeline newest-first and stops at the first already-stored
   `post_id`. Old posts can be freshly bookmarked, so post `created_at` must never be the signal.
 - **Batches are stored atomically** (`Database.storeCategorizedBatch`): a bookmark is only marked
   "seen" once it is stored with its categories, so interrupted runs retry cleanly.
+
+## LLM provider abstraction (`src/llm/`)
+
+Every LLM feature depends on the narrow, provider-agnostic port `LlmRunner`
+(`src/categorize/llm.ts`) - `(prompt) => Promise<string>` - which is why `Categorizer`,
+`LlmTaxonomyDesigner` and `LlmSummaryGenerator` contain zero provider-specific code and their tests
+inject a plain fake function. Behind it: `types.ts` (the rich `LlmClient` an adapter implements,
+plus `ProviderDefinition`), `registry.ts` (static `registerProvider`/`getProvider`), `factory.ts`
+(`createLlmFactory(config, env)` -> `forRole`/`check`/`describe`), `runner.ts` (`toRunner(client)`,
+the bridge to `LlmRunner`) and `providers/` (adapters, registered in `providers/index.ts`).
+
+Roles are `taxonomy | assignment | summary | chat`; resolution is per-role override -> global
+override -> the provider's own `suggestedFor` suggestion, so the Opus-pass-1 / Haiku-pass-2
+economics stay expressible. `XBOOKMARKS_LLM_PROVIDER` selects the provider (default and only value:
+`claude-cli`); an unknown id fails with the list of ids that exist. Model names and effort levels
+are **provider-specific**: `config.ts` reads them, the adapter validates them (that is where
+`VALID_EFFORTS` lives), and a provider that lacks a capability ignores the param rather than
+failing. Adapters never read `process.env` - they are handed a `ResolvedProviderConfig.get(key)`,
+which is also the offline test seam (`createLlmFactory(config, env)`).
+
+Two things the `claude-cli` adapter must keep doing. It spawns **hardened** -
+`--safe-mode --tools "" --max-turns 1` - which is what stops the CWD's own `CLAUDE.md`/`AGENTS.md`
+from landing inside every categorization prompt and closes the path from attacker-authored bookmark
+text to the filesystem (~29.7k -> ~3.9k tokens per call, no behavior loss). And its `check()` is
+"does the `claude` binary resolve and run", **never** "is `CLAUDE_CODE_OAUTH_TOKEN` set" - a CLI
+logged in interactively needs no token, and keying availability on the token is the false negative
+that disabled the Summarize button (issue #35). Availability drives both the categorization
+preflight and the viewer's `/api/summary-status`; a provider that is available but whose call then
+fails keeps the button **enabled** and surfaces the adapter's redacted, actionable message in the
+modal. Adapter tests point `XBOOKMARKS_CLAUDE_BIN` at a throwaway stub script, so the whole seam is
+exercised end to end with no network and no subscription usage.
 
 ## Frontend
 
@@ -137,21 +171,23 @@ real browser (issue #28); its tests spin up a real local `http` server (not just
 
 Clicking "Summarize" on a card opens a large in-app modal with an on-demand LLM summary of the
 bookmark: the post text, plus its extracted article content (reusing the reader-view cache/fetch
-above) when the link is an article. Generated via `ClaudeSummaryGenerator`
-(`src/summarize/summarizer.ts`), which runs on the same subscription-only `claude` CLI runner as
-categorization (`createClaudeCliRunner`, Haiku-class model) - never the paid API. Cached in the
+above) when the link is an article. Generated via `LlmSummaryGenerator`
+(`src/summarize/summarizer.ts`), which runs on the `summary` role's runner from the same provider
+factory as categorization (Haiku-class model by default) - never the paid API. Cached in the
 `summaries` table (`src/db/schema.ts`, keyed by `bookmark_id`) via `Database.getSummaryForBookmark`
 / `saveSummary`, so a bookmark is summarized at most once. Server surface:
 `GET /api/bookmarks/:id/summary` (cache-or-generate, mirrors the article endpoint's shape) and
-`GET /api/summary-status` (`{ available: boolean }`, used by the client to disable/tooltip the
-button up front). `ServerOptions.summaryGenerator` is the injection seam for offline tests.
+`GET /api/summary-status` (`{ available, reason? }`, used by the client to disable/tooltip the
+button up front - `reason` is the provider's own message). `ServerOptions.summaryGenerator` (plus
+`summaryUnavailableReason`) is the injection seam for offline tests.
 
-Unlike ingestion/categorization, the web viewer historically needed no secrets - summaries change
-that only when the owner wants them: `cmdServe` (`src/index.ts`) wires a real
-`ClaudeSummaryGenerator` only when `CLAUDE_CODE_OAUTH_TOKEN` is present, leaving it `undefined`
-otherwise. Without it, `/api/bookmarks/:id/summary` returns 503 with an actionable message instead
-of crashing or hanging, and the client disables the button with that message as its tooltip
-(`XBookmarksOrganizer` never requires the token to browse or to read already-cached summaries).
+Unlike ingestion/categorization, the web viewer needs no secrets to browse. `cmdServe`
+(`src/index.ts`) wires a real `LlmSummaryGenerator` only when the summary role's provider reports
+`check() === 'ok'`, leaving it `undefined` otherwise. Then `/api/bookmarks/:id/summary` returns 503
+with the provider's actionable message instead of crashing or hanging, and the client disables the
+button with that message as its tooltip; a *failed call* on an available provider returns 502 with
+the adapter's message and the button stays enabled so a retry is possible. Browsing and
+already-cached summaries never require any provider at all.
 
 ## Article title as a categorization signal (issue #25)
 
