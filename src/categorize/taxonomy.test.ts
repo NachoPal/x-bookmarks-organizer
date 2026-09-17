@@ -7,6 +7,7 @@ import {
   type TaxonomyDesigner,
 } from './taxonomy';
 import type { LlmRunner } from './llm';
+import type { ArticleContext } from '../articles/link-metadata';
 import type { RawBookmark } from '../types';
 
 const bm = (postId: string, text = 'hello', authorUsername = 'bob'): RawBookmark => ({
@@ -66,6 +67,34 @@ describe('buildTaxonomyPrompt', () => {
       4,
     );
     expect(prompt).toContain('[link: arxiv.org]');
+  });
+
+  it('includes the linked article title/description for a link-heavy post (issue #25)', () => {
+    const articleContext = new Map<string, ArticleContext>([
+      ['1', { title: 'New Transformer Architecture', description: 'A paper on sparse attention' }],
+    ]);
+    const prompt = buildTaxonomyPrompt(
+      [bm('1', 'https://t.co/abcd')],
+      '(no categories yet)',
+      3,
+      4,
+      articleContext,
+    );
+    expect(prompt).toContain('[article: New Transformer Architecture - A paper on sparse attention]');
+  });
+
+  it('omits the article hint for a bookmark with no entry in articleContext', () => {
+    const articleContext = new Map<string, ArticleContext>([
+      ['2', { title: 'Unrelated' }],
+    ]);
+    const prompt = buildTaxonomyPrompt(
+      [bm('1', 'https://t.co/abcd')],
+      '(no categories yet)',
+      3,
+      4,
+      articleContext,
+    );
+    expect(prompt).not.toContain('[article:');
   });
 });
 
@@ -135,5 +164,19 @@ describe('LlmTaxonomyDesigner', () => {
     expect(seenPrompt).toContain('about ai');
     expect(seenPrompt).toContain('AT LEAST 3 levels');
     expect(tree).toEqual([{ name: 'AI', children: [] }]);
+  });
+
+  it('forwards articleContext through to the prompt', async () => {
+    let seenPrompt = '';
+    const runner: LlmRunner = async (prompt) => {
+      seenPrompt = prompt;
+      return '{"tree":[]}';
+    };
+    const designer = new LlmTaxonomyDesigner(runner, { minDepth: 3, maxDepth: 4 });
+    const articleContext = new Map<string, ArticleContext>([
+      ['1', { title: 'Sparse Attention Explained' }],
+    ]);
+    await designer.designTaxonomy([bm('1', 'https://t.co/abcd')], '(no categories yet)', articleContext);
+    expect(seenPrompt).toContain('[article: Sparse Attention Explained]');
   });
 });

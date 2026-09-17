@@ -1,8 +1,12 @@
 import type { LlmRunner } from './llm';
+import type { ArticleContext } from '../articles/link-metadata';
 import type { RawBookmark, TaxonomyNode } from '../types';
 
 /** Text budget per bookmark in the (large, holistic) taxonomy-design prompt. */
 const MAX_TEXT_CHARS = 220;
+
+/** Text budget for the linked article's title+description shown per bookmark. */
+const MAX_ARTICLE_CHARS = 160;
 
 /**
  * Pull a human-meaningful domain out of a post's text, if one is present.
@@ -24,12 +28,30 @@ export function extractDomain(text: string): string | undefined {
   return undefined;
 }
 
-/** One compact line describing a bookmark for the taxonomy-design pass. */
-function compactLine(bm: RawBookmark, index: number): string {
+/** Format a linked article's title (+ optional description) for the prompt. */
+function formatArticleContext(article: ArticleContext): string {
+  const combined = article.description ? `${article.title} - ${article.description}` : article.title;
+  return combined.replace(/\s+/g, ' ').trim().slice(0, MAX_ARTICLE_CHARS);
+}
+
+/**
+ * One compact line describing a bookmark for the taxonomy-design pass. When
+ * `articleContext` has an entry for this bookmark (its post links to an
+ * article - issue #25), the linked article's title/description is appended so
+ * a link-heavy post with almost no text of its own is placed by what the link
+ * is actually about, not left to fall back to `Uncategorized`.
+ */
+function compactLine(
+  bm: RawBookmark,
+  index: number,
+  articleContext?: Map<string, ArticleContext>,
+): string {
   const text = bm.text.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_CHARS);
   const domain = extractDomain(bm.text);
   const suffix = domain ? ` [link: ${domain}]` : '';
-  return `[${index}] @${bm.authorUsername}: ${text}${suffix}`;
+  const article = articleContext?.get(bm.postId);
+  const articleSuffix = article ? ` [article: ${formatArticleContext(article)}]` : '';
+  return `[${index}] @${bm.authorUsername}: ${text}${suffix}${articleSuffix}`;
 }
 
 /**
@@ -43,8 +65,9 @@ export function buildTaxonomyPrompt(
   existingTreeText: string,
   minDepth: number,
   maxDepth: number,
+  articleContext?: Map<string, ArticleContext>,
 ): string {
-  const items = bookmarks.map((bm, i) => compactLine(bm, i)).join('\n');
+  const items = bookmarks.map((bm, i) => compactLine(bm, i, articleContext)).join('\n');
   return `You are designing a category taxonomy for a person's X (Twitter) bookmarks.
 
 You are shown ALL of the bookmarks at once. Study the whole collection first, then design a single, coherent, DEEP nested tree of topic categories that organizes it well.
@@ -156,7 +179,11 @@ export function parseTaxonomy(responseText: string): TaxonomyNode[] {
  * no subscription usage), mirroring {@link import('./llm').BatchCategorizer}.
  */
 export interface TaxonomyDesigner {
-  designTaxonomy(bookmarks: RawBookmark[], existingTreeText: string): Promise<TaxonomyNode[]>;
+  designTaxonomy(
+    bookmarks: RawBookmark[],
+    existingTreeText: string,
+    articleContext?: Map<string, ArticleContext>,
+  ): Promise<TaxonomyNode[]>;
 }
 
 export interface TaxonomyDesignerOptions {
@@ -178,6 +205,7 @@ export class LlmTaxonomyDesigner implements TaxonomyDesigner {
   async designTaxonomy(
     bookmarks: RawBookmark[],
     existingTreeText: string,
+    articleContext?: Map<string, ArticleContext>,
   ): Promise<TaxonomyNode[]> {
     if (bookmarks.length === 0) return [];
     const prompt = buildTaxonomyPrompt(
@@ -185,6 +213,7 @@ export class LlmTaxonomyDesigner implements TaxonomyDesigner {
       existingTreeText,
       this.options.minDepth,
       this.options.maxDepth,
+      articleContext,
     );
     const response = await this.runner(prompt);
     return parseTaxonomy(response);

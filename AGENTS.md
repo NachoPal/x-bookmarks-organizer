@@ -116,6 +116,28 @@ otherwise. Without it, `/api/bookmarks/:id/summary` returns 503 with an actionab
 of crashing or hanging, and the client disables the button with that message as its tooltip
 (`XBookmarksOrganizer` never requires the token to browse or to read already-cached summaries).
 
+## Article title as a categorization signal (issue #25)
+
+A link-heavy bookmark (little text besides a URL) otherwise gives the categorizer almost nothing
+to go on and falls back to `Uncategorized`. `src/articles/link-metadata.ts`'s `buildArticleContext`
+fixes this: for each bookmark whose text contains a link (`extractArticleLink`), it fetches the
+linked article's title/excerpt by reusing the same `ArticleFetcher` interface as the #4 reader view
+(`src/articles/fetch-article.ts`), then feeds a `Map<postId, ArticleContext>` into BOTH
+`taxonomy.ts`'s `buildTaxonomyPrompt` and `prompt.ts`'s `buildPrompt`/`buildExtendPrompt` (an
+optional trailing arg on each, and on `TaxonomyDesigner.designTaxonomy` /
+`BatchCategorizer.categorizeBatch`). Cached in a dedicated `article_link_metadata` table
+(`src/db/schema.ts`), keyed by **URL, not bookmark id** - unlike the #4 `articles` cache, this must
+be populated during `runIngest`/`recategorizeAll` categorization, before a new bookmark has a
+bookmark id, and URL-keying also dedups bookmarks that share a link. A failure or thrown error is
+cached too (mirrors `articles`), so a dead link is not retried every run, and a bounded number of
+distinct URLs are fetched concurrently (`buildArticleContext`'s `concurrency` param) so a large
+batch never fetches serially. `IngestDeps.articleFetcher` / `RecategorizeDeps.articleFetcher` is the
+injection seam for offline tests (defaults to a real `HttpArticleFetcher`, mirroring
+`ServerOptions.articleFetcher`) - a fetch failure/timeout silently degrades to the pre-#25 signal
+(post text + domain only) and never blocks ingest. Because `recategorizeAll` re-runs both passes
+over every stored bookmark, it is also how the owner reaches this benefit for bookmarks already
+sitting in `Uncategorized` from before this feature existed.
+
 ## Live vs. tested
 
 The live OAuth browser consent and the vault-injected run are performed by the operator. Automated

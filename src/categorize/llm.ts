@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import type { ArticleContext } from '../articles/link-metadata';
 import type { Assignment, RawBookmark } from '../types';
 import { buildExtendPrompt, buildPrompt, parseAssignments } from './prompt';
 
@@ -31,6 +32,7 @@ export interface BatchCategorizer {
     bookmarks: RawBookmark[],
     treeText: string,
     mode?: AssignMode,
+    articleContext?: Map<string, ArticleContext>,
   ): Promise<Assignment[]>;
 }
 
@@ -119,12 +121,13 @@ export class Categorizer implements BatchCategorizer {
     bookmarks: RawBookmark[],
     treeText: string,
     mode: AssignMode = 'strict',
+    articleContext?: Map<string, ArticleContext>,
   ): Promise<Assignment[]> {
     if (bookmarks.length === 0) return [];
     const prompt =
       mode === 'extend'
-        ? buildExtendPrompt(bookmarks, treeText, this.options.maxDepth)
-        : buildPrompt(bookmarks, treeText, this.options.maxDepth);
+        ? buildExtendPrompt(bookmarks, treeText, this.options.maxDepth, articleContext)
+        : buildPrompt(bookmarks, treeText, this.options.maxDepth, articleContext);
     const response = await this.runner(prompt);
     const validIds = new Set(bookmarks.map((b) => b.postId));
     return parseAssignments(response, validIds, this.options.maxDepth);

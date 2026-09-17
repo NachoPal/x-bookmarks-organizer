@@ -342,4 +342,57 @@ describe('Database', () => {
       expect(db.getArticleForBookmark(id)).toBeUndefined();
     });
   });
+
+  describe('article link metadata cache (categorization input, issue #25)', () => {
+    it('has no cached metadata for a url until one is saved', () => {
+      expect(db.getArticleLinkMetadata('https://example.com/article')).toBeUndefined();
+    });
+
+    it('round-trips a successful fetch, keyed by url with no bookmark required', () => {
+      db.saveArticleLinkMetadata({
+        url: 'https://example.com/article',
+        status: 'ok',
+        title: 'A Great Article',
+        description: 'A short summary',
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+      expect(db.getArticleLinkMetadata('https://example.com/article')).toEqual({
+        url: 'https://example.com/article',
+        status: 'ok',
+        title: 'A Great Article',
+        description: 'A short summary',
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+    });
+
+    it('round-trips a failed fetch', () => {
+      db.saveArticleLinkMetadata({
+        url: 'https://example.com/dead',
+        status: 'failed',
+        title: null,
+        description: null,
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+      expect(db.getArticleLinkMetadata('https://example.com/dead')?.status).toBe('failed');
+    });
+
+    it('overwrites the previous record for the same url rather than duplicating it', () => {
+      db.saveArticleLinkMetadata({
+        url: 'https://example.com/a',
+        status: 'failed',
+        title: null,
+        description: null,
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+      db.saveArticleLinkMetadata({
+        url: 'https://example.com/a',
+        status: 'ok',
+        title: 'Now it works',
+        description: null,
+        fetchedAt: '2026-09-17T01:00:00.000Z',
+      });
+      expect(db.getArticleLinkMetadata('https://example.com/a')?.status).toBe('ok');
+      expect(db.getArticleLinkMetadata('https://example.com/a')?.title).toBe('Now it works');
+    });
+  });
 });
