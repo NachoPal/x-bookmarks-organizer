@@ -1304,7 +1304,7 @@
       : "";
     summaryMetaEl.hidden = !record.generatedAt;
     const content = el("div", "summary-text");
-    content.textContent = record.summary;
+    content.innerHTML = renderSummaryMarkdown(record.summary);
     summaryBodyEl.replaceChildren(content);
   }
 

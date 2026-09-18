@@ -149,6 +149,19 @@ describe('buildSummaryPrompt', () => {
     // It is a page, not necessarily an article - the prompt must not claim more.
     expect(prompt).toContain('links a page');
   });
+
+  it('asks for well-structured Markdown, not the old plain-prose-only instruction', () => {
+    const prompt = buildSummaryPrompt({
+      postText: 'Check this out',
+      authorName: 'Ada',
+      authorUsername: 'ada',
+    });
+    expect(prompt).toContain('Markdown');
+    expect(prompt).toContain('bullet list');
+    expect(prompt).toContain('**bold**');
+    expect(prompt).not.toContain('Write plain prose');
+    expect(prompt).not.toContain('no headings or bullet points');
+  });
 });
 
 describe('LlmSummaryGenerator', () => {

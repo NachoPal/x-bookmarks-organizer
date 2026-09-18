@@ -225,6 +225,36 @@ button with that message as its tooltip; a *failed call* on an available provide
 the adapter's message and the button stays enabled so a retry is possible. Browsing and
 already-cached summaries never require any provider at all.
 
+The stored summary is Markdown, not plain prose: `buildSummaryPrompt` asks the model for a
+short lead, a tight bullet list and/or short paragraphs, and **bold** on key terms (structure
+only where it aids clarity - a one-line post still gets one plain sentence). The viewer never
+inserts model output as raw HTML - `src/web/public/render-markdown.js` (`renderSummaryMarkdown`)
+parses the Markdown with `marked` and sanitizes the result with `DOMPurify` against a tight
+tag/attribute allowlist (`p, strong, em, ul/ol/li, code, pre, a, br, h3/h4`; `href` only,
+http(s)-only `ALLOWED_URI_REGEXP`) before `app.js`'s `renderSummaryResult` sets it as
+`innerHTML` - this is the one deliberate `innerHTML` write in the viewer, and it must stay
+paired with that sanitize step; the summary is model output derived from untrusted
+bookmark/article content, so treat it as hostile input, never trusted markup. `marked`/
+`dompurify` are vendored as plain `<script>` globals under `src/web/public/vendor/` (copied
+into `dist/` by `copy-assets.js` like every other public asset) rather than loaded from a CDN,
+matching how the rest of the viewer ships; re-vendor by copying `node_modules/marked/lib/marked.umd.js`
+and `node_modules/dompurify/dist/purify.min.js`. `render-markdown.test.ts` exercises the same
+module in Node via `jsdom` (added as a devDependency solely for this - `DOMPurify` needs a real
+DOM and silently no-ops against `linkedom`, unlike the rest of this codebase's browser-JS tests
+which avoid a DOM dependency entirely) plus real `marked`/`dompurify`, injected as its offline
+test seam; this is the one browser module in `src/web/public/` that needs jsdom; keep new ones
+DOM-free where possible instead of extending this pattern. A pre-existing plain-text summary
+(saved before this change) still renders correctly - Markdown with no syntax is just a
+paragraph - so no migration or backfill is needed; `clear-summaries` (above) is only for an
+owner who wants the *formatted* style on existing summaries.
+
+**Environment gotcha, not caused by this change:** a bare `npm install` in this worktree can
+leave `vitest`'s `rolldown` dependency without its platform native binding (`Cannot find native
+binding` from `@rolldown/binding-<platform>`) - this is the long-standing npm optional-deps bug
+(npm/cli#4828), reproducible even on an unmodified checkout. Fix with
+`npm install --no-save @rolldown/binding-<platform>@<rolldown's exact version>` (e.g.
+`darwin-arm64`) rather than reinstalling `node_modules` again, which reproduces it.
+
 ## Article title as a categorization signal (issue #25)
 
 A link-heavy bookmark (little text besides a URL) otherwise gives the categorizer almost nothing
