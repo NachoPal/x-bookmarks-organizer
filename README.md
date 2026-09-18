@@ -143,7 +143,7 @@ node dist/index.js recategorize
 
 **Backfill previews** (optional) - a normal `run` already fetches and caches article link metadata
 for new bookmarks, but bookmarks synced before the previews feature (#26) existed have none, so
-their posts show a bare link instead of a preview card / "Read article". Run this once against an
+their link contributes nothing extra to Summarize or categorization. Run this once against an
 existing library to fetch and cache metadata for those without touching categories, the taxonomy,
 or re-fetching from X:
 
@@ -182,6 +182,14 @@ node dist/index.js serve
 Generating NEW summaries additionally needs the configured LLM provider to be available. With the
 default `claude-cli` provider that just means the `claude` CLI is installed and logged in; `serve`
 prints which provider and model it resolved, or why summaries are disabled.
+
+**Clear cached summaries** (optional) - wipe every saved summary so they regenerate cleanly under
+the current logic (e.g. after a bug cached bad/garbage summaries). No secrets, no network - just the
+local DB. Idempotent - re-running removes 0:
+
+```bash
+node dist/index.js clear-summaries
+```
 
 ## Configuration (optional env vars)
 

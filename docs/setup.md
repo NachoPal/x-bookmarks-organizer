@@ -113,8 +113,8 @@ node dist/index.js recategorize
 ```
 
 If your library predates the article previews feature, backfill link metadata for already-stored
-bookmarks so their preview cards / "Read article" appear (no X fetch, no category/taxonomy
-changes, idempotent - safe to re-run):
+bookmarks so it feeds Summarize and categorization (no X fetch, no category/taxonomy changes,
+idempotent - safe to re-run):
 
 ```bash
 node dist/index.js backfill-previews
@@ -135,6 +135,13 @@ and open the printed URL:
 ```bash
 node dist/index.js serve
 # http://127.0.0.1:5173
+```
+
+Wipe all cached summaries so they regenerate cleanly under the current logic (no secrets, no
+network, idempotent - safe to re-run):
+
+```bash
+node dist/index.js clear-summaries
 ```
 
 Generating NEW on-demand summaries (the "Summarize" button) additionally needs the LLM provider from

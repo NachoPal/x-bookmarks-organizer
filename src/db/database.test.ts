@@ -525,6 +525,58 @@ describe('Database', () => {
   });
 });
 
+describe('Summary cache', () => {
+  let db: Database;
+  beforeEach(() => {
+    db = new Database(':memory:');
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  function seedBookmarks(): { id1: number; id2: number } {
+    db.storeCategorizedBatch([bookmark('1'), bookmark('2')], () => []);
+    const id1 = db.getBookmarkByPostId('1')!.id;
+    const id2 = db.getBookmarkByPostId('2')!.id;
+    return { id1, id2 };
+  }
+
+  describe('getSummarizedBookmarkIds', () => {
+    it('returns only the ids that have a saved summary', () => {
+      const { id1, id2 } = seedBookmarks();
+      db.saveSummary({ bookmarkId: id1, summary: 'A summary.', generatedAt: new Date().toISOString() });
+
+      const summarized = db.getSummarizedBookmarkIds([id1, id2]);
+      expect(summarized.has(id1)).toBe(true);
+      expect(summarized.has(id2)).toBe(false);
+    });
+
+    it('returns an empty set for an empty input, without querying', () => {
+      expect(db.getSummarizedBookmarkIds([])).toEqual(new Set());
+    });
+  });
+
+  describe('clearSummaries', () => {
+    it('deletes every saved summary and reports how many were removed', () => {
+      const { id1, id2 } = seedBookmarks();
+      db.saveSummary({ bookmarkId: id1, summary: 'One.', generatedAt: new Date().toISOString() });
+      db.saveSummary({ bookmarkId: id2, summary: 'Two.', generatedAt: new Date().toISOString() });
+
+      expect(db.clearSummaries()).toBe(2);
+      expect(db.getSummaryForBookmark(id1)).toBeUndefined();
+      expect(db.getSummaryForBookmark(id2)).toBeUndefined();
+    });
+
+    it('is idempotent - a second run removes 0', () => {
+      const { id1 } = seedBookmarks();
+      db.saveSummary({ bookmarkId: id1, summary: 'One.', generatedAt: new Date().toISOString() });
+
+      db.clearSummaries();
+      expect(db.clearSummaries()).toBe(0);
+    });
+  });
+});
+
 describe('Database X-native Articles', () => {
   const article = {
     restId: '777',

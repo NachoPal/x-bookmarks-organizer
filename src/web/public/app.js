@@ -15,19 +15,6 @@
   const searchClear = document.getElementById("category-search-clear");
   const readFilterEl = document.getElementById("read-filter");
 
-  // ---- reader (article) modal --------------------------------------------
-  const readerBackdropEl = document.getElementById("reader-backdrop");
-  const readerModalEl = document.getElementById("reader-modal");
-  const readerTitleEl = document.getElementById("reader-title");
-  const readerMetaEl = document.getElementById("reader-meta");
-  const readerBodyEl = document.getElementById("reader-body");
-  const readerOriginalLinkEl = document.getElementById("reader-original-link");
-  const readerCloseBtn = document.getElementById("reader-close");
-  let readerReturnFocusEl = null;
-  // Bumped on every open so a slow in-flight fetch from a previously opened
-  // article can't render into a reader that has since moved on to another one.
-  let readerRequestSeq = 0;
-
   // ---- summary modal ------------------------------------------------------
   const summaryBackdropEl = document.getElementById("summary-backdrop");
   const summaryModalEl = document.getElementById("summary-modal");
@@ -729,9 +716,9 @@
 
   /**
    * A single action row above the post: a left-aligned group (read/unread
-   * chip, Summarize, then the article Read button) and a right-aligned group
-   * (Open on X, then delete last). No author line - the embed (or the
-   * fallback's own byline) already carries who posted it.
+   * chip, then Summarize/Summary) and a right-aligned group (Open on X, then
+   * delete last). No author line - the embed (or the fallback's own byline)
+   * already carries who posted it.
    */
   function renderCard(bm) {
     const card = el("article", "bookmark-card");
@@ -745,26 +732,16 @@
 
     const summarizeBtn = el("button", "link-external summarize-link");
     summarizeBtn.type = "button";
-    summarizeBtn.appendChild(sparkleIcon());
-    summarizeBtn.appendChild(document.createTextNode("Summarize"));
-    if (!summaryAvailable) {
+    applySummarizeButtonLabel(summarizeBtn, bm.hasSummary);
+    // A saved summary can always be re-opened from cache, with no provider
+    // needed; generating a NEW one needs the provider to be available.
+    if (!summaryAvailable && !bm.hasSummary) {
       summarizeBtn.disabled = true;
       summarizeBtn.title = summaryUnavailableReason;
     } else {
       summarizeBtn.addEventListener("click", () => openSummary(bm, summarizeBtn));
     }
     left.appendChild(summarizeBtn);
-
-    // Gated to posts whose link actually resolved to an article (issue #26) -
-    // a bare/unresolved/non-article link gets no "Read article" control.
-    if (bm.hasArticle) {
-      const readBtn = el("button", "link-external read-link");
-      readBtn.type = "button";
-      readBtn.appendChild(bookIcon());
-      readBtn.appendChild(document.createTextNode("Read article"));
-      readBtn.addEventListener("click", () => openReader(bm, card, readBtn));
-      left.appendChild(readBtn);
-    }
 
     const right = el("div", "bookmark-actions-group bookmark-actions-right");
 
@@ -874,18 +851,6 @@
     return svg;
   }
 
-  function bookIcon() {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 20 20");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("focusable", "false");
-    svg.classList.add("icon-book");
-    svg.innerHTML =
-      '<path d="M4 4.5c0-.6.4-1 1-1h4.5v13H5a1 1 0 0 1-1-1v-11ZM15.5 3.5c.6 0 1 .4 1 1v11a1 1 0 0 1-1 1h-4.5v-13h4.5Z" ' +
-      'fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />';
-    return svg;
-  }
-
   function trashIcon() {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 20 20");
@@ -909,6 +874,16 @@
       'M15 12.5l.55 1.7L17.25 15l-1.7.55L15 17.25l-.55-1.7L12.75 15l1.7-.55L15 12.5z" ' +
       'fill="currentColor" stroke="currentColor" stroke-width="0.6" stroke-linejoin="round" />';
     return svg;
+  }
+
+  /**
+   * Sets the Summarize/Summary button's label, icon and visual state.
+   * "Summary" (a saved summary already exists) is styled distinctly from
+   * "Summarize" (generates on demand) but shares the same control shape.
+   */
+  function applySummarizeButtonLabel(btn, hasSummary) {
+    btn.replaceChildren(sparkleIcon(), document.createTextNode(hasSummary ? "Summary" : "Summarize"));
+    btn.classList.toggle("has-summary", hasSummary);
   }
 
   /**
@@ -1220,101 +1195,7 @@
     }, UNDO_WINDOW_MS);
   }
 
-  // ---- reader (article) modal ---------------------------------------------
-  // Fetches and shows the extracted article for a bookmark's primary link in
-  // an in-app panel: a skeleton while loading, the sanitized article content
-  // on success (server-sanitized - see src/articles/fetch-article.ts - so it
-  // is safe to insert as HTML here), or a clear message + the original link
-  // on any failure (paywalled, blocked, dead, or not actually an article).
-  function isReaderOpen() {
-    return !readerModalEl.hidden;
-  }
-
-  function openReader(bm, card, triggerEl) {
-    const seq = ++readerRequestSeq;
-    readerReturnFocusEl = triggerEl;
-
-    readerTitleEl.textContent = "Loading article…";
-    readerMetaEl.textContent = "";
-    readerMetaEl.hidden = true;
-    readerOriginalLinkEl.href = bm.articleUrl;
-    renderReaderLoading();
-
-    readerBackdropEl.hidden = false;
-    readerModalEl.hidden = false;
-    readerCloseBtn.focus();
-    document.addEventListener("keydown", onReaderKeydown);
-
-    // Opening the reader is at least as strong a "read" signal as opening the
-    // embed or the external link, so it marks the bookmark read the same way.
-    setRead(bm, card, true);
-
-    getJSON(`/api/bookmarks/${bm.id}/article`)
-      .then((data) => {
-        if (seq !== readerRequestSeq) return; // superseded by a newer open
-        renderReaderResult(data.article, bm.articleUrl);
-      })
-      .catch(() => {
-        if (seq !== readerRequestSeq) return;
-        renderReaderFallback(
-          "Couldn't load this article. Please try again, or open the original link.",
-          bm.articleUrl,
-        );
-      });
-  }
-
-  function closeReader() {
-    if (!isReaderOpen()) return;
-    readerModalEl.hidden = true;
-    readerBackdropEl.hidden = true;
-    readerRequestSeq += 1; // discard any in-flight fetch's result
-    document.removeEventListener("keydown", onReaderKeydown);
-    if (readerReturnFocusEl && readerReturnFocusEl.isConnected) readerReturnFocusEl.focus();
-    readerReturnFocusEl = null;
-  }
-
-  function renderReaderLoading() {
-    const loading = el("div", "reader-loading");
-    loading.setAttribute("role", "status");
-    const spinner = el("span", "reader-spinner");
-    spinner.setAttribute("aria-hidden", "true");
-    loading.append(spinner, el("span", null, "Loading article…"));
-    readerBodyEl.replaceChildren(loading);
-  }
-
-  function renderReaderResult(article, articleUrl) {
-    if (article && article.status === "ok") {
-      readerTitleEl.textContent = article.title || "Untitled article";
-      if (article.siteName) {
-        readerMetaEl.textContent = article.siteName;
-        readerMetaEl.hidden = false;
-      }
-      const content = el("div", "reader-content");
-      content.innerHTML = article.contentHtml || "";
-      readerBodyEl.replaceChildren(content);
-    } else {
-      readerTitleEl.textContent = "Couldn't load article";
-      renderReaderFallback(
-        (article && article.reason) || "This page couldn't be read.",
-        articleUrl,
-      );
-    }
-  }
-
-  function renderReaderFallback(message, articleUrl) {
-    const fallback = el("div", "reader-fallback");
-    fallback.setAttribute("role", "status");
-    fallback.appendChild(el("span", "reader-fallback-icon", "📄"));
-    fallback.appendChild(el("p", "reader-fallback-msg", message));
-    const link = el("a", "link-external", "View original ↗");
-    link.href = articleUrl;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    fallback.appendChild(link);
-    readerBodyEl.replaceChildren(fallback);
-  }
-
-  /** Tab/Shift+Tab wraps within `modalEl` while it is open (a real modal). Shared by the reader and summary modals. */
+  /** Tab/Shift+Tab wraps within `modalEl` while it is open (a real modal). Shared by every modal. */
   function trapModalFocus(modalEl, e) {
     if (e.key !== "Tab") return;
     const focusable = modalEl.querySelectorAll(
@@ -1332,27 +1213,12 @@
     }
   }
 
-  function onReaderKeydown(e) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      closeReader();
-      return;
-    }
-    trapModalFocus(readerModalEl, e);
-  }
-
-  function initReader() {
-    readerCloseBtn.addEventListener("click", closeReader);
-    readerBackdropEl.addEventListener("click", closeReader);
-  }
-
   // ---- summary modal -------------------------------------------------------
   // Fetches (or serves from cache) an on-demand LLM summary of a bookmark's
-  // content - the post text, plus its extracted article when available (see
-  // the reader view above) - in a large in-app modal: a spinner while
-  // generating, the summary text once ready, a clear no-token message when
-  // summaries are disabled, or a retryable error on failure. Mirrors the
-  // reader modal's shape and states.
+  // content - the post text, plus its extracted article when available - in
+  // a large in-app modal: a spinner while generating, the summary text once
+  // ready, a clear no-token message when summaries are disabled, or a
+  // retryable error on failure.
   function isSummaryOpen() {
     return !summaryModalEl.hidden;
   }
@@ -1379,6 +1245,7 @@
       .then((data) => {
         if (seq !== summaryRequestSeq) return; // superseded by a newer open/retry
         renderSummaryResult(data.summary);
+        markSummarized(bm);
       })
       .catch((err) => {
         if (seq !== summaryRequestSeq) return;
@@ -1398,6 +1265,18 @@
           renderSummaryError(bm, err && err.body && err.body.error);
         }
       });
+  }
+
+  /**
+   * Flips a bookmark's in-memory `hasSummary` flag and its action-row
+   * button (whichever card triggered the open/generate) to the "Summary"
+   * state, without a full reload - a fresh generation, or a summary the
+   * server already had cached, both count.
+   */
+  function markSummarized(bm) {
+    if (bm.hasSummary) return;
+    bm.hasSummary = true;
+    if (summaryReturnFocusEl) applySummarizeButtonLabel(summaryReturnFocusEl, true);
   }
 
   function closeSummary() {
@@ -1600,7 +1479,6 @@
   initColorToggle();
   initSearch();
   initReadFilter();
-  initReader();
   initSummary();
   loadTree();
   loadSyncStatus();

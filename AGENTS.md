@@ -145,11 +145,9 @@ To iterate on the viewer without the owner's private DB, seed a throwaway one an
 (`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit
 real data).
 
-## Article reader (issue #4)
+## Article extraction (issue #4, reader removed in the "summarize-ux" change)
 
-A bookmark whose post links a confirmed article (see issue #26 below for what "confirmed"
-means) gets a "Read article" affordance that opens the extracted article in an in-app
-modal. `src/articles/extract-link.ts` finds the primary link in the stored post text (all
+`src/articles/extract-link.ts` finds the primary link in a bookmark's stored post text (all
 links are t.co-shortened by X, so this cannot tell an article from a link back to a post
 until it is fetched); `src/articles/fetch-article.ts` fetches it server-side (timeout,
 `NON_ARTICLE_HOSTS` short-circuits an x.com/twitter.com link, redirects followed so
@@ -158,34 +156,47 @@ t.co/shorteners resolve to the real destination before extraction) and extracts 
 before it is ever cached or served - never trust fetched HTML. Results (success or
 failure) are cached in the `articles` table (`src/db/schema.ts`, keyed by `bookmark_id`)
 via `Database.getArticleForBookmark` / `saveArticle`, so a bookmark's link is fetched at
-most once. Server surface: `GET /api/bookmarks/:id/article` (`src/web/server.ts`); the
-bookmark list endpoint also computes `articleUrl` per bookmark (the raw extracted link,
-used to drive this fetch) plus the separate `hasArticle`/`preview` gating fields described
-under issue #26. `ServerOptions.articleFetcher` is the injection seam for offline tests
-(mirrors the `XClient`/`BatchCategorizer` pattern) - never let a test hit the real network.
+most once. There is no longer a standalone in-app "Read article" reader or an
+`/api/bookmarks/:id/article` route - it was removed as redundant with the card X's own
+embed already renders for an external link. This extraction/cache still exists solely to
+feed Summarize (`getOrFetchArticle` in `src/web/server.ts`, called only from the summary
+endpoint) and, via a separate URL-keyed cache, categorization (issue #25 below).
+`ServerOptions.articleFetcher` is the injection seam for offline tests (mirrors the
+`XClient`/`BatchCategorizer` pattern) - never let a test hit the real network.
 `scripts/copy-assets.js` copies `public/` recursively (`fs.cpSync`), which is what lets
 `src/web/public/fixtures/sample-article.html` (a fixture article page with nav/ads/scripts
 Readability must strip) ship as a servable asset; both the article tests and the dev seed
-(`scripts/seed-dev-db.js`'s "Reader View Demo" category) point at it so extraction is
-exercised fully offline, end to end, with zero real network calls. `HttpArticleFetcher`'s
-`USER_AGENT` is a realistic desktop browser string, not a self-identifying one - some sites'
-basic anti-scraping checks 404/403 an honest bot UA even though the page resolves fine for a
-real browser (issue #28); its tests spin up a real local `http` server (not just a mocked
-`fetch`) to exercise actual redirect-following and this UA behavior end to end.
+(`scripts/seed-dev-db.js`'s "Reader View Demo" category, whose name predates the removal)
+point at it so extraction is exercised fully offline, end to end, with zero real network
+calls. `HttpArticleFetcher`'s `USER_AGENT` is a realistic desktop browser string, not a
+self-identifying one - some sites' basic anti-scraping checks 404/403 an honest bot UA even
+though the page resolves fine for a real browser (issue #28); its tests spin up a real local
+`http` server (not just a mocked `fetch`) to exercise actual redirect-following and this UA
+behavior end to end.
 
 ## On-demand bookmark summaries (issue #5)
 
-Clicking "Summarize" on a card opens a large in-app modal with an on-demand LLM summary of the
-bookmark: the post text, plus its extracted article content (reusing the reader-view cache/fetch
-above) when the link is an article. Generated via `LlmSummaryGenerator`
-(`src/summarize/summarizer.ts`), which runs on the `summary` role's runner from the same provider
-factory as categorization (Haiku-class model by default) - never the paid API. Cached in the
-`summaries` table (`src/db/schema.ts`, keyed by `bookmark_id`) via `Database.getSummaryForBookmark`
-/ `saveSummary`, so a bookmark is summarized at most once. Server surface:
-`GET /api/bookmarks/:id/summary` (cache-or-generate, mirrors the article endpoint's shape) and
-`GET /api/summary-status` (`{ available, reason? }`, used by the client to disable/tooltip the
-button up front - `reason` is the provider's own message). `ServerOptions.summaryGenerator` (plus
-`summaryUnavailableReason`) is the injection seam for offline tests.
+Clicking "Summarize" (or "Summary", once one is saved) on a card opens a large in-app modal
+with an on-demand LLM summary of the bookmark: the post text, plus its extracted article
+content (reusing the fetch/cache above) when the link is an article. Generated via
+`LlmSummaryGenerator` (`src/summarize/summarizer.ts`), which runs on the `summary` role's
+runner from the same provider factory as categorization (Haiku-class model by default) -
+never the paid API. Cached in the `summaries` table (`src/db/schema.ts`, keyed by
+`bookmark_id`) via `Database.getSummaryForBookmark` / `saveSummary`, so a bookmark is
+summarized at most once. Server surface: `GET /api/bookmarks/:id/summary` (cache-or-generate)
+and `GET /api/summary-status` (`{ available, reason? }`, used by the client to disable/tooltip
+the button up front - `reason` is the provider's own message). `ServerOptions.summaryGenerator`
+(plus `summaryUnavailableReason`) is the injection seam for offline tests.
+
+The bookmark list endpoint (`toViewerBookmarks` in `src/web/server.ts`) exposes `hasSummary`
+(a cheap `Database.getSummarizedBookmarkIds` existence check, never the summary text) so the
+action-row control can render "Summary" (a saved one exists, always openable from cache - no
+provider needed) vs "Summarize" (generates on demand, needs the provider); `app.js`'s
+`applySummarizeButtonLabel`/`markSummarized` flip a card's button in place after a fresh
+generation, without a full reload. `node dist/index.js clear-summaries`
+(`Database.clearSummaries`, wired in `src/index.ts`) deletes every cached summary - the fix
+for a bad-summary bug (e.g. a cached refusal string) is to wipe and regenerate, never a
+migration; it is explicit-only and idempotent.
 
 A summary is only ever built from content that is already IN the prompt: the post's own prose
 (`postProse` strips the opaque `t.co` URLs X leaves in the text), the reader-view article body,
@@ -236,9 +247,10 @@ videos, product pages); a readable body is rarer. So `article_link_metadata.stat
 TRI-state - `ok` (readable body, and enough metadata for a card), `card` (metadata only, no
 body) or `failed` (nothing usable). But the viewer no longer renders its own preview card
 below the embed (issue #46): the embedded tweet already shows X's own card for an external
-link, so a second card under it was always a visible duplicate. `hasArticle` (status `ok`)
-still gates "Read article" + the reader modal, since reading in-app is not a duplicate of
-the embed. `resolveArticleLinkMetadata` (`src/articles/link-metadata.ts`) is still the
+link, so a second card under it was always a visible duplicate. The in-app "Read article"
+reader that `status === 'ok'` used to gate was itself later removed (see the article
+extraction section above) as an equally redundant duplicate of that same embed card.
+`resolveArticleLinkMetadata` (`src/articles/link-metadata.ts`) is still the
 single place that decides which of the three a fetch produced; a `card` row is still real
 content for the parts that consume it - it feeds the categorization context (issue #25) and
 the summary prompt (issue #5) exactly like an `ok` row does. Only the viewer's rendered card
@@ -253,8 +265,7 @@ only on a page with no visible text) and reports the `resolvedUrl` it landed on 
 what the card's domain and "open the original" must use, never the `t.co` URL. Validate
 any change to this against REAL links, not fixtures: fixtures cannot reproduce it.
 
-A bookmark whose link resolves to a confirmed article also gets the "Read article" control;
-a plain post, or one whose link yielded nothing, gets neither. "Confirmed" means
+"Confirmed" (a readable article body, as opposed to a card-only or failed link) means
 `article_link_metadata.status === 'ok'` (the same URL-keyed cache issue #25 introduced): `src/articles/fetch-article.ts`'s
 `extractArticle` scrapes the card (`extractLinkPreview`, OpenGraph -> `twitter:*` ->
 `<meta name=description>`/`<title>`) from the same parsed document used for Readability,
@@ -274,25 +285,25 @@ by issue #25's `buildArticleContext` (run over every bookmark on `run`/`recatego
 by the time a bookmark reaches the viewer its link has normally already been resolved; this
 keeps the list endpoint a fast, offline-testable pure cache read with no network dependency
 of its own (and is why `ServerOptions.articleFetcher` is untouched by this feature - it still
-only backs the on-demand `/article` and `/summary` endpoints). A bookmark whose link predates
-issue #25, or hasn't been through `recategorize` yet, shows no preview/control until it has -
-see issue #39 below for the lightweight way to backfill this without a full `recategorize`.
-`resolveManyArticleLinkMetadata`
+only backs the on-demand `/summary` endpoint). A bookmark whose link predates issue #25, or
+hasn't been through `recategorize` yet, gains nothing extra for Summarize/categorization
+until it has - see issue #39 below for the lightweight way to backfill this without a full
+`recategorize`. `resolveManyArticleLinkMetadata`
 (concurrency-bounded, dedup'd by URL) is the shared worker-pool ingest uses; the server does
 not call it, since it never fetches.
 
 Frontend: the bookmark card renders only the tweet embed and the top action row - no
 separate preview card beneath it (removed in issue #46, along with `hasPreview`/`preview`
-from the `/api/categories/:id/bookmarks` response; see `toViewerBookmarks` in `server.ts`).
-The "Read article" button (`app.js`) is gated on `bm.hasArticle` alone and opens the same
-reader modal as before.
+from the `/api/categories/:id/bookmarks` response; see `toViewerBookmarks` in `server.ts`),
+and no "Read article" button either (removed later, along with `hasArticle`/`articleUrl` -
+see the article extraction section above).
 
 ## Metadata backfill for a pre-existing library (issue #39)
 
 `node dist/index.js backfill-previews` (`src/articles/backfill.ts`'s `backfillArticlePreviews`,
 wired in `src/index.ts` next to `run`/`recategorize`) fetches + caches `article_link_metadata` for
 already-stored bookmarks whose link has no cached row (or is cached `failed`, with `--retry-failed`)
-- for a library synced before issues #25/#26 existed, so previews/"Read article" only need this,
+- for a library synced before issues #25/#26 existed, so Summarize/categorization only need this,
 never a full `recategorize` (which would also re-run the Opus taxonomy pass and reshuffle the
 tree). It touches ONLY the URL-keyed metadata cache - no bookmark, category, or taxonomy row is
 read or written - and reuses `resolveManyArticleLinkMetadata`/`resolveArticleLinkMetadata`
