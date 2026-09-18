@@ -52,32 +52,17 @@ export interface ServerOptions {
   summaryUnavailableReason?: string;
 }
 
-/** The link-preview card data shipped alongside a bookmark whose link has a card. */
-interface ArticlePreview {
-  title: string;
-  description: string | null;
-  image: string | null;
-  siteName: string | null;
-  domain: string;
-  /** The resolved destination, so the card can open the real page (not `t.co`). */
-  url: string;
-}
-
 /**
  * A bookmark as shipped to the viewer, with the primary article link (if any)
- * computed from its text and TWO independent capability flags:
- * `hasPreview` (the link has a preview card - most links do, including tools,
- * repos and videos) gates the preview card, and `hasArticle` (the link's body
- * is actually extractable) gates the "Read article" reader affordance. It
- * also carries the ids of the categories it is directly filed under so the
- * client can patch only the affected sidebar counters (plus their ancestors)
- * on a read-state toggle or delete, instead of reloading the whole tree.
+ * computed from its text and `hasArticle` (the link's body is actually
+ * extractable), which gates the "Read article" reader affordance. It also
+ * carries the ids of the categories it is directly filed under so the client
+ * can patch only the affected sidebar counters (plus their ancestors) on a
+ * read-state toggle or delete, instead of reloading the whole tree.
  */
 type BookmarkForViewer = StoredBookmark & {
   articleUrl: string | null;
   hasArticle: boolean;
-  hasPreview: boolean;
-  preview: ArticlePreview | null;
   categoryIds: number[];
 };
 
@@ -91,46 +76,34 @@ function domainFromUrl(url: string): string {
 }
 
 /**
- * The card for a link, from its cached metadata - built for BOTH a readable
- * article (`ok`) and a card-only page (`card`), since a preview card only
- * needs OpenGraph-style metadata. The domain comes from the resolved
- * destination, never the opaque `t.co` URL X leaves in the post text.
+ * Whether a link's cached metadata has a readable body - the only thing that
+ * still needs deciding here, since the preview card that used to consume the
+ * rest of this metadata (issue #26/#45) has been removed as a duplicate of
+ * the tweet embed's own card (issue #46). The metadata fetch/cache itself
+ * stays: it still feeds Summarize and categorization (issue #25/#5).
  */
-function toPreview(url: string, metadata: ArticleLinkMetadata | undefined): ArticlePreview | null {
-  if (!metadata || metadata.status === 'failed' || !metadata.title) return null;
-  const destination = metadata.resolvedUrl ?? url;
-  return {
-    title: metadata.title,
-    description: metadata.description,
-    image: metadata.image,
-    siteName: metadata.siteName,
-    domain: domainFromUrl(destination),
-    url: destination,
-  };
+function hasReadableArticle(metadata: ArticleLinkMetadata | undefined): boolean {
+  return metadata?.status === 'ok' && Boolean(metadata.title);
 }
 
 /**
- * Build the viewer's bookmark shape for a page of bookmarks. Preview data
- * comes ONLY from the `article_link_metadata` cache (issue #25/#26/#45) - never a
- * live fetch here - because that cache is already populated at ingest time
- * (`buildArticleContext`, run over every bookmark on `run`/`recategorize`),
- * so a bookmark's "Read article" affordance and preview card appear once
- * ingest has resolved its link, keeping the bookmark list endpoint a pure,
- * fast, offline-testable cache read with no network dependency of its own.
+ * Build the viewer's bookmark shape for a page of bookmarks. The `hasArticle`
+ * flag comes ONLY from the `article_link_metadata` cache (issue #25/#26) -
+ * never a live fetch here - because that cache is already populated at
+ * ingest time (`buildArticleContext`, run over every bookmark on
+ * `run`/`recategorize`), so a bookmark's "Read article" affordance appears
+ * once ingest has resolved its link, keeping the bookmark list endpoint a
+ * pure, fast, offline-testable cache read with no network dependency of its
+ * own.
  */
 function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryIdsByBookmark: Map<number, number[]>): BookmarkForViewer[] {
   return bookmarks.map((bookmark) => {
     const articleUrl = extractArticleLink(bookmark.text);
     const metadata = articleUrl ? db.getArticleLinkMetadata(articleUrl) : undefined;
-    const preview = articleUrl ? toPreview(articleUrl, metadata) : null;
     return {
       ...bookmark,
       articleUrl,
-      // Only a readable body earns the reader affordance; the card earns only
-      // the card.
-      hasArticle: metadata?.status === 'ok' && preview !== null,
-      hasPreview: preview !== null,
-      preview,
+      hasArticle: hasReadableArticle(metadata),
       categoryIds: categoryIdsByBookmark.get(bookmark.id) ?? [],
     };
   });

@@ -228,18 +228,21 @@ injection seam for offline tests (defaults to a real `HttpArticleFetcher`, mirro
 over every stored bookmark, it is also how the owner reaches this benefit for bookmarks already
 sitting in `Uncategorized` from before this feature existed.
 
-## Preview cards vs. readable articles (issues #26, #45)
+## Preview cards vs. readable articles (issues #26, #45, #46)
 
-A **preview card** and a **readable article** are two independent capabilities, and
-conflating them is what once left every preview on the owner's real library empty. A card
-needs only OpenGraph/`twitter:*` metadata, which most pages have (tools, repos, videos,
-product pages); a readable body is rarer. So `article_link_metadata.status` is TRI-state -
-`ok` (card + readable body), `card` (card only) or `failed` (nothing usable) - and the
-viewer splits them: `hasPreview` (status not `failed`, card renders) vs `hasArticle`
-(status `ok`, "Read article" + reader modal). `resolveArticleLinkMetadata`
-(`src/articles/link-metadata.ts`) is the single place that decides which of the three a
-fetch produced; a `card` row is real content everywhere - it feeds the categorization
-context (issue #25) and the summary prompt (issue #5) just like an `ok` row does.
+A **preview card** and a **readable article** were originally two independent capabilities.
+A card needs only OpenGraph/`twitter:*` metadata, which most pages have (tools, repos,
+videos, product pages); a readable body is rarer. So `article_link_metadata.status` stays
+TRI-state - `ok` (readable body, and enough metadata for a card), `card` (metadata only, no
+body) or `failed` (nothing usable). But the viewer no longer renders its own preview card
+below the embed (issue #46): the embedded tweet already shows X's own card for an external
+link, so a second card under it was always a visible duplicate. `hasArticle` (status `ok`)
+still gates "Read article" + the reader modal, since reading in-app is not a duplicate of
+the embed. `resolveArticleLinkMetadata` (`src/articles/link-metadata.ts`) is still the
+single place that decides which of the three a fetch produced; a `card` row is still real
+content for the parts that consume it - it feeds the categorization context (issue #25) and
+the summary prompt (issue #5) exactly like an `ok` row does. Only the viewer's rendered card
+was removed - the fetch, the cache, and every non-card consumer of it are untouched.
 
 **`t.co` does not HTTP-redirect for a browser User-Agent.** It answers the realistic UA
 issue #28 introduced with HTTP 200 and a tiny `<meta refresh>` + `location.replace(...)`
@@ -278,15 +281,11 @@ see issue #39 below for the lightweight way to backfill this without a full `rec
 (concurrency-bounded, dedup'd by URL) is the shared worker-pool ingest uses; the server does
 not call it, since it never fetches.
 
-Frontend: `renderArticlePreview` in `src/web/public/app.js` renders the `.article-preview`
-control (styles in `styles.css`) whenever `bm.hasPreview` is true - as a `<button>` opening
-the in-app reader when `bm.hasArticle`, otherwise as an `<a>` to `preview.url` (there is no
-body to read in-app) - gracefully omitting the
-thumbnail when `preview.image` is null (and hiding it client-side too if the image URL
-404s/blocks) and the description line when `preview.description` is null - never a broken
-box. The reader affordances (the text button and, for a readable article, the card) are gated
-off `bm.hasArticle`; the card itself is gated off `bm.hasPreview` - see `toPreview` and
-`toViewerBookmarks` in `server.ts`.
+Frontend: the bookmark card renders only the tweet embed and the top action row - no
+separate preview card beneath it (removed in issue #46, along with `hasPreview`/`preview`
+from the `/api/categories/:id/bookmarks` response; see `toViewerBookmarks` in `server.ts`).
+The "Read article" button (`app.js`) is gated on `bm.hasArticle` alone and opens the same
+reader modal as before.
 
 ## Metadata backfill for a pre-existing library (issue #39)
 

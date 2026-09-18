@@ -193,15 +193,17 @@ if (idByPath.has(denseKey)) {
   });
 }
 
-// A few bookmarks that exercise the reader view AND the article-preview card
-// (issues #26/#45) end to end: one links to a fixture article served locally
-// by this same viewer (so "Read article" can fetch and extract it fully
-// offline), one to a domain reserved by RFC 2606 to never resolve (so it
-// correctly gets no preview / no "Read article" control), one has only a
-// title cached (no description/image) to exercise the preview card's
-// graceful partial-data fallback, and one is a card-only page (a tool, with
-// OpenGraph tags but no readable body - the common real-world case) which
-// must render a preview card but NO "Read article" control.
+// A few bookmarks that exercise the reader view AND the underlying link
+// metadata cache (issues #25/#26/#45) end to end: one links to a fixture
+// article served locally by this same viewer (so "Read article" can fetch
+// and extract it fully offline), one to a domain reserved by RFC 2606 to
+// never resolve (so it correctly gets no "Read article" control), one has
+// only a title cached (no description/image) to exercise the sparse-metadata
+// case, and one is a card-only page (a tool, with OpenGraph tags but no
+// readable body - the common real-world case) which must NOT get a "Read
+// article" control (the viewer no longer renders a separate preview card -
+// issue #46 - since the tweet embed already shows its own card for these
+// links).
 const readerDemoParent = ensurePath(['Reader View Demo']);
 const webPort = process.env.XBOOKMARKS_WEB_PORT || '5173';
 const fixtureArticleUrl = `http://127.0.0.1:${webPort}/fixtures/sample-article.html`;
@@ -261,16 +263,16 @@ db.storeCategorizedBatch(
   () => [readerDemoParent],
 );
 
-// Populate the URL-keyed preview cache directly (bypassing any real fetch),
+// Populate the URL-keyed metadata cache directly (bypassing any real fetch),
 // mirroring what a real ingest run's buildArticleContext would have cached,
-// so the preview card and gated "Read article" control render
-// deterministically and fully offline:
+// so the gated "Read article" control renders deterministically and fully
+// offline:
 //  - the fixture link runs through the REAL extractArticle against the
-//    fixture file on disk, so its cached preview is exactly what the running
-//    viewer's own reader fetch would produce for the same URL;
+//    fixture file on disk, so its cached metadata is exactly what the
+//    running viewer's own reader fetch would produce for the same URL;
 //  - the dead link is cached as a confirmed failure (never an article);
 //  - the sparse link is cached as a confirmed article with only a title;
-//  - the tool link is cached as `card`: a preview card, no readable body.
+//  - the tool link is cached as `card`: a card, no readable body.
 const { extractArticle } = require('../dist/articles/fetch-article');
 const fixtureHtml = fs.readFileSync(
   path.join(__dirname, '../src/web/public/fixtures/sample-article.html'),
