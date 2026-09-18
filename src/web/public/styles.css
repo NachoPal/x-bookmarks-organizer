@@ -962,6 +962,43 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   background: currentColor;
 }
 
+/* The card's own expandable full post text (issue #36) - the primary,
+   in-app way to read a post's words, kept separate from the embed below
+   (which stays for media/quotes/rich content). */
+.bookmark-post-text {
+  margin-bottom: var(--space-3);
+}
+.bookmark-post-text-body {
+  margin: 0;
+  font-size: var(--text-post);
+  line-height: var(--leading-post);
+  color: var(--color-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bookmark-post-text.is-clamped .bookmark-post-text-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.post-text-toggle {
+  display: inline-block;
+  margin-top: var(--space-1);
+  padding: var(--space-1) 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.post-text-toggle:hover {
+  color: var(--color-accent-hover);
+  text-decoration: underline;
+}
+
 .embed-slot {
   min-width: 0;
   min-height: 2rem;
