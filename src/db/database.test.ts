@@ -524,3 +524,85 @@ describe('Database', () => {
     });
   });
 });
+
+describe('Database X-native Articles', () => {
+  const article = {
+    restId: '777',
+    title: 'An X Article',
+    previewText: 'Preview text',
+    plainText: 'Full body',
+    coverUrl: 'https://pbs.twimg.com/media/c.jpg',
+    coverWidth: 1500,
+    coverHeight: 600,
+  };
+
+  it('stores a bookmark\'s own and quoted Article atomically with the bookmark', () => {
+    const db = new Database(':memory:');
+    try {
+      const cat = db.getOrCreateCategory('AI', null, new Date().toISOString());
+      db.storeCategorizedBatch(
+        [
+          bookmark('1', { xArticle: article }),
+          bookmark('2', { quotedPostId: '99', quotedXArticle: { ...article, restId: '888', title: 'Quoted' } }),
+          bookmark('3'),
+        ],
+        () => [cat.id],
+      );
+      expect(db.getXArticle('1')).toEqual(article);
+      expect(db.getXArticle('99')?.title).toBe('Quoted');
+      expect(db.getBookmarkByPostId('2')?.quotedPostId).toBe('99');
+
+      const map = db.getXArticlesForBookmarks(db.getAllBookmarks());
+      expect(map.get('1')).toEqual({ article, postId: '1', quoted: false });
+      expect(map.get('2')).toMatchObject({ postId: '99', quoted: true });
+      expect(map.has('3')).toBe(false);
+
+      // Re-storing without Article data (e.g. recategorize) keeps what is stored.
+      db.storeCategorizedBatch([bookmark('1')], () => [cat.id]);
+      expect(db.getXArticle('1')).toEqual(article);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates a pre-existing bookmarks table (adds quoted_post_id) idempotently, keeping its rows', () => {
+    const dbPath = path.join(os.tmpdir(), `xbookmarks-xarticle-migration-${Date.now()}-${Math.random()}.db`);
+    try {
+      const raw = new BetterSqlite3(dbPath);
+      raw.exec(`
+        CREATE TABLE bookmarks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT NOT NULL UNIQUE,
+          author_username TEXT NOT NULL DEFAULT '', author_name TEXT NOT NULL DEFAULT '',
+          text TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, post_created_at TEXT NOT NULL DEFAULT '',
+          ingested_at TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0, read_at TEXT
+        );
+      `);
+      raw
+        .prepare(`INSERT INTO bookmarks (post_id, url, ingested_at) VALUES ('old', 'https://x.com/a/status/old', '2026-01-01')`)
+        .run();
+      raw.close();
+
+      const first = new Database(dbPath);
+      expect(first.getBookmarkByPostId('old')?.quotedPostId).toBeNull();
+      first.setQuotedPostId('old', '42');
+      first.saveXArticle('42', article);
+      first.close();
+
+      const second = new Database(dbPath); // re-opening re-runs the guarded migration: a no-op
+      try {
+        expect(second.getBookmarkByPostId('old')?.quotedPostId).toBe('42');
+        expect(second.getXArticle('42')).toEqual(article);
+      } finally {
+        second.close();
+      }
+    } finally {
+      for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+        try {
+          fs.rmSync(f);
+        } catch {
+          /* not present */
+        }
+      }
+    }
+  });
+});

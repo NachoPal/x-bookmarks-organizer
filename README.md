@@ -155,6 +155,23 @@ node dist/index.js backfill-previews
 It is idempotent - safe to re-run; already-cached links (`ok`, and `failed` unless `--retry-failed`
 is passed) are skipped. Prints a summary of links found / fetched / cached / failed.
 
+**Backfill X Articles** (optional, one-time, a small PAID X read) - a normal `run` now asks X for
+the data of X's native long-form Articles (`x.com/i/article/...`: title, preview, cover, full body),
+which the viewer shows as an "X Article" card and feeds to Summarize and categorization. Bookmarks
+stored before that have none. Run this once to read it for just those bookmarks - the ones whose
+link resolved to an X Article or to another X post they quote (run `backfill-previews` first so
+links are resolved):
+
+```bash
+node dist/index.js backfill-x-articles --dry-run   # lists what it would read + estimated cost, no X call
+node dist/index.js backfill-x-articles
+```
+
+Needs your X credentials (it goes through the normal login/refresh-token path). Idempotent - stored
+Articles and already-checked quotes are skipped. The first real run logs the raw `article` field
+shape X returns, so a field-naming mismatch is visible. Afterwards, `recategorize` re-files any of
+these bookmarks that were sitting in `Uncategorized`.
+
 **3. Browse** (the web viewer needs no X secrets - browsing and cached summaries work without any):
 
 ```bash

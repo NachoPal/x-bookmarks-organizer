@@ -303,6 +303,23 @@ is skipped, so re-running only touches what's still missing. A normal `run` alre
 bookmarks as it ingests them (via `buildArticleContext`), so this command is only needed once per
 backlog, or again after `--retry-failed` if links were down and are now reachable.
 
+## X-native Articles (`x.com/i/article/<id>`)
+
+X's embed renders its own long-form Articles as a bare link, and their link is a t.co hop back to
+x.com that no fetch can read. The data comes from the X API instead: the bookmarks request asks
+for the post `article` field (+ `article.cover_media`, `referenced_tweets.id` for quoted Articles),
+parsed **tolerantly** in `src/x/article.ts` (the v2 spec types `article` as a bare object, so the
+sub-field names are best-effort; an unreadable shape warns and never drops the bookmark, the first
+raw shape is logged once, and a 400 on the new fields falls back to the legacy field set). Stored in
+`x_articles`, keyed by the Article's HOST post id; a quote joins via `bookmarks.quoted_post_id`
+(`Database.getXArticlesForBookmarks`). It feeds: the viewer's "X Article" card (`xArticle` in the
+list response, `renderXArticleCard` in `app.js` - independent of the removed #46 preview card),
+categorization context (`buildArticleContext` uses title/preview and skips the link fetch), and
+Summarize (`plain_text` as the article body). `backfill-x-articles` (`src/x/backfill-articles.ts`)
+reads it for already-stored bookmarks via `GET /2/tweets?ids=` - PAID reads, so it selects only
+bookmarks whose cached `resolved_url` is an X Article or X post, supports `--dry-run`, and only
+authenticates when there is something to read.
+
 ## Live vs. tested
 
 The live OAuth browser consent and the vault-injected run are performed by the operator. Automated

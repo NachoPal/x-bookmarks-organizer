@@ -454,6 +454,30 @@ describe('runIngest article context (issue #25)', () => {
     expect(db.getArticleLinkMetadata('https://example.com/piece')?.status).toBe('ok');
   });
 
+  it('feeds an X Article\'s title/preview to both passes and stores it with the bookmark, fetching nothing', async () => {
+    const xArticle = {
+      restId: '777',
+      title: 'How to Build Agent Memory',
+      previewText: 'Search and retrieval.',
+      plainText: 'Body',
+      coverUrl: null,
+      coverWidth: null,
+      coverHeight: null,
+    };
+    const client = new FakeXClient([{ ...bm('1', 'https://t.co/onlyALink'), xArticle }]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI']]));
+    const categorizer = new FakeCategorizer({ '1': [['AI']] });
+    const articleFetcher = new FakeArticleFetcher({});
+
+    await runIngest({ db, client, taxonomer, categorizer, articleFetcher, batchSize: 10, maxDepth: 4 });
+
+    const expected = { title: 'How to Build Agent Memory', description: 'Search and retrieval.' };
+    expect(taxonomer.seenArticleContexts[0]?.get('1')).toEqual(expected);
+    expect(categorizer.seenArticleContexts[0]?.get('1')).toEqual(expected);
+    expect(articleFetcher.calls).toEqual([]);
+    expect(db.getXArticle('1')).toEqual(xArticle);
+  });
+
   it('falls back to today\'s behavior (no article context) on a fetch failure, without blocking ingest', async () => {
     const client = new FakeXClient([bm('1', 'dead link https://example.com/dead')]);
     const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI']]));

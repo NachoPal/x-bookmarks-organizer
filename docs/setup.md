@@ -120,6 +120,15 @@ changes, idempotent - safe to re-run):
 node dist/index.js backfill-previews
 ```
 
+If your library predates X Article support, read the X Article data (title, preview, cover, body)
+for already-stored bookmarks that link or quote an X Article. This is a small one-time PAID X read
+(`--dry-run` prints what it would read and the estimated cost without calling X); run
+`backfill-previews` first so links are resolved:
+
+```bash
+node dist/index.js backfill-x-articles
+```
+
 Start the local web viewer (no X secrets needed - browsing and cached summaries work without any)
 and open the printed URL:
 

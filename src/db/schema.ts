@@ -40,6 +40,14 @@
  *   `toViewerBookmark` in `src/web/server.ts` - so a bookmark's preview/
  *   "Read article" affordance appears once ingest (or `recategorize`) has
  *   populated this row for its link, not before.
+ * - `x_articles` holds X-native long-form Articles (`x.com/i/article/<id>`),
+ *   keyed by the Article's HOST post id - the data arrives on that post's
+ *   `article` field from the X API, so no link fetch is involved (and
+ *   `article_link_metadata`, being URL-keyed and fetch-populated, is the wrong
+ *   home for it). A bookmark that IS an Article's host post joins on its own
+ *   `post_id`; a bookmark that QUOTES one joins on `bookmarks.quoted_post_id`.
+ *   Written atomically with the bookmark in `storeCategorizedBatch`, and by
+ *   `backfill-x-articles` for bookmarks stored before this existed.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -118,6 +126,18 @@ CREATE TABLE IF NOT EXISTS article_link_metadata (
   resolved_url TEXT,
   fetched_at   TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS x_articles (
+  post_id      TEXT PRIMARY KEY,
+  rest_id      TEXT,
+  title        TEXT,
+  preview_text TEXT,
+  plain_text   TEXT,
+  cover_url    TEXT,
+  cover_w      INTEGER,
+  cover_h      INTEGER,
+  fetched_at   TEXT NOT NULL
+);
 `;
 
 /**
@@ -131,4 +151,14 @@ export const ARTICLE_LINK_METADATA_ADDED_COLUMNS: { name: string; ddl: string }[
   { name: 'image', ddl: 'ALTER TABLE article_link_metadata ADD COLUMN image TEXT' },
   { name: 'site_name', ddl: 'ALTER TABLE article_link_metadata ADD COLUMN site_name TEXT' },
   { name: 'resolved_url', ddl: 'ALTER TABLE article_link_metadata ADD COLUMN resolved_url TEXT' },
+];
+
+/**
+ * Columns added to `bookmarks` after its original release: `quoted_post_id`
+ * links a quote post to the post it quotes, so a quote of an X Article
+ * resolves to that Article's `x_articles` row. Same `PRAGMA table_info` guard
+ * as {@link ARTICLE_LINK_METADATA_ADDED_COLUMNS}.
+ */
+export const BOOKMARKS_ADDED_COLUMNS: { name: string; ddl: string }[] = [
+  { name: 'quoted_post_id', ddl: 'ALTER TABLE bookmarks ADD COLUMN quoted_post_id TEXT' },
 ];

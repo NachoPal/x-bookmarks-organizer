@@ -11,6 +11,35 @@ export interface RawBookmark {
   url: string;
   /** ISO-8601 timestamp of when the post was created (NOT when bookmarked). */
   postCreatedAt: string;
+  /**
+   * The X-native Article (`x.com/i/article/<id>`) this post hosts, when the
+   * bookmarked post IS an Article's host post. Arrives with the bookmark from
+   * the X API's `article` field - no separate fetch. Absent on posts fetched
+   * before the field was requested; `backfill-x-articles` fills those in.
+   */
+  xArticle?: XArticle | null;
+  /** The id of the post this one quotes, if it is a quote post. */
+  quotedPostId?: string | null;
+  /** The X Article hosted by the quoted post, when this post quotes an Article. */
+  quotedXArticle?: XArticle | null;
+}
+
+/**
+ * An X-native long-form Article, as returned in a post's `article` field. Every
+ * field is nullable because the official v2 sub-field names are parsed
+ * tolerantly (see `src/x/article.ts`) and any one of them may be missing.
+ */
+export interface XArticle {
+  /** The Article id - the `<id>` in `x.com/i/article/<id>` (not the host post id). */
+  restId: string | null;
+  title: string | null;
+  previewText: string | null;
+  /** The Article's full body as plain text (X exposes no rich structure). */
+  plainText: string | null;
+  /** Absolute http(s) URL of the cover image. */
+  coverUrl: string | null;
+  coverWidth: number | null;
+  coverHeight: number | null;
 }
 
 /** A bookmark row as stored in the database. */

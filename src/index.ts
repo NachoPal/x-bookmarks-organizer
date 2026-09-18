@@ -13,6 +13,7 @@ import { toRunner } from './llm/runner';
 import type { LlmRole } from './llm/types';
 import { backfillArticlePreviews } from './articles/backfill';
 import { HttpArticleFetcher } from './articles/fetch-article';
+import { backfillXArticles } from './x/backfill-articles';
 
 const HELP = `X Bookmarks Organizer
 
@@ -29,6 +30,13 @@ Usage:
                                   taxonomy changes, no re-fetch from X.
                                   --retry-failed also re-fetches links
                                   previously cached as failed.
+  node dist/index.js backfill-x-articles [--dry-run]
+                                  Read X Article data (title, preview, cover,
+                                  body) from the X API for already-stored
+                                  bookmarks that link or quote an X Article.
+                                  A small one-time PAID X read; --dry-run lists
+                                  what would be read and its estimated cost
+                                  without calling X.
   node dist/index.js help        Show this help
 
 Secrets resolve through a layered chain, first hit wins: the environment (a
@@ -141,6 +149,28 @@ async function cmdBackfillPreviews(db: Database): Promise<void> {
   );
 }
 
+async function cmdBackfillXArticles(config: Config, db: Database): Promise<void> {
+  const dryRun = process.argv.includes('--dry-run');
+  const summary = await backfillXArticles(
+    db,
+    async () => {
+      requireXCredentials(config);
+      return getAuthenticatedClient(config, db);
+    },
+    { dryRun, logger: (msg) => console.log(msg) },
+  );
+  console.log(
+    `\nDone. ${summary.direct} bookmark(s) link an X Article, ${summary.quoted} quote another X post; ` +
+      `${summary.requested} post(s) read from X, ${summary.stored} X Article(s) stored.`,
+  );
+  if (summary.stored > 0) {
+    console.log(
+      'Cards and summaries use them right away. To re-file bookmarks now sitting in Uncategorized, ' +
+        'run:  node dist/index.js recategorize',
+    );
+  }
+}
+
 async function cmdServe(config: Config, db: Database, store: CredentialStore): Promise<void> {
   // Summaries go through the same provider abstraction as categorization, on
   // the summary role's model. The button is offered whenever the provider says
@@ -199,6 +229,9 @@ async function main(): Promise<void> {
         break;
       case 'backfill-previews':
         await cmdBackfillPreviews(db);
+        break;
+      case 'backfill-x-articles':
+        await cmdBackfillXArticles(config, db);
         break;
       case 'serve':
         await cmdServe(config, db, store);

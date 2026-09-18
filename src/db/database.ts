@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
-import { ARTICLE_LINK_METADATA_ADDED_COLUMNS, SCHEMA_SQL } from './schema';
+import { ARTICLE_LINK_METADATA_ADDED_COLUMNS, BOOKMARKS_ADDED_COLUMNS, SCHEMA_SQL } from './schema';
 import type {
   ArticleLinkMetadata,
   ArticleRecord,
@@ -9,6 +9,7 @@ import type {
   RawBookmark,
   StoredBookmark,
   SummaryRecord,
+  XArticle,
 } from '../types';
 
 /** Read-state filter for the viewer's paged bookmark list. */
@@ -32,6 +33,7 @@ interface BookmarkRow {
   ingested_at: string;
   read: number;
   read_at: string | null;
+  quoted_post_id?: string | null;
 }
 
 interface CategoryRow {
@@ -65,7 +67,43 @@ function toStoredBookmark(row: BookmarkRow): StoredBookmark {
     ingestedAt: row.ingested_at,
     read: row.read === 1,
     readAt: row.read_at,
+    quotedPostId: row.quoted_post_id ?? null,
   };
+}
+
+interface XArticleRow {
+  post_id: string;
+  rest_id: string | null;
+  title: string | null;
+  preview_text: string | null;
+  plain_text: string | null;
+  cover_url: string | null;
+  cover_w: number | null;
+  cover_h: number | null;
+  fetched_at: string;
+}
+
+function toXArticle(row: XArticleRow): XArticle {
+  return {
+    restId: row.rest_id,
+    title: row.title,
+    previewText: row.preview_text,
+    plainText: row.plain_text,
+    coverUrl: row.cover_url,
+    coverWidth: row.cover_w,
+    coverHeight: row.cover_h,
+  };
+}
+
+/**
+ * The X Article a bookmark shows: the one it hosts itself, else the one hosted
+ * by the post it quotes (`quoted: true`).
+ */
+export interface BookmarkXArticle {
+  article: XArticle;
+  /** The post id whose row this is - the bookmark's own, or the quoted post's. */
+  postId: string;
+  quoted: boolean;
 }
 
 function toCategoryNode(row: CategoryRow): CategoryNode {
@@ -152,12 +190,15 @@ export class Database {
    * already-migrated database is a no-op.
    */
   private migrate(): void {
+    this.addMissingColumns('article_link_metadata', ARTICLE_LINK_METADATA_ADDED_COLUMNS);
+    this.addMissingColumns('bookmarks', BOOKMARKS_ADDED_COLUMNS);
+  }
+
+  private addMissingColumns(table: string, columns: { name: string; ddl: string }[]): void {
     const existing = new Set(
-      (this.db.prepare('PRAGMA table_info(article_link_metadata)').all() as { name: string }[]).map(
-        (c) => c.name,
-      ),
+      (this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name),
     );
-    for (const { name, ddl } of ARTICLE_LINK_METADATA_ADDED_COLUMNS) {
+    for (const { name, ddl } of columns) {
       if (!existing.has(name)) this.db.exec(ddl);
     }
   }
@@ -438,12 +479,91 @@ export class Database {
             ? Number(info.lastInsertRowid)
             : this.getBookmarkByPostId(bm.postId)?.id;
         if (bookmarkId === undefined) continue;
+        this.writeXArticleData(bm, when);
         for (const categoryId of categoryIds) {
           this.linkBookmarkToCategory(bookmarkId, categoryId);
         }
       }
     });
     tx(batch);
+  }
+
+  // --- X-native Articles --------------------------------------------------
+
+  /**
+   * Persist whatever X Article data a fetched bookmark carries: its own
+   * Article, the quoted post id, and the quoted post's Article. Only ever
+   * adds/refreshes data - a bookmark re-stored without it (e.g. by
+   * `recategorize`) leaves what is already stored untouched.
+   */
+  private writeXArticleData(bm: RawBookmark, when: string): void {
+    if (bm.xArticle) this.saveXArticle(bm.postId, bm.xArticle, when);
+    if (bm.quotedPostId) this.setQuotedPostId(bm.postId, bm.quotedPostId);
+    if (bm.quotedPostId && bm.quotedXArticle) this.saveXArticle(bm.quotedPostId, bm.quotedXArticle, when);
+  }
+
+  /** Store (or refresh) the X Article hosted by `postId`. */
+  saveXArticle(postId: string, article: XArticle, when: string = new Date().toISOString()): void {
+    this.db
+      .prepare(
+        `INSERT INTO x_articles
+           (post_id, rest_id, title, preview_text, plain_text, cover_url, cover_w, cover_h, fetched_at)
+         VALUES (@postId, @restId, @title, @previewText, @plainText, @coverUrl, @coverWidth, @coverHeight, @fetchedAt)
+         ON CONFLICT(post_id) DO UPDATE SET
+           rest_id = excluded.rest_id,
+           title = excluded.title,
+           preview_text = excluded.preview_text,
+           plain_text = excluded.plain_text,
+           cover_url = excluded.cover_url,
+           cover_w = excluded.cover_w,
+           cover_h = excluded.cover_h,
+           fetched_at = excluded.fetched_at`,
+      )
+      .run({ postId, ...article, fetchedAt: when });
+  }
+
+  /** Record which post a stored bookmark quotes. */
+  setQuotedPostId(postId: string, quotedPostId: string): void {
+    this.db.prepare('UPDATE bookmarks SET quoted_post_id = ? WHERE post_id = ?').run(quotedPostId, postId);
+  }
+
+  /** The X Article hosted by `postId`, if stored. */
+  getXArticle(postId: string): XArticle | undefined {
+    const row = this.db.prepare('SELECT * FROM x_articles WHERE post_id = ?').get(postId) as
+      | XArticleRow
+      | undefined;
+    return row ? toXArticle(row) : undefined;
+  }
+
+  /**
+   * The X Article each bookmark shows (see {@link BookmarkXArticle}), keyed by
+   * the bookmark's post id; bookmarks with none are absent. One query for the
+   * whole list, so the viewer's page read stays a single cheap lookup.
+   */
+  getXArticlesForBookmarks(
+    bookmarks: Pick<RawBookmark, 'postId' | 'quotedPostId'>[],
+  ): Map<string, BookmarkXArticle> {
+    const result = new Map<string, BookmarkXArticle>();
+    const ids = new Set<string>();
+    for (const bm of bookmarks) {
+      ids.add(bm.postId);
+      if (bm.quotedPostId) ids.add(bm.quotedPostId);
+    }
+    if (ids.size === 0) return result;
+    const list = [...ids];
+    const rows = this.db
+      .prepare(`SELECT * FROM x_articles WHERE post_id IN (${list.map(() => '?').join(',')})`)
+      .all(...list) as XArticleRow[];
+    const byPostId = new Map(rows.map((r) => [r.post_id, toXArticle(r)]));
+    for (const bm of bookmarks) {
+      const own = byPostId.get(bm.postId);
+      const quoted = bm.quotedPostId ? byPostId.get(bm.quotedPostId) : undefined;
+      if (own) result.set(bm.postId, { article: own, postId: bm.postId, quoted: false });
+      else if (quoted && bm.quotedPostId) {
+        result.set(bm.postId, { article: quoted, postId: bm.quotedPostId, quoted: true });
+      }
+    }
+    return result;
   }
 
   // --- Run state ---------------------------------------------------------

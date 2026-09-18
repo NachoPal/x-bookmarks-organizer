@@ -1,5 +1,5 @@
 import path from 'node:path';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import type { Database, ReadFilter } from '../db/database';
 import { buildCategoryTree } from '../categorize/tree';
@@ -12,6 +12,8 @@ import {
   type SummaryGenerator,
   type SummaryInput,
 } from '../summarize/summarizer';
+import { xArticleUrl } from '../x/article';
+import type { BookmarkXArticle } from '../db/database';
 import type { ArticleLinkMetadata, ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
@@ -60,11 +62,45 @@ export interface ServerOptions {
  * can patch only the affected sidebar counters (plus their ancestors) on a
  * read-state toggle or delete, instead of reloading the whole tree.
  */
-type BookmarkForViewer = StoredBookmark & {
+type BookmarkForViewer = Omit<StoredBookmark, 'xArticle' | 'quotedXArticle'> & {
   articleUrl: string | null;
   hasArticle: boolean;
   categoryIds: number[];
+  xArticle: ViewerXArticle | null;
 };
+
+/**
+ * The "X Article" card's data for a bookmark that hosts or quotes an X-native
+ * Article. The body (`plainText`) stays server-side - it feeds Summarize, and
+ * shipping it per card would bloat every page of the list.
+ */
+interface ViewerXArticle {
+  title: string | null;
+  previewText: string | null;
+  coverUrl: string | null;
+  coverWidth: number | null;
+  coverHeight: number | null;
+  /** Where the card links: the Article itself, else its host post. */
+  url: string;
+  /** True when the bookmark quotes the Article rather than hosting it. */
+  quoted: boolean;
+}
+
+function toViewerXArticle(entry: BookmarkXArticle | undefined): ViewerXArticle | null {
+  if (!entry) return null;
+  const { article, postId, quoted } = entry;
+  // A row with neither title nor preview would render an empty card.
+  if (!article.title && !article.previewText) return null;
+  return {
+    title: article.title,
+    previewText: article.previewText,
+    coverUrl: article.coverUrl,
+    coverWidth: article.coverWidth,
+    coverHeight: article.coverHeight,
+    url: article.restId ? xArticleUrl(article.restId) : `https://x.com/i/web/status/${postId}`,
+    quoted,
+  };
+}
 
 /** `example.com` from `https://www.example.com/foo`, or the raw hostname if parsing fails. */
 function domainFromUrl(url: string): string {
@@ -94,9 +130,11 @@ function hasReadableArticle(metadata: ArticleLinkMetadata | undefined): boolean 
  * `run`/`recategorize`), so a bookmark's "Read article" affordance appears
  * once ingest has resolved its link, keeping the bookmark list endpoint a
  * pure, fast, offline-testable cache read with no network dependency of its
- * own.
+ * own. The same holds for `xArticle` (X-native Articles), a pure read of the
+ * `x_articles` table that ingest/`backfill-x-articles` populate.
  */
 function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryIdsByBookmark: Map<number, number[]>): BookmarkForViewer[] {
+  const xArticles = db.getXArticlesForBookmarks(bookmarks);
   return bookmarks.map((bookmark) => {
     const articleUrl = extractArticleLink(bookmark.text);
     const metadata = articleUrl ? db.getArticleLinkMetadata(articleUrl) : undefined;
@@ -105,6 +143,7 @@ function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryId
       articleUrl,
       hasArticle: hasReadableArticle(metadata),
       categoryIds: categoryIdsByBookmark.get(bookmark.id) ?? [],
+      xArticle: toViewerXArticle(xArticles.get(bookmark.postId)),
     };
   });
 }
@@ -167,6 +206,31 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
           };
     db.saveArticle(record);
     return record;
+  }
+
+  /** Generate, cache and return a summary; 502 with the adapter's message on failure. */
+  async function generateSummary(id: number, input: SummaryInput, reply: FastifyReply) {
+    if (!summaryGenerator) return reply.code(503).send({ error: unavailableReason });
+    let summaryText: string;
+    try {
+      summaryText = await summaryGenerator.summarize(input);
+    } catch (err) {
+      // Forward the adapter's message: it is written to be user-facing and is
+      // redacted at the adapter boundary, so it tells the owner what to fix
+      // instead of a generic failure they cannot act on.
+      const detail = err instanceof Error ? err.message.slice(0, MAX_ERROR_CHARS) : '';
+      return reply
+        .code(502)
+        .send({ error: detail || 'Could not generate a summary. Please try again.' });
+    }
+
+    const record: SummaryRecord = {
+      bookmarkId: id,
+      summary: summaryText,
+      generatedAt: new Date().toISOString(),
+    };
+    db.saveSummary(record);
+    return { summary: record };
   }
 
   app.register(fastifyStatic, { root: PUBLIC_DIR });
@@ -290,6 +354,23 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       return reply.code(503).send({ error: unavailableReason });
     }
 
+    // An X-native Article (hosted or quoted) brings its own body from the X
+    // API, stored at ingest - no link fetch, and it is the substance to
+    // summarize. Its t.co link only leads back to x.com, so skip that fetch.
+    const xArticle = db.getXArticlesForBookmarks([bookmark]).get(bookmark.postId)?.article;
+    if (xArticle) {
+      const xInput: SummaryInput = {
+        postText: bookmark.text,
+        authorName: bookmark.authorName,
+        authorUsername: bookmark.authorUsername,
+        articleTitle: xArticle.title,
+        articleDescription: xArticle.plainText ? null : xArticle.previewText,
+        articleSiteName: 'X Article',
+        articleText: xArticle.plainText,
+      };
+      if (hasSummarizableContent(xInput)) return generateSummary(id, xInput, reply);
+    }
+
     const articleUrl = extractArticleLink(bookmark.text);
     const article = articleUrl ? await getOrFetchArticle(id, articleUrl) : undefined;
     const readableArticle = article && article.status === 'ok' ? article : null;
@@ -327,26 +408,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       return reply.code(422).send({ error: NOTHING_TO_SUMMARIZE_MESSAGE });
     }
 
-    let summaryText: string;
-    try {
-      summaryText = await summaryGenerator.summarize(input);
-    } catch (err) {
-      // Forward the adapter's message: it is written to be user-facing and is
-      // redacted at the adapter boundary, so it tells the owner what to fix
-      // instead of a generic failure they cannot act on.
-      const detail = err instanceof Error ? err.message.slice(0, MAX_ERROR_CHARS) : '';
-      return reply
-        .code(502)
-        .send({ error: detail || 'Could not generate a summary. Please try again.' });
-    }
-
-    const record: SummaryRecord = {
-      bookmarkId: id,
-      summary: summaryText,
-      generatedAt: new Date().toISOString(),
-    };
-    db.saveSummary(record);
-    return { summary: record };
+    return generateSummary(id, input, reply);
   });
 
   return app;

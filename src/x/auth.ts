@@ -4,7 +4,7 @@ import { URL } from 'node:url';
 import { TwitterApi } from 'twitter-api-v2';
 import type { Config } from '../config';
 import type { Database } from '../db/database';
-import { TwitterApiXClient, type XClient } from './client';
+import { TwitterApiXClient } from './client';
 
 /** Scopes required: read bookmarks + tweets + users, and refresh headlessly. */
 const SCOPES = ['bookmark.read', 'tweet.read', 'users.read', 'offline.access'];
@@ -97,7 +97,7 @@ function waitForCallback(config: Config, expectedState: string, authUrl: string)
  * Rotates and persists the new refresh token that X returns on each refresh.
  * Throws with guidance if no token is stored yet.
  */
-export async function getAuthenticatedClient(config: Config, db: Database): Promise<XClient> {
+export async function getAuthenticatedClient(config: Config, db: Database): Promise<TwitterApiXClient> {
   const refreshToken = db.getRefreshToken();
   if (!refreshToken) {
     throw new Error('Not logged in to X yet. Run the one-time login first:\n  node dist/index.js login');

@@ -1,6 +1,6 @@
 import { extractArticleLink } from './extract-link';
 import type { ArticleFetcher } from './fetch-article';
-import type { ArticleLinkMetadata, RawBookmark } from '../types';
+import type { ArticleLinkMetadata, RawBookmark, XArticle } from '../types';
 
 /** Article title/description handed to the categorization prompts for a link post. */
 export interface ArticleContext {
@@ -12,6 +12,24 @@ export interface ArticleContext {
 export interface ArticleMetadataCache {
   getArticleLinkMetadata(url: string): ArticleLinkMetadata | undefined;
   saveArticleLinkMetadata(record: ArticleLinkMetadata): void;
+  /**
+   * Stored X-native Articles for bookmarks that were fetched without one in
+   * hand (e.g. `recategorize` over stored rows). Optional so a plain URL cache
+   * still satisfies this; `Database` implements it.
+   */
+  getXArticlesForBookmarks?(
+    bookmarks: Pick<RawBookmark, 'postId' | 'quotedPostId'>[],
+  ): Map<string, { article: XArticle }>;
+}
+
+/**
+ * The X-native Article a bookmark hosts or quotes, from the bookmark itself
+ * (fresh from the X API) or else from the store.
+ */
+function xArticleContext(article: XArticle | null | undefined): ArticleContext | undefined {
+  const title = article?.title ?? article?.previewText;
+  if (!article || !title) return undefined;
+  return { title, description: article.title ? article.previewText ?? undefined : undefined };
 }
 
 /** How many links to fetch in parallel, bounding the total time added to a run. */
@@ -141,6 +159,9 @@ export async function resolveManyArticleLinkMetadata(
  * link is not retried every run; and a bounded number of distinct links are
  * fetched concurrently, deduplicated by URL, so a large batch never fetches
  * one link at a time or the same shared link twice.
+ *
+ * A bookmark that hosts or quotes an X-native Article gets that Article's
+ * title + preview text as its context instead (no fetch - see below).
  */
 export async function buildArticleContext(
   bookmarks: RawBookmark[],
@@ -150,8 +171,19 @@ export async function buildArticleContext(
 ): Promise<Map<string, ArticleContext>> {
   const context = new Map<string, ArticleContext>();
 
-  const postIdsByUrl = new Map<string, string[]>();
+  // An X-native Article's title/preview come straight from the X API, so a
+  // bookmark that hosts or quotes one needs no link fetch at all - its link is
+  // a t.co hop back to x.com, which could only ever cache a useless `failed`.
+  const stored = cache.getXArticlesForBookmarks?.(bookmarks) ?? new Map<string, { article: XArticle }>();
+  const needsLink: RawBookmark[] = [];
   for (const bm of bookmarks) {
+    const ctx = xArticleContext(bm.xArticle ?? bm.quotedXArticle ?? stored.get(bm.postId)?.article);
+    if (ctx) context.set(bm.postId, ctx);
+    else needsLink.push(bm);
+  }
+
+  const postIdsByUrl = new Map<string, string[]>();
+  for (const bm of needsLink) {
     const url = extractArticleLink(bm.text);
     if (!url) continue;
     const existing = postIdsByUrl.get(url);

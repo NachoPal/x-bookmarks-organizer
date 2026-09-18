@@ -47,6 +47,43 @@ describe('buildArticleContext', () => {
     vi.unstubAllGlobals();
   });
 
+  const xArticle = {
+    restId: '777',
+    title: 'Adopting the software factory model',
+    previewText: 'Crawl, walk, run.',
+    plainText: 'Body',
+    coverUrl: null,
+    coverWidth: null,
+    coverHeight: null,
+  };
+
+  it('uses an X Article\'s title + preview as context (own or quoted) without fetching its link', async () => {
+    const fetcher = new FakeFetcher({});
+    const cache = new FakeCache();
+    const ctx = await buildArticleContext(
+      [
+        { ...bm('1', 'https://t.co/own'), xArticle },
+        { ...bm('2', 'Must read https://t.co/quoted'), quotedPostId: '9', quotedXArticle: { ...xArticle, title: 'Quoted' } },
+      ],
+      fetcher,
+      cache,
+    );
+    expect(ctx.get('1')).toEqual({ title: 'Adopting the software factory model', description: 'Crawl, walk, run.' });
+    expect(ctx.get('2')?.title).toBe('Quoted');
+    expect(fetcher.calls).toEqual([]);
+    expect(cache.store.size).toBe(0); // no pointless `failed` row for the x.com link
+  });
+
+  it('reads a stored X Article for a bookmark fetched without one (the recategorize path)', async () => {
+    const fetcher = new FakeFetcher({});
+    const cache = Object.assign(new FakeCache(), {
+      getXArticlesForBookmarks: () => new Map([['1', { article: xArticle }]]),
+    });
+    const ctx = await buildArticleContext([bm('1', 'https://t.co/own')], fetcher, cache);
+    expect(ctx.get('1')?.title).toBe('Adopting the software factory model');
+    expect(fetcher.calls).toEqual([]);
+  });
+
   it('returns no context for bookmarks with no link', async () => {
     const cache = new FakeCache();
     const fetcher = new FakeFetcher({});
