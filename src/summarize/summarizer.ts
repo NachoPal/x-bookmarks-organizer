@@ -100,7 +100,7 @@ export function buildSummaryPrompt(input: SummaryInput): string {
   const prose = postProse(input.postText);
   const lines = [
     "Summarize this bookmarked X post so its owner can grasp its substance without reading it in full.",
-    'Write plain prose - no preamble like "This post is about", and no headings or bullet points unless the material genuinely has distinct parts that are clearer as a list.',
+    'Write the summary as clean Markdown with tasteful, minimal structure: a short lead sentence or two, then the key points as a tight bullet list (and/or a couple of short paragraphs) when the material has distinct parts - use **bold** on the genuinely important terms, sparingly. No preamble like "This post is about". Structure only where it aids clarity: a one-line post deserves a single plain sentence, not a bulleted skeleton.',
     'There is no fixed length: a short post deserves a short summary, and a dense article deserves a fuller one that actually captures its key points - favor a good, faithful summary over brevity for its own sake.',
     'Everything available is quoted below. You cannot open links and must not ask for more content - summarize only what is here.',
     '',
