@@ -369,6 +369,24 @@ reads it for already-stored bookmarks via `GET /2/tweets?ids=` - PAID reads, so 
 bookmarks whose cached `resolved_url` is an X Article or X post, supports `--dry-run`, and only
 authenticates when there is something to read.
 
+## Quoted-post content, and structured content for a ranker
+
+A quoted ORDINARY post's content (author + text + created_at) is captured from the same
+`includes.tweets[]` the bookmarks/lookup request already expands via `referenced_tweets.id` - no
+second X API call - and stored in `quoted_posts` (`src/db/database.ts`, keyed by the quoted post's
+own id, mirroring the `x_articles` pattern). A quoted post that hosts an X Article is left OUT of
+`quoted_posts` on purpose - its body lives solely in `x_articles`, joined the same way via
+`bookmarks.quoted_post_id`, so it is never duplicated.
+
+`src/content/bookmark-content.ts`'s `BookmarkContent` assembles a bookmark's full content into
+named, self-describing parts (`post`, `quotedPost`, `linkedArticle`, `xArticle`, each carrying a
+`kind` label) for a downstream content-scoring/re-ranking tool that must never have to guess what a
+piece of text represents. `linkedArticle.body` is included only when the reader-view extraction
+(the #4 `articles` cache) is already cached - it stays lazy, never fetched by this read. Exposed as
+pure DB reads via `GET /api/bookmarks/:id/content` and a paged `GET /api/content` (see the README's
+"Structured bookmark content" section for the exact shape); no ranker logic lives here - this is
+data plumbing only.
+
 ## Live vs. tested
 
 The live OAuth browser consent and the vault-injected run are performed by the operator. Automated

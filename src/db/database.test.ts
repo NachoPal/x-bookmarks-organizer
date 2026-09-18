@@ -658,3 +658,44 @@ describe('Database X-native Articles', () => {
     }
   });
 });
+
+describe('Database quoted post content', () => {
+  it('stores a quoted ordinary post\'s content atomically with the bookmark', () => {
+    const db = new Database(':memory:');
+    try {
+      const cat = db.getOrCreateCategory('AI', null, new Date().toISOString());
+      db.storeCategorizedBatch(
+        [
+          bookmark('1', {
+            quotedPostId: '99',
+            quotedPost: {
+              postId: '99',
+              authorUsername: 'bob',
+              authorName: 'Bob',
+              text: 'The quoted text',
+              createdAt: '2024-02-02T00:00:00.000Z',
+            },
+          }),
+          bookmark('2'),
+        ],
+        () => [cat.id],
+      );
+
+      expect(db.getBookmarkByPostId('1')?.quotedPostId).toBe('99');
+      expect(db.getQuotedPost('99')).toEqual({
+        postId: '99',
+        authorUsername: 'bob',
+        authorName: 'Bob',
+        text: 'The quoted text',
+        createdAt: '2024-02-02T00:00:00.000Z',
+      });
+      expect(db.getQuotedPost('2')).toBeUndefined();
+
+      const map = db.getQuotedPosts(['99', '2']);
+      expect(map.get('99')?.authorUsername).toBe('bob');
+      expect(map.has('2')).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+});

@@ -14,6 +14,7 @@ import {
 } from '../summarize/summarizer';
 import { xArticleUrl } from '../x/article';
 import type { BookmarkXArticle } from '../db/database';
+import { buildBookmarkContent, buildBookmarkContents } from '../content/bookmark-content';
 import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
@@ -348,6 +349,37 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     }
 
     return generateSummary(id, input, reply);
+  });
+
+  // The structured, labeled content of one bookmark - for a content-scoring/
+  // ranking tool that needs each part (the post itself, a quoted post, a
+  // linked article, an X Article) clearly self-identified rather than
+  // flattened. A pure DB read: no network fetch happens here. See README for
+  // the shape.
+  app.get<{ Params: { id: string } }>('/api/bookmarks/:id/content', async (req, reply) => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
+    const bookmark = db.getBookmarkById(id);
+    if (!bookmark) return reply.code(404).send({ error: 'bookmark not found' });
+    return { content: buildBookmarkContent(db, bookmark) };
+  });
+
+  // A page of every bookmark's structured content, newest-ingested first, for
+  // a ranking tool to consume in bulk without a network dependency of its own.
+  app.get<{ Querystring: { offset?: string; limit?: string } }>('/api/content', async (req) => {
+    const offset = parseNonNegInt(req.query.offset, 0);
+    const requested = parseNonNegInt(req.query.limit, pageSize);
+    const limit = Math.min(requested > 0 ? requested : pageSize, pageSize);
+
+    const total = db.getBookmarkCount();
+    const bookmarks = db.getBookmarksPage(offset, limit);
+    return {
+      content: buildBookmarkContents(db, bookmarks),
+      offset,
+      limit,
+      total,
+      hasMore: offset + bookmarks.length < total,
+    };
   });
 
   return app;

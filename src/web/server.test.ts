@@ -655,3 +655,128 @@ describe('X-native Articles in the viewer API', () => {
     expect(fetcher.calls).toEqual([]);
   });
 });
+
+describe('bookmark content API', () => {
+  let db: Database;
+  let app: FastifyInstance;
+
+  const xArticle = {
+    restId: '777',
+    title: 'An X Article',
+    previewText: 'Its preview text.',
+    plainText: 'The full plain-text body of the X Article.',
+    coverUrl: null,
+    coverWidth: null,
+    coverHeight: null,
+  };
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    const cat = db.getOrCreateCategory('AI', null, new Date().toISOString());
+    db.storeCategorizedBatch(
+      [
+        bm('1'),
+        {
+          ...bm('2'),
+          text: 'Worth a read',
+          quotedPostId: '9',
+          quotedPost: { postId: '9', authorUsername: 'bob', authorName: 'Bob', text: 'The original', createdAt: '2024-01-01' },
+        },
+        { ...bm('3'), text: 'See https://t.co/aBcD1234Xy' },
+        { ...bm('4'), text: 'https://t.co/xArt', quotedPostId: '10', quotedXArticle: xArticle },
+      ],
+      () => [cat.id],
+    );
+    db.saveArticleLinkMetadata({
+      url: 'https://t.co/aBcD1234Xy',
+      status: 'ok',
+      title: 'Why Evals Beat Vibes',
+      description: 'A case for treating prompt edits like code edits.',
+      image: null,
+      siteName: 'Example',
+      resolvedUrl: 'https://example.com/evals',
+      fetchedAt: new Date().toISOString(),
+    });
+    db.saveArticle({
+      bookmarkId: db.getBookmarkByPostId('3')!.id,
+      url: 'https://t.co/aBcD1234Xy',
+      status: 'ok',
+      title: 'Why Evals Beat Vibes',
+      contentHtml: '<p>The full extracted body.</p>',
+      excerpt: null,
+      siteName: 'Example',
+      reason: null,
+      fetchedAt: new Date().toISOString(),
+    });
+    app = buildServer(db);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it('GET /api/bookmarks/:id/content assembles labeled parts, with null parts null', async () => {
+    const b1 = db.getBookmarkByPostId('1')!;
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/content` });
+    expect(res.statusCode).toBe(200);
+    const { content } = res.json() as { content: Record<string, unknown> };
+    expect(content).toMatchObject({
+      bookmarkId: b1.id,
+      postId: '1',
+      post: { kind: 'post', authorUsername: 'a', authorName: 'A', text: 't-1' },
+      quotedPost: null,
+      linkedArticle: null,
+      xArticle: null,
+    });
+  });
+
+  it('includes a labeled quotedPost for a quoted ordinary post', async () => {
+    const b2 = db.getBookmarkByPostId('2')!;
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b2.id}/content` });
+    const { content } = res.json() as { content: { quotedPost: unknown } };
+    expect(content.quotedPost).toEqual({ kind: 'quoted-post', authorUsername: 'bob', authorName: 'Bob', text: 'The original' });
+  });
+
+  it('includes the cached external-article body only when the reader-view cache has one', async () => {
+    const b3 = db.getBookmarkByPostId('3')!;
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b3.id}/content` });
+    const { content } = res.json() as { content: { linkedArticle: unknown } };
+    expect(content.linkedArticle).toMatchObject({
+      kind: 'external-article',
+      url: 'https://example.com/evals',
+      title: 'Why Evals Beat Vibes',
+      description: 'A case for treating prompt edits like code edits.',
+    });
+    expect((content.linkedArticle as { body: string }).body).toContain('The full extracted body.');
+  });
+
+  it('resolves a quoted X Article as the xArticle part, not quotedPost', async () => {
+    const b4 = db.getBookmarkByPostId('4')!;
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b4.id}/content` });
+    const { content } = res.json() as { content: { xArticle: unknown; quotedPost: unknown } };
+    expect(content.xArticle).toEqual({
+      kind: 'x-article',
+      title: 'An X Article',
+      previewText: 'Its preview text.',
+      body: 'The full plain-text body of the X Article.',
+      quoted: true,
+    });
+    expect(content.quotedPost).toBeNull();
+  });
+
+  it('404s for an unknown bookmark id', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/bookmarks/999999/content' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('GET /api/content pages the structured content of every bookmark', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/content?limit=2&offset=0' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { content: { postId: string }[]; total: number; hasMore: boolean };
+    expect(body.content).toHaveLength(2);
+    expect(body.total).toBe(4);
+    expect(body.hasMore).toBe(true);
+  });
+});

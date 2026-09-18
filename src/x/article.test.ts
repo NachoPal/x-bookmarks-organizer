@@ -99,6 +99,43 @@ describe('X Article mapping', () => {
     expect(bm!.quotedXArticle?.title).toBe('start ugly, write evals anyway.');
   });
 
+  it('captures a quoted ordinary post\'s content from includes.tweets[] - no second fetch', () => {
+    const tweets: RawTweet[] = [
+      {
+        id: '20',
+        author_id: 'u1',
+        text: 'Great read https://t.co/q',
+        referenced_tweets: [{ type: 'quoted', id: '21' }],
+      },
+    ];
+    const includes: RawIncludes = {
+      users: [...users, { id: 'u2', username: 'bob', name: 'Bob' }],
+      tweets: [{ id: '21', author_id: 'u2', text: 'The original post', created_at: '2024-02-02T00:00:00.000Z' }],
+    };
+    const [post] = mapPosts(tweets, includes, logger);
+    expect(post!.quotedPost).toEqual({
+      postId: '21',
+      authorUsername: 'bob',
+      authorName: 'Bob',
+      text: 'The original post',
+      createdAt: '2024-02-02T00:00:00.000Z',
+    });
+    expect(post!.quotedXArticle).toBeNull();
+
+    const [bm] = mapBookmarks(tweets, includes, logger);
+    expect(bm!.quotedPost).toEqual(post!.quotedPost);
+  });
+
+  it('leaves quotedPost null when the quoted post hosts an X Article instead', () => {
+    const tweets: RawTweet[] = [
+      { id: '20', author_id: 'u1', text: 'q https://t.co/q', referenced_tweets: [{ type: 'quoted', id: '21' }] },
+    ];
+    const includes: RawIncludes = { users, tweets: [{ id: '21', text: 'https://t.co/a', article: SYNDICATION_ARTICLE }] };
+    const [post] = mapPosts(tweets, includes, logger);
+    expect(post!.quotedXArticle?.title).toBe('start ugly, write evals anyway.');
+    expect(post!.quotedPost).toBeNull();
+  });
+
   it('keeps an ordinary post (no article) intact with null Article data', () => {
     const [bm] = mapBookmarks([{ id: '30', author_id: 'u1', text: 'hello' }], { users }, logger);
     expect(bm).toMatchObject({ postId: '30', text: 'hello', xArticle: null, quotedXArticle: null });

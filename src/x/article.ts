@@ -1,4 +1,4 @@
-import type { RawBookmark, XArticle } from '../types';
+import type { QuotedPost, RawBookmark, XArticle } from '../types';
 
 /**
  * Tolerant mapping of the X API v2 `article` field (X-native long-form
@@ -148,6 +148,22 @@ function resolveCover(article: Record<string, unknown>, mediaByKey: Map<string, 
   };
 }
 
+/**
+ * Build a quoted post's own content from its `includes.tweets[]` entry - the
+ * bookmarks/lookup requests already expand `referenced_tweets.id`, so this is
+ * a pure read of data already returned, never a second fetch.
+ */
+function quotedPostFrom(tweet: RawTweet, users: Map<string, RawUser>): QuotedPost {
+  const author = tweet.author_id ? users.get(tweet.author_id) : undefined;
+  return {
+    postId: tweet.id,
+    authorUsername: author?.username ?? '',
+    authorName: author?.name ?? '',
+    text: tweet.text ?? '',
+    createdAt: tweet.created_at ?? '',
+  };
+}
+
 /** The Article id from any expanded link in the post's entities. */
 function articleIdFromEntities(tweet: RawTweet): string | null {
   for (const u of tweet.entities?.urls ?? []) {
@@ -234,6 +250,8 @@ export interface FetchedPost {
   quotedPostId: string | null;
   quotedXArticle: XArticle | null;
   quotedArticleUnrecognized: boolean;
+  /** The quoted post's own content, when it is an ordinary post (not an Article). */
+  quotedPost: QuotedPost | null;
 }
 
 /**
@@ -250,20 +268,24 @@ export function mapPosts(
   for (const m of includes?.media ?? []) if (m.media_key) mediaByKey.set(m.media_key, m);
   const includedTweets = new Map<string, RawTweet>();
   for (const t of includes?.tweets ?? []) includedTweets.set(t.id, t);
+  const users = new Map<string, RawUser>();
+  for (const u of includes?.users ?? []) users.set(u.id, u);
 
   return tweets.map((tweet) => {
     logArticleShapeOnce(tweet, logger);
     const quotedPostId = tweet.referenced_tweets?.find((r) => r.type === 'quoted')?.id ?? null;
     const quoted = quotedPostId ? includedTweets.get(quotedPostId) : undefined;
     if (quoted) logArticleShapeOnce(quoted, logger);
+    const quotedXArticle = quoted ? parseXArticle(quoted, mediaByKey) : null;
 
     const post: FetchedPost = {
       postId: tweet.id,
       xArticle: parseXArticle(tweet, mediaByKey),
       articleUnrecognized: hasUnrecognizedArticle(tweet, mediaByKey),
       quotedPostId,
-      quotedXArticle: quoted ? parseXArticle(quoted, mediaByKey) : null,
+      quotedXArticle,
       quotedArticleUnrecognized: quoted ? hasUnrecognizedArticle(quoted, mediaByKey) : false,
+      quotedPost: quoted && !quotedXArticle ? quotedPostFrom(quoted, users) : null,
     };
     if (post.articleUnrecognized) {
       logger(`Warning: post ${tweet.id} has an X Article, but its fields were not recognized; see the shape logged above.`);
@@ -299,6 +321,7 @@ export function mapBookmarks(
       xArticle: post.xArticle,
       quotedPostId: post.quotedPostId,
       quotedXArticle: post.quotedXArticle,
+      quotedPost: post.quotedPost,
     };
   });
 }

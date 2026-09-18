@@ -6,6 +6,7 @@ import type {
   ArticleLinkMetadata,
   ArticleRecord,
   CategoryNode,
+  QuotedPost,
   RawBookmark,
   StoredBookmark,
   SummaryRecord,
@@ -104,6 +105,25 @@ export interface BookmarkXArticle {
   /** The post id whose row this is - the bookmark's own, or the quoted post's. */
   postId: string;
   quoted: boolean;
+}
+
+interface QuotedPostRow {
+  post_id: string;
+  author_username: string;
+  author_name: string;
+  text: string;
+  created_at: string;
+  fetched_at: string;
+}
+
+function toQuotedPost(row: QuotedPostRow): QuotedPost {
+  return {
+    postId: row.post_id,
+    authorUsername: row.author_username,
+    authorName: row.author_name,
+    text: row.text,
+    createdAt: row.created_at,
+  };
 }
 
 function toCategoryNode(row: CategoryRow): CategoryNode {
@@ -233,6 +253,19 @@ export class Database {
     const rows = this.db
       .prepare('SELECT * FROM bookmarks ORDER BY ingested_at DESC, id DESC')
       .all() as BookmarkRow[];
+    return rows.map(toStoredBookmark);
+  }
+
+  /** Total number of stored bookmarks, for paging the bulk content endpoint. */
+  getBookmarkCount(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM bookmarks').get() as { n: number }).n;
+  }
+
+  /** One page of ALL stored bookmarks, newest-ingested first. Used by the bulk content endpoint. */
+  getBookmarksPage(offset: number, limit: number): StoredBookmark[] {
+    const rows = this.db
+      .prepare('SELECT * FROM bookmarks ORDER BY ingested_at DESC, id DESC LIMIT ? OFFSET ?')
+      .all(limit, offset) as BookmarkRow[];
     return rows.map(toStoredBookmark);
   }
 
@@ -500,6 +533,7 @@ export class Database {
     if (bm.xArticle) this.saveXArticle(bm.postId, bm.xArticle, when);
     if (bm.quotedPostId) this.setQuotedPostId(bm.postId, bm.quotedPostId);
     if (bm.quotedPostId && bm.quotedXArticle) this.saveXArticle(bm.quotedPostId, bm.quotedXArticle, when);
+    if (bm.quotedPost) this.saveQuotedPost(bm.quotedPost, when);
   }
 
   /** Store (or refresh) the X Article hosted by `postId`. */
@@ -563,6 +597,45 @@ export class Database {
         result.set(bm.postId, { article: quoted, postId: bm.quotedPostId, quoted: true });
       }
     }
+    return result;
+  }
+
+  // --- Quoted post content -------------------------------------------------
+
+  /** Store (or refresh) the content of a quoted ordinary post, keyed by its own post id. */
+  saveQuotedPost(post: QuotedPost, when: string = new Date().toISOString()): void {
+    this.db
+      .prepare(
+        `INSERT INTO quoted_posts
+           (post_id, author_username, author_name, text, created_at, fetched_at)
+         VALUES (@postId, @authorUsername, @authorName, @text, @createdAt, @fetchedAt)
+         ON CONFLICT(post_id) DO UPDATE SET
+           author_username = excluded.author_username,
+           author_name = excluded.author_name,
+           text = excluded.text,
+           created_at = excluded.created_at,
+           fetched_at = excluded.fetched_at`,
+      )
+      .run({ ...post, fetchedAt: when });
+  }
+
+  /** The content of a quoted post, if stored. */
+  getQuotedPost(postId: string): QuotedPost | undefined {
+    const row = this.db.prepare('SELECT * FROM quoted_posts WHERE post_id = ?').get(postId) as
+      | QuotedPostRow
+      | undefined;
+    return row ? toQuotedPost(row) : undefined;
+  }
+
+  /** The stored quoted-post content for each id in `postIds`, keyed by post id. */
+  getQuotedPosts(postIds: string[]): Map<string, QuotedPost> {
+    const result = new Map<string, QuotedPost>();
+    if (postIds.length === 0) return result;
+    const ids = [...new Set(postIds)];
+    const rows = this.db
+      .prepare(`SELECT * FROM quoted_posts WHERE post_id IN (${ids.map(() => '?').join(',')})`)
+      .all(...ids) as QuotedPostRow[];
+    for (const row of rows) result.set(row.post_id, toQuotedPost(row));
     return result;
   }
 
