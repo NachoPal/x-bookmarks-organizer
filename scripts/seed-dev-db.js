@@ -263,6 +263,39 @@ db.storeCategorizedBatch(
   () => [readerDemoParent],
 );
 
+// Two bookmarks that exercise the card's own expandable full post text
+// (issue #36): one whose text is long enough to need the inline "Show
+// more"/"Show less" clamp, one short enough to render fully with no toggle.
+const postLengthParent = ensurePath(['Post Length Demo']);
+const longPostText = [
+  'A long-form post to exercise the inline expand/collapse toggle end to end.',
+  'The whole point of issue #36 is that reading the full words should never leave the app: X\'s own embed truncates a post like this one behind its own "Show more" link, which opens the post on x.com in a new tab just to read the rest.',
+  'This bookmark stores the full, untruncated text (RawBookmark.text) exactly the way ingestion received it from the X API - our own card renders that text directly, clamps it visually when it runs long, and lets the owner expand it in place with a click.',
+  'Collapsing it back should restore the same clamp, with no layout jump anywhere else on the card: the action row above and the embed below should hold still while only this block\'s height changes.',
+  'If you can read this whole paragraph without ever leaving the viewer, the feature works.',
+].join('\n\n');
+db.storeCategorizedBatch(
+  [
+    {
+      postId: '900000000000096001',
+      authorUsername: 'b0rk',
+      authorName: 'Julia Evans',
+      text: longPostText,
+      url: 'https://x.com/b0rk/status/900000000000096001',
+      postCreatedAt: new Date().toISOString(),
+    },
+    {
+      postId: '900000000000096002',
+      authorUsername: 'Rich_Harris',
+      authorName: 'Rich Harris',
+      text: 'A short post. No toggle needed - the whole thing fits already.',
+      url: 'https://x.com/Rich_Harris/status/900000000000096002',
+      postCreatedAt: new Date().toISOString(),
+    },
+  ],
+  () => [postLengthParent],
+);
+
 // Populate the URL-keyed metadata cache directly (bypassing any real fetch),
 // mirroring what a real ingest run's buildArticleContext would have cached,
 // so the gated "Read article" control renders deterministically and fully
