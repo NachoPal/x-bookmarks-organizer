@@ -71,11 +71,16 @@ describe('createLlmFactory - role resolution', () => {
     expect(billing).toBe('subscription');
   });
 
-  it('keeps the historical Opus-pass-1 / Haiku-pass-2 defaults per role', () => {
+  it('keeps the historical Opus-pass-1 / Haiku-pass-2 defaults, with summary on Sonnet 5', () => {
     const llm = factoryFor({});
     expect(llm.describe('taxonomy').model).toBe('claude-opus-4-8');
     expect(llm.describe('assignment').model).toBe('claude-haiku-4-5');
-    expect(llm.describe('summary').model).toBe('claude-haiku-4-5');
+    expect(llm.describe('summary').model).toBe('claude-sonnet-5');
+  });
+
+  it('honors XBOOKMARKS_SUMMARY_MODEL as a summary-role override', () => {
+    const llm = factoryFor({ XBOOKMARKS_SUMMARY_MODEL: 'claude-opus-4-8' });
+    expect(llm.describe('summary').model).toBe('claude-opus-4-8');
   });
 
   it("uses the provider's suggestion for a role when no model is configured", () => {

@@ -71,10 +71,14 @@ function optionalFromEnv(env: NodeJS.ProcessEnv, name: string): string | undefin
  * Build the per-role LLM config from the environment.
  *
  * The historical vars keep their exact meaning against the default provider:
- * `XBOOKMARKS_MODEL` is the assignment (and, unless overridden, summary) model,
- * `XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT` drive pass 1.
- * Whether a level is a *valid* effort is the adapter's business, not this
- * file's - the same environment may one day target several providers.
+ * `XBOOKMARKS_MODEL` is the assignment model, and - unless `XBOOKMARKS_SUMMARY_MODEL`
+ * overrides it - also the summary model when explicitly set; left unset, summary
+ * falls through to the provider's own suggestion (Claude Sonnet 5, for quality -
+ * see `models` in `src/llm/providers/claude-cli.ts`), independent of the
+ * Haiku-class assignment default. `XBOOKMARKS_TAXONOMY_MODEL` /
+ * `XBOOKMARKS_TAXONOMY_EFFORT` drive pass 1. Whether a level is a *valid* effort
+ * is the adapter's business, not this file's - the same environment may one day
+ * target several providers.
  */
 function llmFromEnv(env: NodeJS.ProcessEnv): LlmConfig {
   const assignmentModel = optionalFromEnv(env, 'XBOOKMARKS_MODEL');

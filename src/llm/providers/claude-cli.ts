@@ -226,7 +226,13 @@ export const claudeCliProvider: ProviderDefinition = {
     {
       id: 'claude-haiku-4-5',
       label: 'Claude Haiku 4.5',
-      suggestedFor: ['assignment', 'summary', 'chat'],
+      suggestedFor: ['assignment', 'chat'],
+      maxInputTokens: 200_000,
+    },
+    {
+      id: 'claude-sonnet-5',
+      label: 'Claude Sonnet 5',
+      suggestedFor: ['summary'],
       maxInputTokens: 200_000,
     },
   ],
