@@ -882,8 +882,8 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   color: var(--color-text-muted);
   font-weight: 400;
 }
-/* Single action row above the post: chip/Summarize/Read on the left,
-   Open on X/delete on the right. */
+/* Single action row above the post: read toggle/Summarize on the left,
+   delete on the right. */
 .bookmark-actions {
   display: flex;
   align-items: center;
@@ -899,8 +899,10 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   gap: var(--space-3);
   min-width: 0;
 }
-/* The status chip doubles as the read/unread toggle button. Both read and
-   unread render as a colored dot + short label, in distinct colors. */
+/* The read/unread toggle button. An unread post's label names the action a
+   click performs ("Mark as read"); a read post's label is its state
+   ("Read"), not a second action label (issue #54); both states render as a
+   colored dot + label, in distinct colors. */
 .read-pill {
   flex: 0 0 auto;
   display: inline-flex;
@@ -908,9 +910,10 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   justify-content: center;
   gap: var(--space-1);
   min-height: 1.75rem;
-  /* Reserved to fit the wider "Unread" label so toggling the shorter "Read"
-     label in and out causes zero reflow of the row's other controls. */
-  min-width: 5.5rem;
+  /* Reserved to fit the wider "Mark as read" label so toggling the
+     shorter "Read" label in and out causes zero reflow of the row's
+     other controls. */
+  min-width: 7rem;
   padding: var(--space-1) var(--space-2);
   border-radius: 999px;
   font: inherit;
