@@ -899,10 +899,10 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   gap: var(--space-3);
   min-width: 0;
 }
-/* The read/unread toggle button. Its label names the action a click
-   performs ("Mark as read" / "Mark as unread"), not the current state
-   (issue #54); both states render as a colored dot + label, in distinct
-   colors. */
+/* The read/unread toggle button. An unread post's label names the action a
+   click performs ("Mark as read"); a read post's label is its state
+   ("Read"), not a second action label (issue #54); both states render as a
+   colored dot + label, in distinct colors. */
 .read-pill {
   flex: 0 0 auto;
   display: inline-flex;
@@ -910,10 +910,10 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   justify-content: center;
   gap: var(--space-1);
   min-height: 1.75rem;
-  /* Reserved to fit the wider "Mark as unread" label so toggling the
-     shorter "Mark as read" label in and out causes zero reflow of the
-     row's other controls. */
-  min-width: 9.5rem;
+  /* Reserved to fit the wider "Mark as read" label so toggling the
+     shorter "Read" label in and out causes zero reflow of the row's
+     other controls. */
+  min-width: 7rem;
   padding: var(--space-1) var(--space-2);
   border-radius: 999px;
   font: inherit;

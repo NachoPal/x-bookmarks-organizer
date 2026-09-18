@@ -131,9 +131,11 @@ icon/visual swap in this viewer should prefer a CSS attribute selector over JS-d
 Every bookmark card renders at the same fixed-width column (`--post-card-measure`, centered) no
 matter its post's length - a bug fix from issue #30 after cards had drifted to shrink-wrapping
 short posts; the read/unread toggle (`.read-pill`) reserves a `min-width` sized to the wider
-"Mark as unread" label so toggling it never reflows the row's other controls. Its label names the
-ACTION a click performs, not the current state (issue #54: "Mark as read" on an unread post, "Mark
-as unread" on a read one) - the pure `readToggleLabel(read)` in `read-toggle.js` computes it,
+"Mark as read" label so toggling it never reflows the row's other controls. Only the unread -> read
+direction is spelled out as an ACTION ("Mark as read"); a read post's label is its STATE ("Read"),
+not a second action label - an explicit owner correction to issue #54 away from a first draft that
+used "Mark as unread" for the read state too. The pill stays clickable either way (clicking "Read"
+marks it unread again). The pure `readToggleLabel(read)` in `read-toggle.js` computes the label,
 shared between `app.js` and `read-toggle.test.ts` the same way `tree-counts.js` is. The action row's
 "Open on X" control was removed in the same change as redundant: the official X embed (and, when it
 can't render, its `renderEmbed` text+link fallback "View this post on X") already opens the post on

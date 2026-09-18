@@ -881,11 +881,12 @@
   }
 
   /**
-   * The read/unread toggle button: a click flips it. The label names the
-   * ACTION a click performs, not the current state (issue #54), so it reads
-   * "Mark as read" on an unread post and "Mark as unread" on a read one.
-   * Both states render as a colored dot + label, in distinct colors; the
-   * read timestamp is still stored (see `bm.readAt`) but never shown here.
+   * The read/unread toggle button: a click flips it. An unread post's label
+   * names the ACTION a click performs ("Mark as read"); a read post's label
+   * is its STATE ("Read"), not a second action label (issue #54). Either
+   * way it stays clickable - clicking "Read" marks it unread again. Both
+   * states render as a colored dot + label, in distinct colors; the read
+   * timestamp is still stored (see `bm.readAt`) but never shown here.
    */
   function renderPill(bm, card) {
     const pill = el("button", "read-pill");

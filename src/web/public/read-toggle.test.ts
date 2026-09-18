@@ -8,7 +8,7 @@ describe("readToggleLabel", () => {
     expect(readToggleLabel(false)).toBe("Mark as read");
   });
 
-  it("labels the action for a read post: mark it unread", () => {
-    expect(readToggleLabel(true)).toBe("Mark as unread");
+  it("labels a read post with its state, not a second action label", () => {
+    expect(readToggleLabel(true)).toBe("Read");
   });
 });

@@ -5,13 +5,15 @@
  * loaded via <script>) and Vitest (required directly from
  * read-toggle.test.ts).
  *
- * The pill's label is the ACTION a click performs, not the current state
- * (issue #54) - so an unread bookmark shows "Mark as read" and a read one
- * shows "Mark as unread".
+ * An unread bookmark's label is the ACTION a click performs ("Mark as
+ * read"); a read bookmark's label is its STATE ("Read"), not a second
+ * action label - per issue #54's owner correction, only the unread ->
+ * read direction is spelled out as an action. The pill stays clickable
+ * either way: clicking "Read" toggles back to unread.
  */
 (function (root) {
   function readToggleLabel(read) {
-    return read ? "Mark as unread" : "Mark as read";
+    return read ? "Read" : "Mark as read";
   }
 
   const api = { readToggleLabel };
