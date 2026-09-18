@@ -183,6 +183,16 @@ Generating NEW summaries additionally needs the configured LLM provider to be av
 default `claude-cli` provider that just means the `claude` CLI is installed and logged in; `serve`
 prints which provider and model it resolved, or why summaries are disabled.
 
+**Re-fetch unreadable articles** (optional) - Summarize caches each bookmark's article fetch, and a
+link cached as unreadable stays that way even after the fetcher improves. This re-fetches every
+article cached without a body and, for each one that now has a body, drops just that bookmark's
+cached summary so the next Summarize regenerates it with the article. Every other summary is kept.
+No secrets needed; idempotent - re-running only retries what is still unreadable:
+
+```bash
+node dist/index.js refetch-articles
+```
+
 **Clear cached summaries** (optional) - wipe every saved summary so they regenerate cleanly under
 the current logic (e.g. after a bug cached bad/garbage summaries). No secrets, no network - just the
 local DB. Idempotent - re-running removes 0:

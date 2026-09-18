@@ -137,6 +137,14 @@ node dist/index.js serve
 # http://127.0.0.1:5173
 ```
 
+Re-fetch bookmark articles cached as unreadable (e.g. after an extraction fix) and drop only the
+cached summaries of those that now have a body, so Summarize regenerates them with the article (no
+secrets, idempotent):
+
+```bash
+node dist/index.js refetch-articles
+```
+
 Wipe all cached summaries so they regenerate cleanly under the current logic (no secrets, no
 network, idempotent - safe to re-run):
 
