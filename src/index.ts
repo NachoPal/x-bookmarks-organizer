@@ -14,6 +14,7 @@ import type { LlmRole } from './llm/types';
 import { backfillArticlePreviews } from './articles/backfill';
 import { HttpArticleFetcher } from './articles/fetch-article';
 import { backfillXArticles } from './x/backfill-articles';
+import { refetchFailedArticles } from './articles/refetch';
 
 const HELP = `X Bookmarks Organizer
 
@@ -37,6 +38,12 @@ Usage:
                                   A small one-time PAID X read; --dry-run lists
                                   what would be read and its estimated cost
                                   without calling X.
+  node dist/index.js refetch-articles
+                                  Re-fetch every bookmark article cached as
+                                  unreadable, and drop the cached summary of
+                                  each one that now has a body so Summarize
+                                  regenerates it with the article. Other
+                                  summaries are kept.
   node dist/index.js clear-summaries
                                   Wipe all cached bookmark summaries so they
                                   regenerate cleanly under the current logic.
@@ -175,6 +182,17 @@ async function cmdBackfillXArticles(config: Config, db: Database): Promise<void>
   }
 }
 
+async function cmdRefetchArticles(db: Database): Promise<void> {
+  const summary = await refetchFailedArticles(db, new HttpArticleFetcher(), {
+    logger: (msg) => console.log(msg),
+  });
+  console.log(
+    `\nDone. ${summary.retried} re-fetched: ${summary.recovered} now readable, ` +
+      `${summary.stillFailed} still without a body; ${summary.summariesCleared} stale summar` +
+      `${summary.summariesCleared === 1 ? 'y' : 'ies'} cleared.`,
+  );
+}
+
 /**
  * Delete every cached summary so they regenerate under the current logic -
  * e.g. after a bug cached bad/garbage summaries (the model's refusal text) as
@@ -246,6 +264,9 @@ async function main(): Promise<void> {
         break;
       case 'backfill-x-articles':
         await cmdBackfillXArticles(config, db);
+        break;
+      case 'refetch-articles':
+        await cmdRefetchArticles(db);
         break;
       case 'clear-summaries':
         await cmdClearSummaries(db);

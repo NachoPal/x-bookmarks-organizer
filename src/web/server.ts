@@ -4,7 +4,7 @@ import fastifyStatic from '@fastify/static';
 import type { Database, ReadFilter } from '../db/database';
 import { buildCategoryTree } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
-import { HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
+import { articleRecordFromResult, HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
 import {
   hasSummarizableContent,
   htmlToPlainText,
@@ -153,38 +153,15 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
    * The cached extraction for a bookmark's article link, fetching and caching
    * it first if needed. Used by the summarizer so a link is still fetched at
    * most once (the in-app reader that also used this was removed; the owner
-   * now reaches external articles via the card inside the tweet embed).
+   * now reaches external articles via the card inside the tweet embed). A
+   * cached `failed` row is served as-is; `refetch-articles` is the explicit
+   * way to retry those.
    */
   async function getOrFetchArticle(bookmarkId: number, articleUrl: string): Promise<ArticleRecord> {
     const cached = db.getArticleForBookmark(bookmarkId);
     if (cached && cached.url === articleUrl) return cached;
 
-    const result = await articleFetcher.fetch(articleUrl);
-    const fetchedAt = new Date().toISOString();
-    const record: ArticleRecord =
-      result.status === 'ok'
-        ? {
-            bookmarkId,
-            url: articleUrl,
-            status: 'ok',
-            title: result.title,
-            contentHtml: result.contentHtml,
-            excerpt: result.excerpt,
-            siteName: result.siteName,
-            reason: null,
-            fetchedAt,
-          }
-        : {
-            bookmarkId,
-            url: articleUrl,
-            status: 'failed',
-            title: null,
-            contentHtml: null,
-            excerpt: null,
-            siteName: null,
-            reason: result.reason,
-            fetchedAt,
-          };
+    const record = articleRecordFromResult(bookmarkId, articleUrl, await articleFetcher.fetch(articleUrl));
     db.saveArticle(record);
     return record;
   }

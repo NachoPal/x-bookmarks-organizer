@@ -161,6 +161,12 @@ most once. There is no longer a standalone in-app "Read article" reader or an
 embed already renders for an external link. This extraction/cache still exists solely to
 feed Summarize (`getOrFetchArticle` in `src/web/server.ts`, called only from the summary
 endpoint) and, via a separate URL-keyed cache, categorization (issue #25 below).
+A cached `failed` row is served forever; `refetch-articles` (`src/articles/refetch.ts`) is the
+explicit retry, and it drops only a recovered bookmark's (body-less) summary. When Readability
+rejects a page, `extractArticle` falls back to `extractProseFallback`: the page's own paragraphs
+rebuilt as escaped plain text, gated on real prose (`MIN_FALLBACK_PROSE_*`) so an app shell, video
+or landing page still yields no body - real SPA pages (prose in a crawler copy under a loading
+placeholder) are why it exists.
 `ServerOptions.articleFetcher` is the injection seam for offline tests (mirrors the
 `XClient`/`BatchCategorizer` pattern) - never let a test hit the real network.
 `scripts/copy-assets.js` copies `public/` recursively (`fs.cpSync`), which is what lets

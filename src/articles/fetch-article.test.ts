@@ -3,6 +3,8 @@ import path from 'node:path';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { parseHTML } from 'linkedom';
+import { Readability } from '@mozilla/readability';
 import { extractArticle, HttpArticleFetcher, X_ARTICLE_REASON } from './fetch-article';
 
 const FIXTURE_PATH = path.join(__dirname, '../web/public/fixtures/sample-article.html');
@@ -100,6 +102,99 @@ describe('extractArticle (pure, no network)', () => {
   it('fails gracefully on unparsable garbage input rather than throwing', () => {
     expect(() => extractArticle('<<<not html at all', 'not a url')).not.toThrow();
     const result = extractArticle('<<<not html at all', 'not a url');
+    expect(result.status).toBe('failed');
+  });
+});
+
+/**
+ * Modeled on real pages from the owner's library that Readability rejects
+ * even though the served HTML carries the whole text: a JS app shell whose
+ * visible node is a loading placeholder, with the prose rendered as flat
+ * sections in a crawler copy (and the kind of `<header>`/`<footer>`/`<nav>`
+ * chrome the fallback must drop).
+ */
+const APP_SHELL_PROSE_HTML = `<!doctype html><html><head>
+  <title>Don't Build Multi-Agents | Example Labs</title>
+  <meta property="og:title" content="Don't Build Multi-Agents" />
+  <meta property="og:description" content="Principles for building reliable long-running agents." />
+  <script>window.__NEXT_DATA__ = {"props":{}}</script>
+</head><body>
+  <div id="__next"><div class="loading">Setting up the room…</div></div>
+  <header><nav><a href="/">Home</a><a href="/blog">Blog</a><a href="/careers">We are hiring engineers who love building agents</a></nav></header>
+  <main aria-hidden="true" class="crawl">
+    <section><h2>Principle 1: share context</h2>
+      <p>Share full agent traces between every part of the system, not just individual messages, because subagents that only see their own task description will misread what the overall job actually needs.</p>
+      <p>Actions carry implicit decisions, and conflicting decisions carry bad results: two subagents that each make a reasonable assumption on their own can still produce parts that do not fit together.</p>
+    </section>
+    <section><h2>Principle 2: a single thread</h2>
+      <p>The simplest way to follow both principles is a single-threaded linear agent, where the context is continuous and every action is taken with the full history of what came before it in view.</p>
+      <p>For very long tasks, add a model whose only job is to compress the history of actions and conversation into key details, events and decisions, so the thread can keep going without overflowing.</p>
+      <p>Operators <script>alert(1)</script> should read &lt;b&gt;escaped&lt;/b&gt; markup as text: <span onclick="steal()">nothing</span> from the page itself survives as markup.</p>
+    </section>
+  </main>
+  <footer><p>Copyright Example Labs. All rights reserved. Terms of service and privacy policy apply here.</p></footer>
+</body></html>`;
+
+describe('extractArticle prose fallback (Readability misses real prose, pure, no network)', () => {
+  it('precondition: Readability alone rejects the app-shell fixture', () => {
+    const parsed = new Readability(parseHTML(APP_SHELL_PROSE_HTML).document as any).parse();
+    expect((parsed?.textContent ?? '').trim().length).toBeLessThan(200);
+  });
+
+  it('extracts the body from the served prose instead of failing', () => {
+    const result = extractArticle(APP_SHELL_PROSE_HTML, 'https://example.com/blog/dont-build-multi-agents');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+
+    expect(result.title).toBe("Don't Build Multi-Agents");
+    expect(result.excerpt).toBe('Principles for building reliable long-running agents.');
+    expect(result.contentHtml).toContain('<h2>Principle 1: share context</h2>');
+    expect(result.contentHtml).toContain('Share full agent traces');
+    expect(result.contentHtml).toContain('single-threaded linear agent');
+    // The card still rides along, exactly as on the Readability path.
+    expect(result.preview?.title).toBe("Don't Build Multi-Agents");
+  });
+
+  it('drops page chrome and keeps nothing from the page as markup', () => {
+    const result = extractArticle(APP_SHELL_PROSE_HTML, 'https://example.com/blog/dont-build-multi-agents');
+    if (result.status !== 'ok') throw new Error('expected ok');
+
+    expect(result.contentHtml).not.toContain('hiring');
+    expect(result.contentHtml).not.toContain('Copyright');
+    expect(result.contentHtml).not.toContain('Setting up the room');
+    expect(result.contentHtml).not.toContain('<script');
+    expect(result.contentHtml).not.toContain('alert(1)');
+    expect(result.contentHtml).not.toContain('onclick');
+    expect(result.contentHtml).not.toContain('<span');
+    expect(result.contentHtml).not.toContain('<b>');
+    expect(result.contentHtml).toContain('&lt;b&gt;escaped&lt;/b&gt;');
+  });
+
+  it('still fails an app shell with no prose - labels, headings and a tagline are not an article', () => {
+    const html = `<!doctype html><html><head>
+      <meta property="og:title" content="Acme Studio" />
+      <meta property="og:description" content="The fastest way to ship your next idea." />
+    </head><body><div id="root">
+      <h1>Ship faster with Acme Studio</h1>
+      <p>The fastest way to ship your next idea, from prototype to production.</p>
+      <ul><li>Fast</li><li>Secure</li><li>Collaborative</li></ul>
+      <h2>Pricing</h2><p>Free</p><p>Pro</p><p>Team</p>
+      <button>Get started for free today, no credit card required at all</button>
+    </div>
+    <footer><ul>
+      <li>About Acme Studio and the team that builds it every single day</li>
+      <li>Careers at Acme Studio - we are hiring across every department</li>
+      <li>Security, compliance and the trust center for enterprise customers</li>
+    </ul></footer></body></html>`;
+    const result = extractArticle(html, 'https://acme.example/');
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') throw new Error('expected failed');
+    expect(result.reason).toBe('This page does not look like a readable article.');
+    expect(result.preview?.title).toBe('Acme Studio');
+  });
+
+  it('never rescues a page served from an X host, whatever its text', () => {
+    const result = extractArticle(APP_SHELL_PROSE_HTML, 'https://x.com/someone/status/1');
     expect(result.status).toBe('failed');
   });
 });

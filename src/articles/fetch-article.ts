@@ -2,6 +2,7 @@ import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 import sanitizeHtml from 'sanitize-html';
 import { isXArticleUrl } from '../x/article';
+import type { ArticleRecord } from '../types';
 
 // linkedom's type declarations only expose `parseHTML(html)`, but its runtime
 // implementation also accepts a `globals` second argument used to seed
@@ -65,6 +66,42 @@ export interface ArticleExtractionFailed {
 }
 
 export type ArticleExtractionResult = ArticleExtractionOk | ArticleExtractionFailed;
+
+/**
+ * The `articles` cache row for a bookmark's extraction result. Shared by the
+ * summary endpoint's fetch-or-cache path and `refetch-articles`, so both
+ * store exactly the same shape.
+ */
+export function articleRecordFromResult(
+  bookmarkId: number,
+  url: string,
+  result: ArticleExtractionResult,
+  fetchedAt: string = new Date().toISOString(),
+): ArticleRecord {
+  return result.status === 'ok'
+    ? {
+        bookmarkId,
+        url,
+        status: 'ok',
+        title: result.title,
+        contentHtml: result.contentHtml,
+        excerpt: result.excerpt,
+        siteName: result.siteName,
+        reason: null,
+        fetchedAt,
+      }
+    : {
+        bookmarkId,
+        url,
+        status: 'failed',
+        title: null,
+        contentHtml: null,
+        excerpt: null,
+        siteName: null,
+        reason: result.reason,
+        fetchedAt,
+      };
+}
 
 /** Minimal surface the caller needs, kept as an interface so tests can inject a fake. */
 export interface ArticleFetcher {
@@ -244,7 +281,7 @@ export function extractLinkPreview(document: MinimalDocument, baseUrl: string): 
  */
 export function extractArticle(html: string, url: string, resolvedUrl?: string): ArticleExtractionResult {
   const finalUrl = resolvedUrl ?? url;
-  let parsed;
+  let parsed: ReturnType<Readability['parse']>;
   let document: unknown;
   try {
     // linkedom resolves relative <a>/<img> URLs (and Readability's own
@@ -267,18 +304,19 @@ export function extractArticle(html: string, url: string, resolvedUrl?: string):
   try {
     parsed = new Readability(document as any).parse();
   } catch {
-    return {
-      status: 'failed',
-      reason: 'Could not parse this page as an article.',
-      preview,
-      resolvedUrl: finalUrl,
-    };
+    parsed = null;
   }
 
   if (!parsed || !parsed.content || (parsed.textContent ?? '').trim().length < MIN_TEXT_LENGTH) {
+    // Readability's scoring misses some pages whose prose IS in the served
+    // HTML (React/Next.js shells, sections outside any <article>) - it picks a
+    // "Loading..." div or nothing. Rescue those with a plain paragraph
+    // extraction; a page with no real prose still ends up `failed`.
+    const fallback = extractProseFallback(html, url, finalUrl, preview);
+    if (fallback) return fallback;
     return {
       status: 'failed',
-      reason: 'This page does not look like a readable article.',
+      reason: NOT_READABLE_REASON,
       preview,
       resolvedUrl: finalUrl,
     };
@@ -293,6 +331,164 @@ export function extractArticle(html: string, url: string, resolvedUrl?: string):
     preview,
     resolvedUrl: finalUrl,
   };
+}
+
+const NOT_READABLE_REASON = 'This page does not look like a readable article.';
+
+/** Page chrome and non-content elements dropped before the prose fallback reads a page. */
+const NON_CONTENT_SELECTOR = [
+  'script', 'style', 'noscript', 'template', 'svg', 'iframe', 'form', 'button',
+  'nav', 'header', 'footer', 'aside',
+].join(', ');
+
+/** Blocks the prose fallback reads, in document order. */
+const BLOCK_SELECTOR = 'h1, h2, h3, h4, h5, h6, p, li, blockquote, pre';
+
+/**
+ * A paragraph/list item/quote shorter than this is a UI label ("Sign up",
+ * "Read more", a nav link), not prose, and neither counts nor is kept.
+ */
+const MIN_PROSE_BLOCK_CHARS = 40;
+/**
+ * How much real prose the fallback needs before it calls a page an article.
+ * Deliberately well above Readability's own MIN_TEXT_LENGTH: the fallback has
+ * no content scoring of its own, so it only rescues pages that clearly carry
+ * multiple paragraphs of body copy - a landing page's tagline, a repo's short
+ * description or a video page's blurb stays `card`/`failed`.
+ */
+const MIN_FALLBACK_PROSE_CHARS = 500;
+const MIN_FALLBACK_PROSE_BLOCKS = 3;
+/** Cap on the text the fallback keeps, so an enormous page never bloats the cache. */
+const MAX_FALLBACK_BODY_CHARS = 100_000;
+
+interface FallbackElement extends MinimalElement {
+  tagName: string;
+  parentElement: FallbackElement | null;
+  querySelectorAll(selector: string): Iterable<FallbackElement>;
+  remove(): void;
+}
+interface FallbackDocument extends MinimalDocument {
+  body: FallbackElement | null;
+  querySelectorAll(selector: string): Iterable<FallbackElement>;
+  querySelector(selector: string): FallbackElement | null;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+interface ProseBlock {
+  tag: 'h2' | 'p' | 'li' | 'blockquote' | 'pre';
+  text: string;
+}
+
+/** The kept blocks under `root`, outermost only (a <p> inside a kept <li> is not repeated). */
+function collectProseBlocks(root: FallbackElement): ProseBlock[] {
+  const blocks: ProseBlock[] = [];
+  const kept = new Set<FallbackElement>();
+  for (const el of root.querySelectorAll(BLOCK_SELECTOR)) {
+    let ancestor = el.parentElement;
+    let nested = false;
+    while (ancestor && ancestor !== root) {
+      if (kept.has(ancestor)) {
+        nested = true;
+        break;
+      }
+      ancestor = ancestor.parentElement;
+    }
+    if (nested) continue;
+
+    const tag = el.tagName.toLowerCase();
+    const raw = el.textContent ?? '';
+    const text = tag === 'pre' ? raw.trim() : raw.replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    if (/^h[1-6]$/.test(tag)) {
+      // A heading is kept for structure but never counts as prose; an
+      // implausibly long one is some widget abusing the tag.
+      if (text.length <= MAX_OG_TEXT_LENGTH) blocks.push({ tag: 'h2', text });
+    } else if (tag === 'pre' || text.length >= MIN_PROSE_BLOCK_CHARS) {
+      blocks.push({ tag: tag as ProseBlock['tag'], text });
+    } else {
+      continue;
+    }
+    kept.add(el);
+  }
+  return blocks;
+}
+
+function isProse(block: ProseBlock): boolean {
+  return block.tag === 'p' || block.tag === 'li' || block.tag === 'blockquote';
+}
+
+/**
+ * Fallback body extraction for a page Readability rejected: the page's own
+ * paragraphs, headings, list items and quotes (chrome removed), rebuilt as
+ * plain escaped text and sanitized - no markup from the page survives.
+ *
+ * Scoped to the page's `<article>`/`<main>` when that alone holds enough
+ * prose, else the whole body. Returns null unless the page clearly carries
+ * real prose (see MIN_FALLBACK_PROSE_CHARS), which is what keeps a bare app
+ * shell, a video page or a landing page from turning into a fake "article".
+ */
+function extractProseFallback(
+  html: string,
+  url: string,
+  finalUrl: string,
+  preview: LinkPreviewData | null,
+): ArticleExtractionOk | null {
+  const host = safeHostname(finalUrl);
+  if (host && NON_ARTICLE_HOSTS.has(host)) return null;
+
+  let document: FallbackDocument;
+  try {
+    // A fresh parse: Readability has already mutated the first document.
+    document = parseHTMLWithGlobals(html, { location: new URL(url) }).document as FallbackDocument;
+  } catch {
+    return null;
+  }
+  for (const el of Array.from(document.querySelectorAll(NON_CONTENT_SELECTOR))) el.remove();
+
+  const roots = [
+    document.querySelector('article'),
+    document.querySelector('main'),
+    document.querySelector('[role="main"]'),
+    document.body,
+  ].filter((el): el is FallbackElement => el !== null);
+
+  for (const root of roots) {
+    const blocks = collectProseBlocks(root);
+    const prose = blocks.filter(isProse);
+    const proseChars = prose.reduce((sum, b) => sum + b.text.length, 0);
+    if (prose.length < MIN_FALLBACK_PROSE_BLOCKS || proseChars < MIN_FALLBACK_PROSE_CHARS) continue;
+
+    const parts: string[] = [];
+    let total = 0;
+    for (const block of blocks) {
+      if (total >= MAX_FALLBACK_BODY_CHARS) break;
+      const text = block.text.slice(0, MAX_FALLBACK_BODY_CHARS - total);
+      total += text.length;
+      const inner = escapeHtml(text);
+      parts.push(
+        block.tag === 'li' ? `<ul><li>${inner}</li></ul>` : `<${block.tag}>${inner}</${block.tag}>`,
+      );
+    }
+
+    const pageTitle = cleanOgText(document.querySelector('title')?.textContent);
+    return {
+      status: 'ok',
+      title: preview?.title || pageTitle || 'Untitled article',
+      contentHtml: sanitizeHtml(parts.join('\n'), SANITIZE_OPTIONS),
+      excerpt: preview?.description ?? cleanOgText(prose[0]!.text),
+      siteName: preview?.siteName ?? null,
+      preview,
+      resolvedUrl: finalUrl,
+    };
+  }
+  return null;
 }
 
 /**

@@ -646,6 +646,18 @@ export class Database {
   }
 
   /**
+   * Every cached article extraction that yielded no body, for the explicit
+   * `refetch-articles` command - a `failed` row is otherwise served from
+   * cache forever, even after the fetcher/extractor that produced it is fixed.
+   */
+  getFailedArticles(): ArticleRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM articles WHERE status = 'failed' ORDER BY bookmark_id")
+      .all() as ArticleRow[];
+    return rows.map(toArticleRecord);
+  }
+
+  /**
    * Store (or replace) the reader-view extraction result for a bookmark, so
    * the reader is served from cache on later opens instead of re-fetching.
    */
@@ -749,5 +761,10 @@ export class Database {
    */
   clearSummaries(): number {
     return this.db.prepare('DELETE FROM summaries').run().changes;
+  }
+
+  /** Delete one bookmark's cached summary; true when there was one to remove. */
+  deleteSummary(bookmarkId: number): boolean {
+    return this.db.prepare('DELETE FROM summaries WHERE bookmark_id = ?').run(bookmarkId).changes > 0;
   }
 }
