@@ -48,6 +48,13 @@
  *   `post_id`; a bookmark that QUOTES one joins on `bookmarks.quoted_post_id`.
  *   Written atomically with the bookmark in `storeCategorizedBatch`, and by
  *   `backfill-x-articles` for bookmarks stored before this existed.
+ * - `quoted_posts` holds the content (author + text + created_at) of an ORDINARY
+ *   post a bookmark quotes, keyed by that quoted post's own `post_id` (same
+ *   join as `x_articles`, via `bookmarks.quoted_post_id`). The data arrives on
+ *   the SAME bookmarks/lookup request, in `includes.tweets[]` via the
+ *   `referenced_tweets.id` expansion already requested - no separate fetch.
+ *   Never holds a quoted post that turned out to host an X Article - that
+ *   body stays solely in `x_articles`, so it is not duplicated here.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -137,6 +144,15 @@ CREATE TABLE IF NOT EXISTS x_articles (
   cover_w      INTEGER,
   cover_h      INTEGER,
   fetched_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS quoted_posts (
+  post_id         TEXT PRIMARY KEY,
+  author_username TEXT NOT NULL DEFAULT '',
+  author_name     TEXT NOT NULL DEFAULT '',
+  text            TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL DEFAULT '',
+  fetched_at      TEXT NOT NULL
 );
 `;
 

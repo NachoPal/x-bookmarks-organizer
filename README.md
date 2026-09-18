@@ -201,6 +201,44 @@ local DB. Idempotent - re-running removes 0:
 node dist/index.js clear-summaries
 ```
 
+## Structured bookmark content (for a ranking/scoring tool)
+
+The viewer exposes each bookmark's full content in a structured, labeled shape - meant for a
+downstream tool (e.g. a content-scoring/re-ranker) that needs to tell "the bookmarked post's own
+text" apart from "the post it quotes", "the external article it links" and "the X-native Article it
+hosts or quotes", rather than one flattened blob of text. It is a pure DB read: neither endpoint
+makes a network call.
+
+```
+GET /api/bookmarks/:id/content        -> { content: BookmarkContent }
+GET /api/content?offset=0&limit=20    -> { content: BookmarkContent[], offset, limit, total, hasMore }
+```
+
+`BookmarkContent` (`src/content/bookmark-content.ts`):
+
+```ts
+interface BookmarkContent {
+  bookmarkId: number;
+  postId: string;
+  post: { kind: 'post'; authorUsername: string; authorName: string; text: string };
+  quotedPost: { kind: 'quoted-post'; authorUsername: string; authorName: string; text: string } | null;
+  linkedArticle: { kind: 'external-article'; url: string; title: string | null; description: string | null; body: string | null } | null;
+  xArticle: { kind: 'x-article'; title: string | null; previewText: string | null; body: string | null; quoted: boolean } | null;
+}
+```
+
+- `post` is always present - the bookmarked post's own author and text.
+- `quotedPost` is the content of an ORDINARY post this bookmark quotes (author + text), captured at
+  ingest time from the same X API response that fetches the bookmark itself (no extra request).
+  Null when there is no quote, or when the quoted post hosts an X Article instead (see `xArticle`).
+- `linkedArticle` is the external article a link in the post's text resolves to. `title`/
+  `description` come from the ingest-time link-preview cache whenever it has been fetched; `body`
+  is included only when the full reader-view extraction is already cached (it is fetched lazily by
+  Summarize/`refetch-articles`, never by this endpoint) - null otherwise. Null when the post has no
+  usable link.
+- `xArticle` is an X-native long-form Article (`x.com/i/article/<id>`) this bookmark hosts or
+  quotes (`quoted` distinguishes which), with its title/preview/full body. Null otherwise.
+
 ## Configuration (optional env vars)
 
 | Env var                 | Default                | Meaning                                  |

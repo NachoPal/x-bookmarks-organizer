@@ -22,6 +22,23 @@ export interface RawBookmark {
   quotedPostId?: string | null;
   /** The X Article hosted by the quoted post, when this post quotes an Article. */
   quotedXArticle?: XArticle | null;
+  /**
+   * The quoted post's own content (author + text + created_at), when this post
+   * quotes an ordinary post. Arrives with the bookmark from the same
+   * `includes.tweets[]` the `referenced_tweets.id` expansion already returns -
+   * no separate fetch. Null when the quoted post hosts an X Article instead
+   * (that body lives in `xArticle`/`quotedXArticle`, not here).
+   */
+  quotedPost?: QuotedPost | null;
+}
+
+/** The content of a post quoted by a bookmark, captured from the bookmarks API's own `includes.tweets[]`. */
+export interface QuotedPost {
+  postId: string;
+  authorUsername: string;
+  authorName: string;
+  text: string;
+  createdAt: string;
 }
 
 /**
