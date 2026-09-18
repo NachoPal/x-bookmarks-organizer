@@ -201,13 +201,13 @@ node dist/index.js clear-summaries
 | `XBOOKMARKS_REDIRECT_URI`| `http://127.0.0.1:3000/callback` | OAuth redirect (must match the X app) |
 | `XBOOKMARKS_LLM_PROVIDER`| `claude-cli`           | LLM provider id (`claude-cli` is the only one so far) |
 | `XBOOKMARKS_LLM_MODEL`   | -                      | Model for every role, unless a role overrides it |
-| `XBOOKMARKS_MODEL`       | `claude-haiku-4-5`     | Assignment-pass (and summary) model (Haiku-class) |
+| `XBOOKMARKS_MODEL`       | `claude-haiku-4-5`     | Assignment-pass model (Haiku-class); also the summary model if `XBOOKMARKS_SUMMARY_MODEL` is unset AND this is explicitly set |
 | `XBOOKMARKS_TAXONOMY_MODEL` | `claude-opus-4-8`   | Taxonomy-design-pass model (Opus-class)  |
 | `XBOOKMARKS_TAXONOMY_EFFORT` | `high`             | Taxonomy-pass effort (low/medium/high/xhigh/max) |
 | `XBOOKMARKS_BATCH_SIZE`  | `15`                   | Bookmarks per assignment request         |
 | `XBOOKMARKS_MIN_DEPTH`   | `3`                    | Target minimum nesting depth (best-effort) |
 | `XBOOKMARKS_MAX_DEPTH`   | `4`                    | Maximum category tree depth              |
-| `XBOOKMARKS_SUMMARY_MODEL` | `XBOOKMARKS_MODEL`   | Summary model, when it should differ     |
+| `XBOOKMARKS_SUMMARY_MODEL` | `claude-sonnet-5`    | Summary model (Sonnet-class, for quality) |
 | `XBOOKMARKS_CLAUDE_BIN`  | `claude`               | Path to the `claude` binary when it is not on `PATH` |
 | `XBOOKMARKS_PAGE_SIZE`   | `20`                   | Viewer lazy-load batch size per scroll   |
 

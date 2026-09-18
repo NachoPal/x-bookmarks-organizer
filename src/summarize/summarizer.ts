@@ -1,6 +1,6 @@
 import type { LlmRunner } from '../categorize/llm';
 
-/** Cap on how much article text is sent to the model, to keep the (Haiku-class) call cheap. */
+/** Cap on how much article text is sent to the model, to keep the call bounded. */
 const MAX_ARTICLE_CHARS = 6000;
 
 /** What a bookmark's content looks like once assembled for summarization. */
@@ -99,8 +99,9 @@ export function hasSummarizableContent(input: SummaryInput): boolean {
 export function buildSummaryPrompt(input: SummaryInput): string {
   const prose = postProse(input.postText);
   const lines = [
-    "Summarize this bookmarked X post so its owner can grasp it without reading it in full.",
-    'Write 2-4 concise sentences of plain prose - no headings, no bullet points, no preamble like "This post is about".',
+    "Summarize this bookmarked X post so its owner can grasp its substance without reading it in full.",
+    'Write plain prose - no preamble like "This post is about", and no headings or bullet points unless the material genuinely has distinct parts that are clearer as a list.',
+    'There is no fixed length: a short post deserves a short summary, and a dense article deserves a fuller one that actually captures its key points - favor a good, faithful summary over brevity for its own sake.',
     'Everything available is quoted below. You cannot open links and must not ask for more content - summarize only what is here.',
     '',
     `Post by @${input.authorUsername}${input.authorName ? ` (${input.authorName})` : ''}:`,

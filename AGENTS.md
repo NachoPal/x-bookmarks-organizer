@@ -180,8 +180,10 @@ Clicking "Summarize" (or "Summary", once one is saved) on a card opens a large i
 with an on-demand LLM summary of the bookmark: the post text, plus its extracted article
 content (reusing the fetch/cache above) when the link is an article. Generated via
 `LlmSummaryGenerator` (`src/summarize/summarizer.ts`), which runs on the `summary` role's
-runner from the same provider factory as categorization (Haiku-class model by default) -
-never the paid API. Cached in the `summaries` table (`src/db/schema.ts`, keyed by
+runner from the same provider factory as categorization (Sonnet-class model by default, chosen
+for summary quality over the Haiku-class assignment/taxonomy models - see `models` in
+`src/llm/providers/claude-cli.ts`, overridable via `XBOOKMARKS_SUMMARY_MODEL`) - never the
+paid API. Cached in the `summaries` table (`src/db/schema.ts`, keyed by
 `bookmark_id`) via `Database.getSummaryForBookmark` / `saveSummary`, so a bookmark is
 summarized at most once. Server surface: `GET /api/bookmarks/:id/summary` (cache-or-generate)
 and `GET /api/summary-status` (`{ available, reason? }`, used by the client to disable/tooltip
