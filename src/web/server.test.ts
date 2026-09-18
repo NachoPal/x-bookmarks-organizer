@@ -307,7 +307,7 @@ describe('bookmark list exposes the primary article link', () => {
   });
 });
 
-describe('bookmark list gates the "Read article" affordance and preview card separately (issues #26/#45)', () => {
+describe('bookmark list gates the "Read article" affordance on a readable body (issues #26/#45)', () => {
   let db: Database;
   let app: FastifyInstance;
   let evalsId: number;
@@ -351,7 +351,7 @@ describe('bookmark list gates the "Read article" affordance and preview card sep
       fetchedAt: when,
     });
     // A confirmed article whose fetch produced a title but no description/
-    // image - the preview card's graceful partial-data fallback.
+    // image - still readable despite the sparse metadata.
     db.saveArticleLinkMetadata({
       url: 'https://example.com/articles/sparse',
       status: 'ok',
@@ -392,91 +392,45 @@ describe('bookmark list gates the "Read article" affordance and preview card sep
         bookmarks: {
           postId: string;
           hasArticle: boolean;
-          hasPreview: boolean;
-          preview:
-            | {
-                title: string;
-                description: string | null;
-                image: string | null;
-                siteName: string | null;
-                domain: string;
-                url: string;
-              }
-            | null;
         }[];
       });
   }
 
-  it('sets both flags with full preview data for a readable article', async () => {
+  it('sets hasArticle true for a readable article', async () => {
     const body = await fetchList();
     const b1 = body.bookmarks.find((b) => b.postId === '1')!;
     expect(b1.hasArticle).toBe(true);
-    expect(b1.hasPreview).toBe(true);
-    expect(b1.preview).toEqual({
-      title: 'A Great Article',
-      description: 'A short summary',
-      image: 'https://example.com/cover.png',
-      siteName: 'Example Times',
-      domain: 'example.com',
-      url: 'https://example.com/articles/with-preview',
-    });
   });
 
-  it('sets hasPreview true but hasArticle FALSE for a card-only page (issue #45)', async () => {
+  it('sets hasArticle FALSE for a card-only page (issue #45)', async () => {
     const body = await fetchList();
     const b6 = body.bookmarks.find((b) => b.postId === '6')!;
-    // The card renders...
-    expect(b6.hasPreview).toBe(true);
-    expect(b6.preview).toEqual({
-      title: 'A Tool, Not An Article',
-      description: 'One place every agent plugs in.',
-      image: 'https://tool.example.com/card.png',
-      siteName: 'Tool',
-      // Domain and link come from the resolved destination, never `t.co`.
-      domain: 'tool.example.com',
-      url: 'https://tool.example.com/pricing',
-    });
-    // ...but there is no body, so no reader affordance.
+    // There is no readable body, so no reader affordance.
     expect(b6.hasArticle).toBe(false);
   });
 
-  it('sets neither flag for a post with no link at all', async () => {
+  it('sets hasArticle false for a post with no link at all', async () => {
     const body = await fetchList();
     const b2 = body.bookmarks.find((b) => b.postId === '2')!;
     expect(b2.hasArticle).toBe(false);
-    expect(b2.hasPreview).toBe(false);
-    expect(b2.preview).toBeNull();
   });
 
-  it('sets neither flag for a link that yielded nothing usable (a genuine 404/unreachable)', async () => {
+  it('sets hasArticle false for a link that yielded nothing usable (a genuine 404/unreachable)', async () => {
     const body = await fetchList();
     const b3 = body.bookmarks.find((b) => b.postId === '3')!;
     expect(b3.hasArticle).toBe(false);
-    expect(b3.hasPreview).toBe(false);
-    expect(b3.preview).toBeNull();
   });
 
-  it('sets neither flag for a link never yet resolved by ingest (no cache entry)', async () => {
+  it('sets hasArticle false for a link never yet resolved by ingest (no cache entry)', async () => {
     const body = await fetchList();
     const b4 = body.bookmarks.find((b) => b.postId === '4')!;
     expect(b4.hasArticle).toBe(false);
-    expect(b4.hasPreview).toBe(false);
-    expect(b4.preview).toBeNull();
   });
 
-  it('gracefully falls back to a minimal preview (title + domain) when metadata is sparse', async () => {
+  it('sets hasArticle true when metadata has a title even with sparse fields', async () => {
     const body = await fetchList();
     const b5 = body.bookmarks.find((b) => b.postId === '5')!;
     expect(b5.hasArticle).toBe(true);
-    expect(b5.hasPreview).toBe(true);
-    expect(b5.preview).toEqual({
-      title: 'Sparse Article',
-      description: null,
-      image: null,
-      siteName: null,
-      domain: 'example.com',
-      url: 'https://example.com/articles/sparse',
-    });
   });
 });
 
