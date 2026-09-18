@@ -60,6 +60,186 @@
   let requestSeq = 0;
   let observer = null;
   let sentinelEl = null;
+  // Bookmark objects backing the cards currently in `listEl`, in the same
+  // order (excludes the sentinel/end-marker/error tail) - kept so a view can
+  // be snapshotted into `viewCaches` before switching away from it.
+  let currentViewBookmarks = [];
+  // False while a first-page fetch for the current category+filter is in
+  // flight (or failed) - guards saveCurrentViewToCache against caching a
+  // loading placeholder or error state as if it were real content.
+  let viewReady = false;
+
+  // ---- client-side filter cache (issue #33) -------------------------------
+  // Switching the read-state filter (or switching back to a category already
+  // visited) reuses already-fetched pages and already-rendered DOM instead of
+  // re-fetching and re-rendering - no reload flash and no reloading the X
+  // embeds that were already loaded. Keyed by category id -> { counts,
+  // filters: Map(filter -> { ids, cardEls, bmById, offset, hasMore }) }.
+  // Bounded to XBOFilterCache.MAX_CACHED_CATEGORIES categories via LRU
+  // eviction so it never grows unbounded across a long browsing session.
+  let viewCaches = new Map();
+  let cacheOrder = []; // LRU order of cached category ids, oldest first
+
+  function touchCategoryCache(categoryId) {
+    const { order, evicted } = window.XBOFilterCache.touchLru(cacheOrder, categoryId);
+    cacheOrder = order;
+    for (const id of evicted) viewCaches.delete(id);
+  }
+
+  function ensureCategoryCache(categoryId) {
+    touchCategoryCache(categoryId);
+    let entry = viewCaches.get(categoryId);
+    if (!entry) {
+      entry = { counts: { total: 0, unread: 0 }, filters: new Map() };
+      viewCaches.set(categoryId, entry);
+    }
+    return entry;
+  }
+
+  /** Snapshot the currently rendered view into the cache, before leaving it. */
+  function saveCurrentViewToCache() {
+    // A view mid-fetch (or one that errored) has no settled bookmarks/counts
+    // to snapshot - caching it would poison that category+filter with a
+    // false "0 results" entry. Only a view that finished loading (including
+    // a genuinely empty category) is safe to cache.
+    if (selectedCategoryId == null || !viewReady) return;
+    const catCache = ensureCategoryCache(selectedCategoryId);
+    catCache.counts = categoryCounts;
+    const bmById = new Map();
+    const ids = [];
+    for (const bm of currentViewBookmarks) {
+      ids.push(bm.id);
+      bmById.set(bm.id, bm);
+    }
+    catCache.filters.set(readFilter, {
+      ids,
+      cardEls: Array.from(listEl.querySelectorAll(":scope > .bookmark-card")),
+      bmById,
+      offset: pageOffset,
+      hasMore: pageHasMore,
+    });
+  }
+
+  /** Sync cached category counts (rollup total/unread) from tree-count updates. */
+  function syncCacheCounts(updatedNodes) {
+    for (const node of updatedNodes) {
+      const catCache = viewCaches.get(node.id);
+      if (catCache) catCache.counts = { total: node.total, unread: node.unread };
+    }
+  }
+
+  /**
+   * Render a cache-hit view directly from stored DOM nodes: no fetch, no
+   * re-render, and the embeds inside those nodes are reused as-is.
+   */
+  function restoreViewFromCache(entry) {
+    teardownObserver();
+    pageLoading = false;
+    viewReady = true; // an already-settled snapshot, safe to re-cache as-is
+    requestSeq += 1; // cancel any in-flight fetch from the view being left
+    pageOffset = entry.offset;
+    pageHasMore = entry.hasMore;
+    currentViewBookmarks = entry.ids.map((id) => entry.bmById.get(id)).filter(Boolean);
+
+    readFilterEl.hidden = categoryCounts.total === 0;
+    listEl.replaceChildren();
+    if (categoryCounts.total === 0) {
+      countEl.textContent = "";
+      stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
+      return;
+    }
+    renderCountLine();
+    if (currentViewBookmarks.length === 0) {
+      stateMessage(listEl, "empty", emptyFilterMessage());
+      return;
+    }
+    for (const cardEl of entry.cardEls) listEl.appendChild(cardEl);
+    updateTail();
+  }
+
+  /**
+   * After a read-state change, keep every cached view (other than the one
+   * currently on screen, which the live DOM/bm patch already handles)
+   * consistent, across every category the bookmark is filed under. A cached
+   * Unread/Read entry whose membership for this bookmark is now stale is
+   * fully invalidated (deleted, so the next visit fetches fresh) rather than
+   * patched: dropping the id alone would correctly make it disappear from
+   * the cache it left, but silently leave it missing from the cache it now
+   * belongs to (the correct sort position for a newly-qualifying post isn't
+   * knowable client-side). `all` membership never changes on a read-state
+   * change, so that entry is patched in place instead of invalidated.
+   */
+  function invalidateCachedViewsOnReadChange(bm) {
+    // A cached view can be a PARENT category showing a rolled-up list of
+    // descendant bookmarks, so a cached entry can exist for an ancestor id
+    // that never appears in `bm.categoryIds` (its direct categories) -
+    // affectedCategoryIds walks each direct category's ancestor chain, the
+    // same set updateSidebarCounts already patches.
+    const affected = window.XBOTreeCounts
+      ? window.XBOTreeCounts.affectedCategoryIds(categoryIndex, bm.categoryIds || [])
+      : new Set(bm.categoryIds || []);
+    for (const categoryId of affected) {
+      const catCache = viewCaches.get(categoryId);
+      if (!catCache) continue;
+
+      for (const filterName of ["unread", "read"]) {
+        if (categoryId === selectedCategoryId && filterName === readFilter) continue; // live view, already patched
+        const entry = catCache.filters.get(filterName);
+        if (!entry) continue;
+        if (window.XBOFilterCache.isFilterEntryStale(entry.ids, filterName, bm.id, bm.read)) {
+          catCache.filters.delete(filterName);
+        }
+      }
+
+      const allEntry = catCache.filters.get("all");
+      if (allEntry && allEntry.bmById.has(bm.id)) {
+        const cachedBm = allEntry.bmById.get(bm.id);
+        cachedBm.read = bm.read;
+        cachedBm.readAt = bm.readAt;
+        const idx = allEntry.ids.indexOf(bm.id);
+        const cardEl = idx !== -1 ? allEntry.cardEls[idx] : null;
+        // When this cached "all" card IS the one on screen it was already
+        // patched by the caller; only touch the detached copy.
+        if (cardEl && !(categoryId === selectedCategoryId && readFilter === "all")) {
+          cardEl.classList.toggle("is-unread", !cachedBm.read);
+          const oldPill = cardEl.querySelector(".read-pill");
+          if (oldPill) oldPill.replaceWith(renderPill(cachedBm, cardEl));
+        }
+      }
+    }
+  }
+
+  /** Permanently remove a deleted bookmark from every cached filter entry. */
+  function purgeFromCache(bm) {
+    const affected = window.XBOTreeCounts
+      ? window.XBOTreeCounts.affectedCategoryIds(categoryIndex, bm.categoryIds || [])
+      : new Set(bm.categoryIds || []);
+    for (const categoryId of affected) {
+      const catCache = viewCaches.get(categoryId);
+      if (!catCache) continue;
+      for (const [, entry] of catCache.filters) {
+        const idx = entry.ids.indexOf(bm.id);
+        if (idx === -1) continue;
+        entry.ids.splice(idx, 1);
+        entry.cardEls.splice(idx, 1);
+        entry.bmById.delete(bm.id);
+        entry.offset = Math.max(0, entry.offset - 1);
+      }
+    }
+  }
+
+  /** Show the selected category+filter: a cache hit restores instantly, a miss fetches. */
+  async function showCategoryView() {
+    const catCache = viewCaches.get(selectedCategoryId);
+    if (catCache) categoryCounts = catCache.counts;
+    const cached = catCache && catCache.filters.get(readFilter);
+    if (cached) {
+      touchCategoryCache(selectedCategoryId);
+      restoreViewFromCache(cached);
+      return;
+    }
+    await fetchAndRenderFirstPage();
+  }
 
   // ---- sidebar (collapsible) --------------------------------------------
 
@@ -319,6 +499,9 @@
       unreadDelta,
     );
     for (const node of updated) patchCategoryCountDom(node);
+    // Keep any cached category views' rollup counts in step with the same
+    // ancestor-inclusive delta, so a cached view's count line stays correct.
+    syncCacheCounts(updated);
   }
 
   /**
@@ -505,6 +688,8 @@
     if (selectedButton) selectedButton.removeAttribute("aria-current");
     button.setAttribute("aria-current", "true");
     selectedButton = button;
+
+    if (selectedCategoryId !== node.id) saveCurrentViewToCache();
     selectedCategoryId = node.id;
 
     titleEl.textContent = node.path.join(" › ");
@@ -513,7 +698,7 @@
     // reveal the content it covers.
     if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
 
-    await loadFirstPage();
+    await showCategoryView();
   }
 
   /** How many bookmarks match the active read-state filter in this category. */
@@ -549,15 +734,19 @@
   }
 
   /**
-   * Load the first batch of the selected category, resetting all paging state.
-   * Called on category select AND on filter change (which pages from the top).
+   * Fetch and render the first batch of the selected category+filter,
+   * resetting all paging state. Only runs on a cache miss - `showCategoryView`
+   * restores instantly from `viewCaches` instead when this exact
+   * category+filter was already loaded.
    */
-  async function loadFirstPage() {
+  async function fetchAndRenderFirstPage() {
     const seq = ++requestSeq;
     teardownObserver();
     pageLoading = false;
+    viewReady = false; // mid-fetch: not safe to cache until this settles
     pageOffset = 0;
     pageHasMore = false;
+    currentViewBookmarks = [];
     countEl.textContent = "";
     readFilterEl.hidden = true;
     stateMessage(listEl, "loading", "Loading bookmarks…");
@@ -573,7 +762,11 @@
     }
     if (seq !== requestSeq) return; // superseded while awaiting
 
+    viewReady = true;
     categoryCounts = data.counts || { total: 0, unread: 0 };
+    // Keep the category's rollup counts fresh in the cache even before this
+    // view itself is saved there (e.g. a sibling filter is cached already).
+    ensureCategoryCache(selectedCategoryId).counts = categoryCounts;
     pageOffset = data.offset + data.bookmarks.length;
     pageHasMore = Boolean(data.hasMore);
 
@@ -591,7 +784,10 @@
       stateMessage(listEl, "empty", emptyFilterMessage());
       return;
     }
-    for (const bm of data.bookmarks) listEl.appendChild(renderCard(bm));
+    for (const bm of data.bookmarks) {
+      currentViewBookmarks.push(bm);
+      listEl.appendChild(renderCard(bm));
+    }
     updateTail();
   }
 
@@ -620,7 +816,10 @@
     if (data.counts) categoryCounts = data.counts;
 
     removeTail();
-    for (const bm of data.bookmarks) listEl.appendChild(renderCard(bm));
+    for (const bm of data.bookmarks) {
+      currentViewBookmarks.push(bm);
+      listEl.appendChild(renderCard(bm));
+    }
     renderCountLine();
     updateTail();
   }
@@ -1039,6 +1238,10 @@
       // their ancestors) in place - NOT a full tree reload, which used to
       // flicker the whole sidebar and lose scroll/expand-collapse state.
       updateSidebarCounts(bm, 0, read ? -1 : 1);
+      // A read-state change can flip which cached Unread/Read filter a post
+      // belongs to for every category it's filed under; keep every OTHER
+      // cached view (not the one on screen, patched below) consistent.
+      invalidateCachedViewsOnReadChange(bm);
 
       const dropsOut =
         (readFilter === "unread" && bm.read) || (readFilter === "read" && !bm.read);
@@ -1047,6 +1250,8 @@
         // row also leaves the server-side filtered set, so shift the offset
         // back by one to keep the next batch aligned.
         card.remove();
+        const idx = currentViewBookmarks.indexOf(bm);
+        if (idx !== -1) currentViewBookmarks.splice(idx, 1);
         pageOffset = Math.max(0, pageOffset - 1);
         if (listEl.querySelector(".bookmark-card")) {
           renderCountLine();
@@ -1115,8 +1320,10 @@
     const parent = card.parentNode;
     const nextSibling = card.nextSibling;
     const wasUnread = !bm.read;
+    const bmIndex = currentViewBookmarks.indexOf(bm);
 
     card.remove();
+    if (bmIndex !== -1) currentViewBookmarks.splice(bmIndex, 1);
     categoryCounts.total = Math.max(0, categoryCounts.total - 1);
     if (wasUnread && categoryCounts.unread > 0) categoryCounts.unread -= 1;
     pageOffset = Math.max(0, pageOffset - 1);
@@ -1145,6 +1352,11 @@
       } else {
         parent.appendChild(card);
       }
+      if (bmIndex !== -1 && bmIndex <= currentViewBookmarks.length) {
+        currentViewBookmarks.splice(bmIndex, 0, bm);
+      } else {
+        currentViewBookmarks.push(bm);
+      }
       categoryCounts.total += 1;
       if (wasUnread) categoryCounts.unread += 1;
       pageOffset += 1;
@@ -1172,6 +1384,7 @@
           // Patch only the sidebar counters for this bookmark's categories
           // (and their ancestors) in place - not a full tree reload.
           updateSidebarCounts(bm, -1, wasUnread ? -1 : 0);
+          purgeFromCache(bm);
         } else if (res.status !== 404) {
           throw new Error(`Request failed (${res.status})`);
         }
@@ -1404,9 +1617,11 @@
     readFilterEl.querySelectorAll(".seg-input").forEach((input) => {
       input.addEventListener("change", () => {
         if (!input.checked) return;
+        if (selectedCategoryId != null) saveCurrentViewToCache();
         readFilter = input.value;
-        // Changing the filter re-pages the category from the top.
-        if (selectedCategoryId != null) loadFirstPage();
+        // Changing the filter re-pages the category from the top, unless
+        // this exact category+filter is already cached from a prior visit.
+        if (selectedCategoryId != null) showCategoryView();
       });
     });
   }
