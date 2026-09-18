@@ -102,6 +102,22 @@ so a large category is never shipped or embedded all at once. The client (`app.j
 an IntersectionObserver sentinel against the content pane; changing the filter re-pages from the
 top. The dense-category seed leaf exists to exercise this.
 
+Switching the Unread/Read/All filter (or back to a category already visited) does NOT re-fetch or
+re-render from scratch (issue #33): `app.js`'s `viewCaches` snapshots a settled view's DOM
+cards + bookmark objects, keyed by category id -> filter, when the owner navigates away from it
+(`saveCurrentViewToCache`) - restoring one (`restoreViewFromCache`) reuses the same DOM nodes, so an
+already-loaded X embed is never reloaded. Bounded to `XBOFilterCache.MAX_CACHED_CATEGORIES`
+categories via LRU eviction (`src/web/public/filter-cache.js`, the pure/testable half of this - LRU
+touch/evict and `isFilterEntryStale`). A view mid-fetch is never cached (`viewReady` guard) - caching
+one would poison that category+filter with a false "0 results" snapshot if the owner switches
+categories again before the fetch settles. A read-state toggle patches the cached "all" entry for
+every affected category in place (membership there never changes) but fully INVALIDATES (deletes,
+never just prunes) a stale cached Unread/Read entry - across the bookmark's direct categories AND
+every ancestor via `XBOTreeCounts.affectedCategoryIds`, since a cached view can be a parent
+category's rolled-up list that never appears in the bookmark's own `categoryIds` - so the next visit
+fetches fresh rather than silently missing the bookmark in the cache it now belongs to (pruning
+alone only makes it disappear from the one it left).
+
 A read-state toggle or delete must NEVER reload/re-render the whole sidebar tree (that flickers
 and loses scroll + expand-collapse state) - it patches only the affected counters in place. Each
 bookmark the viewer serves carries `categoryIds` (its direct category ids, from
