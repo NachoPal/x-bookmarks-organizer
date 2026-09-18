@@ -89,17 +89,19 @@ interface ArticleLinkMetadataRow {
   description: string | null;
   image: string | null;
   site_name: string | null;
+  resolved_url: string | null;
   fetched_at: string;
 }
 
 function toArticleLinkMetadata(row: ArticleLinkMetadataRow): ArticleLinkMetadata {
   return {
     url: row.url,
-    status: row.status === 'ok' ? 'ok' : 'failed',
+    status: row.status === 'ok' ? 'ok' : row.status === 'card' ? 'card' : 'failed',
     title: row.title,
     description: row.description,
     image: row.image,
     siteName: row.site_name,
+    resolvedUrl: row.resolved_url ?? null,
     fetchedAt: row.fetched_at,
   };
 }
@@ -564,14 +566,16 @@ export class Database {
   saveArticleLinkMetadata(record: ArticleLinkMetadata): void {
     this.db
       .prepare(
-        `INSERT INTO article_link_metadata (url, status, title, description, image, site_name, fetched_at)
-         VALUES (@url, @status, @title, @description, @image, @siteName, @fetchedAt)
+        `INSERT INTO article_link_metadata
+           (url, status, title, description, image, site_name, resolved_url, fetched_at)
+         VALUES (@url, @status, @title, @description, @image, @siteName, @resolvedUrl, @fetchedAt)
          ON CONFLICT(url) DO UPDATE SET
            status = excluded.status,
            title = excluded.title,
            description = excluded.description,
            image = excluded.image,
            site_name = excluded.site_name,
+           resolved_url = excluded.resolved_url,
            fetched_at = excluded.fetched_at`,
       )
       .run(record);

@@ -382,6 +382,7 @@ describe('Database', () => {
         description: 'A short summary',
         image: 'https://example.com/cover.png',
         siteName: 'Example',
+        resolvedUrl: 'https://example.com/article',
         fetchedAt: '2026-09-17T00:00:00.000Z',
       });
       expect(db.getArticleLinkMetadata('https://example.com/article')).toEqual({
@@ -391,6 +392,7 @@ describe('Database', () => {
         description: 'A short summary',
         image: 'https://example.com/cover.png',
         siteName: 'Example',
+        resolvedUrl: 'https://example.com/article',
         fetchedAt: '2026-09-17T00:00:00.000Z',
       });
     });
@@ -403,6 +405,7 @@ describe('Database', () => {
         description: null,
         image: null,
         siteName: null,
+        resolvedUrl: null,
         fetchedAt: '2026-09-17T00:00:00.000Z',
       });
       expect(db.getArticleLinkMetadata('https://example.com/dead')?.status).toBe('failed');
@@ -416,6 +419,7 @@ describe('Database', () => {
         description: null,
         image: null,
         siteName: null,
+        resolvedUrl: null,
         fetchedAt: '2026-09-17T00:00:00.000Z',
       });
       db.saveArticleLinkMetadata({
@@ -425,13 +429,30 @@ describe('Database', () => {
         description: null,
         image: null,
         siteName: null,
+        resolvedUrl: 'https://example.com/a',
         fetchedAt: '2026-09-17T01:00:00.000Z',
       });
       expect(db.getArticleLinkMetadata('https://example.com/a')?.status).toBe('ok');
       expect(db.getArticleLinkMetadata('https://example.com/a')?.title).toBe('Now it works');
     });
 
-    it('migrates a database created before image/siteName existed (issue #26) without losing data', () => {
+    it('round-trips a card-only record (preview card, no readable body - issue #45)', () => {
+      db.saveArticleLinkMetadata({
+        url: 'https://t.co/abc',
+        status: 'card',
+        title: 'A Tool, Not An Article',
+        description: 'Short pitch.',
+        image: null,
+        siteName: 'Tool',
+        resolvedUrl: 'https://tool.example.com/',
+        fetchedAt: '2026-09-17T00:00:00.000Z',
+      });
+      const record = db.getArticleLinkMetadata('https://t.co/abc');
+      expect(record?.status).toBe('card');
+      expect(record?.resolvedUrl).toBe('https://tool.example.com/');
+    });
+
+    it('migrates a database created before image/siteName/resolvedUrl existed (issues #26/#45) without losing data', () => {
       const dbPath = path.join(os.tmpdir(), `xbookmarks-migration-test-${Date.now()}-${Math.random()}.db`);
       try {
         // Simulate a pre-#26 database: the original article_link_metadata
@@ -464,6 +485,7 @@ describe('Database', () => {
             description: 'Pre-existing summary',
             image: null,
             siteName: null,
+            resolvedUrl: null,
             fetchedAt: '2026-01-01T00:00:00.000Z',
           });
 
@@ -475,6 +497,7 @@ describe('Database', () => {
             description: null,
             image: 'https://example.com/new.png',
             siteName: 'Example',
+            resolvedUrl: 'https://example.com/new',
             fetchedAt: '2026-01-02T00:00:00.000Z',
           });
           expect(migrated.getArticleLinkMetadata('https://example.com/new')?.image).toBe(

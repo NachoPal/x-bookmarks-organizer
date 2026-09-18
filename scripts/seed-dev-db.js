@@ -194,12 +194,14 @@ if (idByPath.has(denseKey)) {
 }
 
 // A few bookmarks that exercise the reader view AND the article-preview card
-// (issue #26) end to end: one links to a fixture article served locally by
-// this same viewer (so "Read article" can fetch and extract it fully
+// (issues #26/#45) end to end: one links to a fixture article served locally
+// by this same viewer (so "Read article" can fetch and extract it fully
 // offline), one to a domain reserved by RFC 2606 to never resolve (so it
-// correctly gets no preview / no "Read article" control), and one has only a
+// correctly gets no preview / no "Read article" control), one has only a
 // title cached (no description/image) to exercise the preview card's
-// graceful partial-data fallback.
+// graceful partial-data fallback, and one is a card-only page (a tool, with
+// OpenGraph tags but no readable body - the common real-world case) which
+// must render a preview card but NO "Read article" control.
 const readerDemoParent = ensurePath(['Reader View Demo']);
 const webPort = process.env.XBOOKMARKS_WEB_PORT || '5173';
 const fixtureArticleUrl = `http://127.0.0.1:${webPort}/fixtures/sample-article.html`;
@@ -210,6 +212,9 @@ const sparseLinkUrl = 'https://reader-view-demo-sparse.invalid/article';
 // Summarize must say so cleanly rather than ask the model to open a URL it has
 // no tools to fetch (the refusal fixed in the summary path).
 const bareLinkUrl = 'https://reader-view-demo-bare-link.invalid/video';
+// A page with a preview card but no readable body (issue #45): card renders,
+// reader affordance does not, and Summarize works off the card.
+const cardOnlyUrl = 'https://reader-view-demo-tool.invalid/pricing';
 db.storeCategorizedBatch(
   [
     {
@@ -244,6 +249,14 @@ db.storeCategorizedBatch(
       url: `https://x.com/dan_abramov/status/900000000000090004`,
       postCreatedAt: new Date().toISOString(),
     },
+    {
+      postId: '900000000000090005',
+      authorUsername: 'swyx',
+      authorName: 'swyx',
+      text: `Shipping fast with this one: ${cardOnlyUrl}`,
+      url: `https://x.com/swyx/status/900000000000090005`,
+      postCreatedAt: new Date().toISOString(),
+    },
   ],
   () => [readerDemoParent],
 );
@@ -256,7 +269,8 @@ db.storeCategorizedBatch(
 //    fixture file on disk, so its cached preview is exactly what the running
 //    viewer's own reader fetch would produce for the same URL;
 //  - the dead link is cached as a confirmed failure (never an article);
-//  - the sparse link is cached as a confirmed article with only a title.
+//  - the sparse link is cached as a confirmed article with only a title;
+//  - the tool link is cached as `card`: a preview card, no readable body.
 const { extractArticle } = require('../dist/articles/fetch-article');
 const fixtureHtml = fs.readFileSync(
   path.join(__dirname, '../src/web/public/fixtures/sample-article.html'),
@@ -267,10 +281,11 @@ if (fixtureExtraction.status === 'ok') {
   db.saveArticleLinkMetadata({
     url: fixtureArticleUrl,
     status: 'ok',
-    title: fixtureExtraction.ogTitle || fixtureExtraction.title,
-    description: fixtureExtraction.ogDescription || fixtureExtraction.excerpt,
-    image: fixtureExtraction.ogImage,
-    siteName: fixtureExtraction.ogSiteName || fixtureExtraction.siteName,
+    title: fixtureExtraction.preview?.title || fixtureExtraction.title,
+    description: fixtureExtraction.preview?.description || fixtureExtraction.excerpt,
+    image: fixtureExtraction.preview?.image ?? null,
+    siteName: fixtureExtraction.preview?.siteName || fixtureExtraction.siteName,
+    resolvedUrl: fixtureArticleUrl,
     fetchedAt: new Date().toISOString(),
   });
 }
@@ -281,6 +296,7 @@ db.saveArticleLinkMetadata({
   description: null,
   image: null,
   siteName: null,
+  resolvedUrl: null,
   fetchedAt: new Date().toISOString(),
 });
 db.saveArticleLinkMetadata({
@@ -290,6 +306,7 @@ db.saveArticleLinkMetadata({
   description: null,
   image: null,
   siteName: null,
+  resolvedUrl: null,
   fetchedAt: new Date().toISOString(),
 });
 db.saveArticleLinkMetadata({
@@ -299,6 +316,17 @@ db.saveArticleLinkMetadata({
   description: null,
   image: null,
   siteName: null,
+  resolvedUrl: sparseLinkUrl,
+  fetchedAt: new Date().toISOString(),
+});
+db.saveArticleLinkMetadata({
+  url: cardOnlyUrl,
+  status: 'card',
+  title: 'Executor - the gateway to connect your agent to everything',
+  description: 'One place every agent plugs into every tool you already use. No readable article body here, just a card.',
+  image: null,
+  siteName: 'Executor',
+  resolvedUrl: cardOnlyUrl,
   fetchedAt: new Date().toISOString(),
 });
 

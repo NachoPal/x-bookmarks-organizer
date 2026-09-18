@@ -24,10 +24,14 @@
  * - `summaries` caches the on-demand LLM summary for a bookmark, keyed by
  *   bookmark, so re-opening the summary modal is instant and spends no extra
  *   subscription usage after the first generation.
- * - `article_link_metadata` caches the linked article's title/description used
+ * - `article_link_metadata` caches the linked page's title/description used
  *   as extra categorization signal for link-heavy posts (issue #25), AND
  *   (`image`/`site_name`, added for issue #26) the viewer's link-preview card
- *   data. Keyed by URL rather than bookmark, because it must be fetched and
+ *   data, plus the `resolved_url` the shortened link actually landed on.
+ *   `status` is tri-state - `ok` (readable article: card + body), `card`
+ *   (preview card only) or `failed` (nothing usable) - so a page with an
+ *   OpenGraph card but no long-form body still caches as a usable card.
+ *   Keyed by URL rather than bookmark, because it must be fetched and
  *   fed into the categorization prompt BEFORE the bookmark is stored (and thus
  *   before it has a bookmark id) - and URL-keying also dedups bookmarks that
  *   share a link. Both a success and a failure are cached, mirroring
@@ -105,19 +109,20 @@ CREATE TABLE IF NOT EXISTS summaries (
 );
 
 CREATE TABLE IF NOT EXISTS article_link_metadata (
-  url         TEXT PRIMARY KEY,
-  status      TEXT NOT NULL,
-  title       TEXT,
-  description TEXT,
-  image       TEXT,
-  site_name   TEXT,
-  fetched_at  TEXT NOT NULL
+  url          TEXT PRIMARY KEY,
+  status       TEXT NOT NULL,
+  title        TEXT,
+  description  TEXT,
+  image        TEXT,
+  site_name    TEXT,
+  resolved_url TEXT,
+  fetched_at   TEXT NOT NULL
 );
 `;
 
 /**
  * Columns added to `article_link_metadata` after its original release
- * (issue #26). `CREATE TABLE IF NOT EXISTS` above only covers a brand-new
+ * (issues #26, #45). `CREATE TABLE IF NOT EXISTS` above only covers a brand-new
  * database - an existing one needs these added explicitly, guarded by
  * `PRAGMA table_info` so re-running on an already-migrated database is a
  * no-op (SQLite's `ALTER TABLE ADD COLUMN` has no `IF NOT EXISTS` form).
@@ -125,4 +130,5 @@ CREATE TABLE IF NOT EXISTS article_link_metadata (
 export const ARTICLE_LINK_METADATA_ADDED_COLUMNS: { name: string; ddl: string }[] = [
   { name: 'image', ddl: 'ALTER TABLE article_link_metadata ADD COLUMN image TEXT' },
   { name: 'site_name', ddl: 'ALTER TABLE article_link_metadata ADD COLUMN site_name TEXT' },
+  { name: 'resolved_url', ddl: 'ALTER TABLE article_link_metadata ADD COLUMN resolved_url TEXT' },
 ];

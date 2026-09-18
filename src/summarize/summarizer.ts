@@ -8,14 +8,20 @@ export interface SummaryInput {
   postText: string;
   authorName: string;
   authorUsername: string;
-  /** The reader-view extraction's title, when the bookmark's link is an article. */
+  /**
+   * The linked page's title - the reader-view extraction's when the body was
+   * readable, otherwise the preview card's (issue #45), which is what most
+   * links have.
+   */
   articleTitle?: string | null;
   /**
-   * The linked article's short description/excerpt, when only its metadata (not
+   * The linked page's short description/excerpt, when only its metadata (not
    * its body) could be retrieved - see the ingest-time link-metadata cache.
    */
   articleDescription?: string | null;
-  /** Plain-text article body, when the bookmark's link is an article. */
+  /** The linked page's site name or domain, when known - e.g. `github.com`. */
+  articleSiteName?: string | null;
+  /** Plain-text article body, when the bookmark's link is a readable article. */
   articleText?: string | null;
 }
 
@@ -109,15 +115,17 @@ export function buildSummaryPrompt(input: SummaryInput): string {
       "The article is the substance being shared, so summarize its content, not just the post's framing of it.",
     );
   } else if (input.articleTitle || input.articleDescription) {
-    // Only the link's metadata was cached (no readable body). It is thin, but
-    // it is real content - better than giving up on a link-only post.
+    // Only the link's preview card was cached (no readable body) - the common
+    // case for a tool, repo, product page or video. It is thin, but it is
+    // real content, and far better than giving up on a link-only post.
     lines.push(
       '',
-      'The post links an article whose body could not be retrieved. This is all that is known about it:',
+      "The post links a page whose full text could not be retrieved. Here is its preview card, which is all that is known about it:",
       ...(input.articleTitle ? [`Title: ${input.articleTitle}`] : []),
       ...(input.articleDescription ? [`Description: ${input.articleDescription}`] : []),
+      ...(input.articleSiteName ? [`Site: ${input.articleSiteName}`] : []),
       '',
-      'Summarize what is being shared based on that, and do not speculate beyond it.',
+      'Summarize what is being shared based on the post and that card, and do not speculate beyond them.',
     );
   }
   return lines.join('\n');

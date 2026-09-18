@@ -307,7 +307,7 @@ describe('bookmark list exposes the primary article link', () => {
   });
 });
 
-describe('bookmark list gates the "Read article" affordance and preview card (issue #26)', () => {
+describe('bookmark list gates the "Read article" affordance and preview card separately (issues #26/#45)', () => {
   let db: Database;
   let app: FastifyInstance;
   let evalsId: number;
@@ -324,6 +324,7 @@ describe('bookmark list gates the "Read article" affordance and preview card (is
         { ...bm('3'), text: 'Dead link: https://example.com/articles/dead' },
         { ...bm('4'), text: 'Never fetched yet: https://example.com/articles/unresolved' },
         { ...bm('5'), text: 'Sparse metadata: https://example.com/articles/sparse' },
+        { ...bm('6'), text: 'Cool tool: https://t.co/toolcard' },
       ],
       () => [evals.id],
     );
@@ -336,6 +337,7 @@ describe('bookmark list gates the "Read article" affordance and preview card (is
       description: 'A short summary',
       image: 'https://example.com/cover.png',
       siteName: 'Example Times',
+      resolvedUrl: 'https://example.com/articles/with-preview',
       fetchedAt: when,
     });
     db.saveArticleLinkMetadata({
@@ -345,6 +347,7 @@ describe('bookmark list gates the "Read article" affordance and preview card (is
       description: null,
       image: null,
       siteName: null,
+      resolvedUrl: null,
       fetchedAt: when,
     });
     // A confirmed article whose fetch produced a title but no description/
@@ -356,6 +359,21 @@ describe('bookmark list gates the "Read article" affordance and preview card (is
       description: null,
       image: null,
       siteName: null,
+      resolvedUrl: null,
+      fetchedAt: when,
+    });
+    // A page with a preview card but no readable body (issue #45) - a tool,
+    // repo, product page or video, which is most of a real library. The
+    // shortened url resolves to the real destination, which is what the
+    // card's domain must show.
+    db.saveArticleLinkMetadata({
+      url: 'https://t.co/toolcard',
+      status: 'card',
+      title: 'A Tool, Not An Article',
+      description: 'One place every agent plugs in.',
+      image: 'https://tool.example.com/card.png',
+      siteName: 'Tool',
+      resolvedUrl: 'https://tool.example.com/pricing',
       fetchedAt: when,
     });
     app = buildServer(db);
@@ -374,42 +392,75 @@ describe('bookmark list gates the "Read article" affordance and preview card (is
         bookmarks: {
           postId: string;
           hasArticle: boolean;
-          preview: { title: string; description: string | null; image: string | null; siteName: string | null; domain: string } | null;
+          hasPreview: boolean;
+          preview:
+            | {
+                title: string;
+                description: string | null;
+                image: string | null;
+                siteName: string | null;
+                domain: string;
+                url: string;
+              }
+            | null;
         }[];
       });
   }
 
-  it('sets hasArticle true with full preview data for a confirmed article', async () => {
+  it('sets both flags with full preview data for a readable article', async () => {
     const body = await fetchList();
     const b1 = body.bookmarks.find((b) => b.postId === '1')!;
     expect(b1.hasArticle).toBe(true);
+    expect(b1.hasPreview).toBe(true);
     expect(b1.preview).toEqual({
       title: 'A Great Article',
       description: 'A short summary',
       image: 'https://example.com/cover.png',
       siteName: 'Example Times',
       domain: 'example.com',
+      url: 'https://example.com/articles/with-preview',
     });
   });
 
-  it('sets hasArticle false and no preview for a post with no link at all', async () => {
+  it('sets hasPreview true but hasArticle FALSE for a card-only page (issue #45)', async () => {
+    const body = await fetchList();
+    const b6 = body.bookmarks.find((b) => b.postId === '6')!;
+    // The card renders...
+    expect(b6.hasPreview).toBe(true);
+    expect(b6.preview).toEqual({
+      title: 'A Tool, Not An Article',
+      description: 'One place every agent plugs in.',
+      image: 'https://tool.example.com/card.png',
+      siteName: 'Tool',
+      // Domain and link come from the resolved destination, never `t.co`.
+      domain: 'tool.example.com',
+      url: 'https://tool.example.com/pricing',
+    });
+    // ...but there is no body, so no reader affordance.
+    expect(b6.hasArticle).toBe(false);
+  });
+
+  it('sets neither flag for a post with no link at all', async () => {
     const body = await fetchList();
     const b2 = body.bookmarks.find((b) => b.postId === '2')!;
     expect(b2.hasArticle).toBe(false);
+    expect(b2.hasPreview).toBe(false);
     expect(b2.preview).toBeNull();
   });
 
-  it('sets hasArticle false and no preview for a link that resolved to a fetch failure (not an article)', async () => {
+  it('sets neither flag for a link that yielded nothing usable (a genuine 404/unreachable)', async () => {
     const body = await fetchList();
     const b3 = body.bookmarks.find((b) => b.postId === '3')!;
     expect(b3.hasArticle).toBe(false);
+    expect(b3.hasPreview).toBe(false);
     expect(b3.preview).toBeNull();
   });
 
-  it('sets hasArticle false and no preview for a link never yet resolved by ingest (no cache entry)', async () => {
+  it('sets neither flag for a link never yet resolved by ingest (no cache entry)', async () => {
     const body = await fetchList();
     const b4 = body.bookmarks.find((b) => b.postId === '4')!;
     expect(b4.hasArticle).toBe(false);
+    expect(b4.hasPreview).toBe(false);
     expect(b4.preview).toBeNull();
   });
 
@@ -417,12 +468,14 @@ describe('bookmark list gates the "Read article" affordance and preview card (is
     const body = await fetchList();
     const b5 = body.bookmarks.find((b) => b.postId === '5')!;
     expect(b5.hasArticle).toBe(true);
+    expect(b5.hasPreview).toBe(true);
     expect(b5.preview).toEqual({
       title: 'Sparse Article',
       description: null,
       image: null,
       siteName: null,
       domain: 'example.com',
+      url: 'https://example.com/articles/sparse',
     });
   });
 });
@@ -730,6 +783,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
       description: 'A case for treating prompt edits like code edits.',
       image: null,
       siteName: 'Example',
+      resolvedUrl: 'https://example.com/evals',
       fetchedAt: new Date().toISOString(),
     });
     const b3 = db.getBookmarkByPostId('3')!;
@@ -742,6 +796,37 @@ describe('GET /api/bookmarks/:id/summary', () => {
     expect(generator.calls[0].articleDescription).toBe(
       'A case for treating prompt edits like code edits.',
     );
+    expect(generator.calls[0].articleSiteName).toBe('Example');
+  });
+
+  it('summarizes a bare-link post from a card-only cache row (no readable article at all - issue #45)', async () => {
+    const generator = new FakeSummaryGenerator('A card-based summary.');
+    const fetcher = new FakeArticleFetcher({
+      status: 'failed',
+      reason: 'This page does not look like a readable article.',
+    });
+    await setup({ summaryGenerator: generator, articleFetcher: fetcher });
+    db.saveArticleLinkMetadata({
+      url: 'https://t.co/aBcD1234Xy',
+      status: 'card',
+      title: 'A Tool, Not An Article',
+      description: 'One place every agent plugs into every tool you already use.',
+      image: null,
+      siteName: null,
+      resolvedUrl: 'https://tool.example.com/',
+      fetchedAt: new Date().toISOString(),
+    });
+    const b3 = db.getBookmarkByPostId('3')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b3.id}/summary` });
+
+    expect(res.statusCode).toBe(200);
+    expect(generator.calls).toHaveLength(1);
+    expect(generator.calls[0].articleTitle).toBe('A Tool, Not An Article');
+    expect(generator.calls[0].articleText).toBeNull();
+    // With no og:site_name, the resolved destination's domain stands in.
+    expect(generator.calls[0].articleSiteName).toBe('tool.example.com');
+    expect((res.json() as { summary: { summary: string } }).summary.summary).toBe('A card-based summary.');
   });
 
   it('still summarizes a post that has prose alongside its link', async () => {

@@ -99,6 +99,7 @@ describe('buildArticleContext', () => {
       description: null,
       image: null,
       siteName: null,
+      resolvedUrl: 'https://example.com/article',
       fetchedAt: '2026-01-01T00:00:00.000Z',
     });
     const fetcher = new FakeFetcher({});
@@ -127,6 +128,84 @@ describe('buildArticleContext', () => {
     // A second call must not re-fetch the already-cached failure.
     await buildArticleContext([bm('2', 'https://example.com/dead')], fetcher, cache);
     expect(fetcher.calls).toEqual(['https://example.com/dead']);
+  });
+
+  it('caches a usable card - and gives the categorizer its title - for a page with OG tags but no readable body (issue #45)', async () => {
+    const cache = new FakeCache();
+    const fetcher = new FakeFetcher({
+      'https://t.co/tool': {
+        status: 'failed',
+        reason: 'This page does not look like a readable article.',
+        preview: {
+          title: 'A Tool, Not An Article',
+          description: 'One place every agent plugs in.',
+          image: 'https://tool.example.com/card.png',
+          siteName: 'Tool',
+        },
+        resolvedUrl: 'https://tool.example.com/',
+      },
+    });
+
+    const context = await buildArticleContext([bm('1', 'great tool https://t.co/tool')], fetcher, cache);
+
+    expect(cache.getArticleLinkMetadata('https://t.co/tool')).toMatchObject({
+      status: 'card',
+      title: 'A Tool, Not An Article',
+      image: 'https://tool.example.com/card.png',
+      resolvedUrl: 'https://tool.example.com/',
+    });
+    // A card is real categorization signal too - that is the whole point of #25.
+    expect(context.get('1')).toEqual({
+      title: 'A Tool, Not An Article',
+      description: 'One place every agent plugs in.',
+    });
+  });
+
+  it('caches nothing usable as failed when the page has neither a body nor a card', async () => {
+    const cache = new FakeCache();
+    const fetcher = new FakeFetcher({
+      'https://example.com/404': { status: 'failed', reason: 'The page returned an error (HTTP 404).' },
+    });
+
+    const context = await buildArticleContext([bm('1', 'https://example.com/404')], fetcher, cache);
+
+    expect(context.has('1')).toBe(false);
+    expect(cache.getArticleLinkMetadata('https://example.com/404')).toMatchObject({
+      status: 'failed',
+      title: null,
+      image: null,
+    });
+  });
+
+  it('prefers the card fields over the readability-derived ones for a readable article', async () => {
+    const cache = new FakeCache();
+    const fetcher = new FakeFetcher({
+      'https://t.co/post': {
+        status: 'ok',
+        title: 'Readability Title | Site Chrome',
+        contentHtml: '<p>Body</p>',
+        excerpt: 'Readability excerpt',
+        siteName: null,
+        preview: {
+          title: 'The Clean OG Title',
+          description: 'The OG description.',
+          image: 'https://example.com/cover.png',
+          siteName: 'Example Times',
+        },
+        resolvedUrl: 'https://example.com/post',
+      },
+    });
+
+    await buildArticleContext([bm('1', 'https://t.co/post')], fetcher, cache);
+
+    expect(cache.getArticleLinkMetadata('https://t.co/post')).toMatchObject({
+      status: 'ok',
+      title: 'The Clean OG Title',
+      description: 'The OG description.',
+      image: 'https://example.com/cover.png',
+      siteName: 'Example Times',
+      resolvedUrl: 'https://example.com/post',
+    });
   });
 
   it('never throws and yields no context when the fetcher itself throws', async () => {

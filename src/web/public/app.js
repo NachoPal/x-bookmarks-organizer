@@ -791,8 +791,10 @@
 
     card.append(actions, slot);
 
-    // Compact link-preview card (issue #26), gated the same way as the "Read
-    // article" button above: only a confirmed article gets a preview.
+    // Compact link-preview card, gated on the link having a preview card at
+    // all (issue #45) - which is independent of, and far more common than,
+    // the link having a readable body that earns the "Read article" button
+    // above.
     const preview = renderArticlePreview(bm, card);
     if (preview) card.appendChild(preview);
 
@@ -800,19 +802,36 @@
   }
 
   /**
-   * A compact, X-style preview card for a bookmark whose link resolved to a
-   * confirmed article: thumbnail (when available) + title/description/
-   * domain. The whole card is one button that opens the in-app reader, same
-   * as the "Read article" action. Returns null when the bookmark has no
-   * confirmed article (nothing is rendered for it, per the gating rule).
+   * A compact, X-style preview card for a bookmark whose link has any
+   * preview metadata: thumbnail (when available) + title/description/domain.
+   *
+   * The whole card is one control, but WHICH control depends on the link
+   * (issue #45): a link with a readable body is a button that opens the
+   * in-app reader (same as "Read article"); a link with only a card - a tool,
+   * repo, product page or video, which is most of a real library - is a plain
+   * anchor to the destination, because there is no body to read in-app.
+   * Returns null when the link has no card at all, leaving just the post.
    */
   function renderArticlePreview(bm, card) {
-    if (!bm.hasArticle || !bm.preview) return null;
+    if (!bm.preview) return null;
     const preview = bm.preview;
+    const readable = Boolean(bm.hasArticle);
 
-    const btn = el("button", "article-preview");
-    btn.type = "button";
-    btn.setAttribute("aria-label", `Read article: ${preview.title}`);
+    let btn;
+    if (readable) {
+      btn = el("button", "article-preview");
+      btn.type = "button";
+      btn.setAttribute("aria-label", `Read article: ${preview.title}`);
+    } else {
+      btn = el("a", "article-preview");
+      btn.href = preview.url || bm.articleUrl || bm.url;
+      btn.target = "_blank";
+      btn.rel = "noopener noreferrer";
+      btn.setAttribute(
+        "aria-label",
+        `Open ${preview.title} on ${preview.siteName || preview.domain} (opens in a new tab)`,
+      );
+    }
 
     if (preview.image) {
       const imageWrap = el("div", "article-preview-image-wrap");
@@ -836,7 +855,13 @@
     }
     btn.appendChild(body);
 
-    btn.addEventListener("click", () => openReader(bm, card, btn));
+    if (readable) {
+      btn.addEventListener("click", () => openReader(bm, card, btn));
+    } else {
+      // Following the link out counts as engaging with the bookmark, exactly
+      // like the embed fallback link and "Open on X" do.
+      btn.addEventListener("click", () => setRead(bm, card, true));
+    }
     return btn;
   }
 

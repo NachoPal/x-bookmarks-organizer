@@ -23,9 +23,12 @@ export interface BackfillSummary {
   totalLinks: number;
   /** Links that were actually fetched this run. */
   fetched: number;
+  /** Resolved to a readable article (card + reader body). */
   ok: number;
+  /** Resolved to a preview card only - no readable body, but the card renders. */
+  card: number;
   failed: number;
-  /** Links already cached as `ok` (or `failed` with `retryFailed` off) - left untouched. */
+  /** Links already cached usably (or `failed` with `retryFailed` off) - left untouched. */
   skipped: number;
 }
 
@@ -73,13 +76,18 @@ export async function backfillArticlePreviews(
   const results = await resolveManyArticleLinkMetadata(toFetch, fetcher, forceFetchCache, concurrency);
 
   let ok = 0;
+  let card = 0;
   let failed = 0;
   for (const record of results.values()) {
     if (record.status === 'ok') ok++;
+    else if (record.status === 'card') card++;
     else failed++;
   }
 
-  const summary: BackfillSummary = { totalLinks: urls.size, fetched: toFetch.length, ok, failed, skipped };
-  logger?.(`Backfill done. Fetched ${summary.fetched} (${ok} ok, ${failed} failed), ${skipped} skipped.`);
+  const summary: BackfillSummary = { totalLinks: urls.size, fetched: toFetch.length, ok, card, failed, skipped };
+  logger?.(
+    `Backfill done. Fetched ${summary.fetched} (${ok} readable article(s), ${card} preview card(s), ` +
+      `${failed} with nothing usable), ${skipped} skipped.`,
+  );
   return summary;
 }
