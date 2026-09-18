@@ -276,38 +276,7 @@ describe('web server bookmark paging & filtering', () => {
   });
 });
 
-describe('bookmark list exposes the primary article link', () => {
-  let db: Database;
-  let app: FastifyInstance;
-
-  afterEach(async () => {
-    await app.close();
-    db.close();
-  });
-
-  it('adds articleUrl when the post text contains a link, and null otherwise', async () => {
-    db = new Database(':memory:');
-    const when = new Date().toISOString();
-    const evals = db.getOrCreateCategory('Evals', null, when);
-    db.storeCategorizedBatch(
-      [
-        { ...bm('1'), text: 'Great read: https://example.com/articles/one' },
-        { ...bm('2'), text: 'Just thoughts, no links here.' },
-      ],
-      () => [evals.id],
-    );
-    app = buildServer(db);
-    await app.ready();
-
-    const res = await app.inject({ method: 'GET', url: `/api/categories/${evals.id}/bookmarks` });
-    const body = res.json() as { bookmarks: { postId: string; articleUrl: string | null }[] };
-    const byId = new Map(body.bookmarks.map((b) => [b.postId, b.articleUrl]));
-    expect(byId.get('1')).toBe('https://example.com/articles/one');
-    expect(byId.get('2')).toBeNull();
-  });
-});
-
-describe('bookmark list gates the "Read article" affordance on a readable body (issues #26/#45)', () => {
+describe('bookmark list exposes hasSummary', () => {
   let db: Database;
   let app: FastifyInstance;
   let evalsId: number;
@@ -317,65 +286,9 @@ describe('bookmark list gates the "Read article" affordance on a readable body (
     const when = new Date().toISOString();
     const evals = db.getOrCreateCategory('Evals', null, when);
     evalsId = evals.id;
-    db.storeCategorizedBatch(
-      [
-        { ...bm('1'), text: 'Great read: https://example.com/articles/with-preview' },
-        { ...bm('2'), text: 'Just thoughts, no links here.' },
-        { ...bm('3'), text: 'Dead link: https://example.com/articles/dead' },
-        { ...bm('4'), text: 'Never fetched yet: https://example.com/articles/unresolved' },
-        { ...bm('5'), text: 'Sparse metadata: https://example.com/articles/sparse' },
-        { ...bm('6'), text: 'Cool tool: https://t.co/toolcard' },
-      ],
-      () => [evals.id],
-    );
-    // Simulate ingest-time population of the URL-keyed cache (issue #25/#26):
-    // the list endpoint only ever reads this, never fetches live.
-    db.saveArticleLinkMetadata({
-      url: 'https://example.com/articles/with-preview',
-      status: 'ok',
-      title: 'A Great Article',
-      description: 'A short summary',
-      image: 'https://example.com/cover.png',
-      siteName: 'Example Times',
-      resolvedUrl: 'https://example.com/articles/with-preview',
-      fetchedAt: when,
-    });
-    db.saveArticleLinkMetadata({
-      url: 'https://example.com/articles/dead',
-      status: 'failed',
-      title: null,
-      description: null,
-      image: null,
-      siteName: null,
-      resolvedUrl: null,
-      fetchedAt: when,
-    });
-    // A confirmed article whose fetch produced a title but no description/
-    // image - still readable despite the sparse metadata.
-    db.saveArticleLinkMetadata({
-      url: 'https://example.com/articles/sparse',
-      status: 'ok',
-      title: 'Sparse Article',
-      description: null,
-      image: null,
-      siteName: null,
-      resolvedUrl: null,
-      fetchedAt: when,
-    });
-    // A page with a preview card but no readable body (issue #45) - a tool,
-    // repo, product page or video, which is most of a real library. The
-    // shortened url resolves to the real destination, which is what the
-    // card's domain must show.
-    db.saveArticleLinkMetadata({
-      url: 'https://t.co/toolcard',
-      status: 'card',
-      title: 'A Tool, Not An Article',
-      description: 'One place every agent plugs in.',
-      image: 'https://tool.example.com/card.png',
-      siteName: 'Tool',
-      resolvedUrl: 'https://tool.example.com/pricing',
-      fetchedAt: when,
-    });
+    db.storeCategorizedBatch([bm('1'), bm('2')], () => [evals.id]);
+    const b1 = db.getBookmarkByPostId('1')!;
+    db.saveSummary({ bookmarkId: b1.id, summary: 'A summary.', generatedAt: when });
     app = buildServer(db);
     await app.ready();
   });
@@ -385,162 +298,21 @@ describe('bookmark list gates the "Read article" affordance on a readable body (
     db.close();
   });
 
-  function fetchList() {
-    return app
-      .inject({ method: 'GET', url: `/api/categories/${evalsId}/bookmarks` })
-      .then((res) => res.json() as {
-        bookmarks: {
-          postId: string;
-          hasArticle: boolean;
-        }[];
-      });
-  }
-
-  it('sets hasArticle true for a readable article', async () => {
-    const body = await fetchList();
-    const b1 = body.bookmarks.find((b) => b.postId === '1')!;
-    expect(b1.hasArticle).toBe(true);
+  it('sets hasSummary true for a bookmark with a saved summary, false otherwise', async () => {
+    const res = await app.inject({ method: 'GET', url: `/api/categories/${evalsId}/bookmarks` });
+    const body = res.json() as { bookmarks: { postId: string; hasSummary: boolean }[] };
+    const byId = new Map(body.bookmarks.map((b) => [b.postId, b.hasSummary]));
+    expect(byId.get('1')).toBe(true);
+    expect(byId.get('2')).toBe(false);
   });
 
-  it('sets hasArticle FALSE for a card-only page (issue #45)', async () => {
-    const body = await fetchList();
-    const b6 = body.bookmarks.find((b) => b.postId === '6')!;
-    // There is no readable body, so no reader affordance.
-    expect(b6.hasArticle).toBe(false);
-  });
-
-  it('sets hasArticle false for a post with no link at all', async () => {
-    const body = await fetchList();
-    const b2 = body.bookmarks.find((b) => b.postId === '2')!;
-    expect(b2.hasArticle).toBe(false);
-  });
-
-  it('sets hasArticle false for a link that yielded nothing usable (a genuine 404/unreachable)', async () => {
-    const body = await fetchList();
-    const b3 = body.bookmarks.find((b) => b.postId === '3')!;
-    expect(b3.hasArticle).toBe(false);
-  });
-
-  it('sets hasArticle false for a link never yet resolved by ingest (no cache entry)', async () => {
-    const body = await fetchList();
-    const b4 = body.bookmarks.find((b) => b.postId === '4')!;
-    expect(b4.hasArticle).toBe(false);
-  });
-
-  it('sets hasArticle true when metadata has a title even with sparse fields', async () => {
-    const body = await fetchList();
-    const b5 = body.bookmarks.find((b) => b.postId === '5')!;
-    expect(b5.hasArticle).toBe(true);
+  it('never includes the summary text itself in the list payload', async () => {
+    const res = await app.inject({ method: 'GET', url: `/api/categories/${evalsId}/bookmarks` });
+    const body = res.json() as { bookmarks: Record<string, unknown>[] };
+    for (const b of body.bookmarks) expect(b.summary).toBeUndefined();
   });
 });
 
-describe('GET /api/bookmarks/:id/article', () => {
-  let db: Database;
-  let app: FastifyInstance;
-
-  afterEach(async () => {
-    await app.close();
-    db.close();
-  });
-
-  function setup(fetcher: ArticleFetcher) {
-    db = new Database(':memory:');
-    const when = new Date().toISOString();
-    const evals = db.getOrCreateCategory('Evals', null, when);
-    db.storeCategorizedBatch(
-      [
-        { ...bm('1'), text: 'Read this: https://example.com/articles/one' },
-        { ...bm('2'), text: 'No link in this one.' },
-      ],
-      () => [evals.id],
-    );
-    app = buildServer(db, { articleFetcher: fetcher });
-    return app.ready();
-  }
-
-  it('returns 404 for an unknown bookmark and 400 for a bad id', async () => {
-    await setup(new FakeArticleFetcher({ status: 'failed', reason: 'unused' }));
-    expect((await app.inject({ method: 'GET', url: '/api/bookmarks/9999/article' })).statusCode).toBe(
-      404,
-    );
-    expect((await app.inject({ method: 'GET', url: '/api/bookmarks/abc/article' })).statusCode).toBe(
-      400,
-    );
-  });
-
-  it('returns 404 for a bookmark whose post has no article link (fetcher never called)', async () => {
-    const fetcher = new FakeArticleFetcher({ status: 'failed', reason: 'unused' });
-    await setup(fetcher);
-    const b2 = db.getBookmarkByPostId('2')!;
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b2.id}/article` });
-    expect(res.statusCode).toBe(404);
-    expect(fetcher.calls).toHaveLength(0);
-  });
-
-  it('fetches, caches, and returns a successful extraction', async () => {
-    const fetcher = new FakeArticleFetcher({
-      status: 'ok',
-      title: 'A Great Article',
-      contentHtml: '<p>Body</p>',
-      excerpt: 'Body',
-      siteName: 'Example',
-    });
-    await setup(fetcher);
-    const b1 = db.getBookmarkByPostId('1')!;
-
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as { article: { status: string; title: string; url: string } };
-    expect(body.article.status).toBe('ok');
-    expect(body.article.title).toBe('A Great Article');
-    expect(body.article.url).toBe('https://example.com/articles/one');
-    expect(fetcher.calls).toEqual(['https://example.com/articles/one']);
-
-    // Cached in the DB after the first fetch.
-    expect(db.getArticleForBookmark(b1.id)?.status).toBe('ok');
-  });
-
-  it('serves the cached article on a second request without calling the fetcher again', async () => {
-    const fetcher = new FakeArticleFetcher({
-      status: 'ok',
-      title: 'A Great Article',
-      contentHtml: '<p>Body</p>',
-      excerpt: null,
-      siteName: null,
-    });
-    await setup(fetcher);
-    const b1 = db.getBookmarkByPostId('1')!;
-
-    await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
-    const second = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
-
-    expect(second.statusCode).toBe(200);
-    expect(fetcher.calls).toHaveLength(1); // still just the first call - cache hit path
-    const body = second.json() as { article: { title: string } };
-    expect(body.article.title).toBe('A Great Article');
-  });
-
-  it('returns a graceful failure result (200, status: failed) rather than an error for an unreachable/non-article page', async () => {
-    const fetcher = new FakeArticleFetcher({
-      status: 'failed',
-      reason: 'Could not fetch this page. It may be blocked, offline, or require a login.',
-    });
-    await setup(fetcher);
-    const b1 = db.getBookmarkByPostId('1')!;
-
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as { article: { status: string; reason: string; title: string | null } };
-    expect(body.article.status).toBe('failed');
-    expect(body.article.reason).toMatch(/blocked|offline|login/);
-    expect(body.article.title).toBeNull();
-
-    // The failure is cached too, so a dead link isn't re-fetched on every open.
-    const again = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/article` });
-    expect(again.statusCode).toBe(200);
-    expect(fetcher.calls).toHaveLength(1);
-  });
-});
 
 describe('GET /api/summary-status', () => {
   let db: Database;

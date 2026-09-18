@@ -14,7 +14,7 @@ import {
 } from '../summarize/summarizer';
 import { xArticleUrl } from '../x/article';
 import type { BookmarkXArticle } from '../db/database';
-import type { ArticleLinkMetadata, ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
+import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -55,16 +55,15 @@ export interface ServerOptions {
 }
 
 /**
- * A bookmark as shipped to the viewer, with the primary article link (if any)
- * computed from its text and `hasArticle` (the link's body is actually
- * extractable), which gates the "Read article" reader affordance. It also
- * carries the ids of the categories it is directly filed under so the client
- * can patch only the affected sidebar counters (plus their ancestors) on a
- * read-state toggle or delete, instead of reloading the whole tree.
+ * A bookmark as shipped to the viewer. Carries the ids of the categories it
+ * is directly filed under so the client can patch only the affected sidebar
+ * counters (plus their ancestors) on a read-state toggle or delete, instead
+ * of reloading the whole tree, plus `hasSummary` (a saved summary already
+ * exists) so the action row can render "Summary" instead of "Summarize"
+ * without an extra call per card.
  */
 type BookmarkForViewer = Omit<StoredBookmark, 'xArticle' | 'quotedXArticle'> & {
-  articleUrl: string | null;
-  hasArticle: boolean;
+  hasSummary: boolean;
   categoryIds: number[];
   xArticle: ViewerXArticle | null;
 };
@@ -112,40 +111,21 @@ function domainFromUrl(url: string): string {
 }
 
 /**
- * Whether a link's cached metadata has a readable body - the only thing that
- * still needs deciding here, since the preview card that used to consume the
- * rest of this metadata (issue #26/#45) has been removed as a duplicate of
- * the tweet embed's own card (issue #46). The metadata fetch/cache itself
- * stays: it still feeds Summarize and categorization (issue #25/#5).
- */
-function hasReadableArticle(metadata: ArticleLinkMetadata | undefined): boolean {
-  return metadata?.status === 'ok' && Boolean(metadata.title);
-}
-
-/**
- * Build the viewer's bookmark shape for a page of bookmarks. The `hasArticle`
- * flag comes ONLY from the `article_link_metadata` cache (issue #25/#26) -
- * never a live fetch here - because that cache is already populated at
- * ingest time (`buildArticleContext`, run over every bookmark on
- * `run`/`recategorize`), so a bookmark's "Read article" affordance appears
- * once ingest has resolved its link, keeping the bookmark list endpoint a
- * pure, fast, offline-testable cache read with no network dependency of its
- * own. The same holds for `xArticle` (X-native Articles), a pure read of the
- * `x_articles` table that ingest/`backfill-x-articles` populate.
+ * Build the viewer's bookmark shape for a page of bookmarks. `xArticle`
+ * (X-native Articles) is a pure read of the `x_articles` table that
+ * ingest/`backfill-x-articles` populate. `hasSummary` is a cheap existence
+ * check against the `summaries` table - never the summary text itself, which
+ * would bloat every page of the list.
  */
 function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryIdsByBookmark: Map<number, number[]>): BookmarkForViewer[] {
   const xArticles = db.getXArticlesForBookmarks(bookmarks);
-  return bookmarks.map((bookmark) => {
-    const articleUrl = extractArticleLink(bookmark.text);
-    const metadata = articleUrl ? db.getArticleLinkMetadata(articleUrl) : undefined;
-    return {
-      ...bookmark,
-      articleUrl,
-      hasArticle: hasReadableArticle(metadata),
-      categoryIds: categoryIdsByBookmark.get(bookmark.id) ?? [],
-      xArticle: toViewerXArticle(xArticles.get(bookmark.postId)),
-    };
-  });
+  const summarizedIds = db.getSummarizedBookmarkIds(bookmarks.map((b) => b.id));
+  return bookmarks.map((bookmark) => ({
+    ...bookmark,
+    hasSummary: summarizedIds.has(bookmark.id),
+    categoryIds: categoryIdsByBookmark.get(bookmark.id) ?? [],
+    xArticle: toViewerXArticle(xArticles.get(bookmark.postId)),
+  }));
 }
 
 function parseReadFilter(raw: unknown): ReadFilter {
@@ -171,8 +151,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
 
   /**
    * The cached extraction for a bookmark's article link, fetching and caching
-   * it first if needed. Shared by the reader endpoint and the summarizer so a
-   * link is still fetched at most once either way.
+   * it first if needed. Used by the summarizer so a link is still fetched at
+   * most once (the in-app reader that also used this was removed; the owner
+   * now reaches external articles via the card inside the tweet embed).
    */
   async function getOrFetchArticle(bookmarkId: number, articleUrl: string): Promise<ArticleRecord> {
     const cached = db.getArticleForBookmark(bookmarkId);
@@ -301,25 +282,6 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     const deleted = db.deleteBookmark(id);
     if (!deleted) return reply.code(404).send({ error: 'bookmark not found' });
     return reply.code(204).send();
-  });
-
-  // The reader view's article for a bookmark's primary link: served from the
-  // cache once fetched. 404 covers both an unknown bookmark and a bookmark
-  // whose post has no article link (there is nothing to read either way); a
-  // successful fetch and a graceful extraction failure both come back as 200,
-  // since the request itself succeeded - `article.status` tells them apart.
-  app.get<{ Params: { id: string } }>('/api/bookmarks/:id/article', async (req, reply) => {
-    const id = Number.parseInt(req.params.id, 10);
-    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
-
-    const bookmark = db.getBookmarkById(id);
-    if (!bookmark) return reply.code(404).send({ error: 'bookmark not found' });
-
-    const articleUrl = extractArticleLink(bookmark.text);
-    if (!articleUrl) return reply.code(404).send({ error: 'no article link' });
-
-    const record = await getOrFetchArticle(id, articleUrl);
-    return { article: record };
   });
 
   // Whether the owner can generate NEW summaries right now - i.e. whether the

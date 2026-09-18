@@ -1117,27 +1117,12 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   -webkit-box-orient: vertical;
 }
 
-/* Opens the in-app reader for a card whose post links to an article. A plain
-   button styled like the external-link affordances beside it, since it stays
-   in-app rather than navigating away. */
-.read-link {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) 0;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-}
-.read-link .icon-book {
-  width: 1rem;
-  height: 1rem;
-}
-/* Opens the summary modal. Styled like .read-link (a plain in-app action,
-   not a navigating link); disabled with a tooltip rather than hidden when no
-   Claude token is configured, so the owner always sees the affordance and
-   why it's off. */
+/* Opens the summary modal: on-demand generation ("Summarize") or the saved
+   summary ("Summary", once one exists - a distinct, consistent style using
+   the same "already done" green as the read-state chip). A plain in-app
+   action, not a navigating link; disabled with a tooltip rather than hidden
+   when no Claude token is configured AND nothing is saved yet, so the owner
+   always sees the affordance and why it's off. */
 .summarize-link {
   display: inline-flex;
   align-items: center;
@@ -1156,6 +1141,9 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 .summarize-link:disabled {
   color: var(--color-text-muted);
   cursor: not-allowed;
+}
+.summarize-link.has-summary {
+  color: var(--color-read);
 }
 .summarize-link .icon-sparkle {
   width: 1rem;
@@ -1353,7 +1341,10 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 }
 
 /* ============================================================
-   Reader (article) modal
+   Modal shell (backdrop, near-full-screen panel, header, loading/fallback
+   body states) - used by the summary modal. Classes keep the "reader-"
+   prefix from when this shell was shared with the (now removed) in-app
+   article reader.
    ============================================================ */
 .reader-backdrop {
   position: fixed;
@@ -1427,10 +1418,6 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   align-items: center;
   gap: var(--space-2);
 }
-.reader-original-link {
-  white-space: nowrap;
-  font-size: var(--text-small);
-}
 .reader-close {
   width: 2.5rem;
   height: 2.5rem;
@@ -1481,90 +1468,6 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 .reader-fallback-msg {
   margin: 0;
   max-width: 32rem;
-}
-
-/* --- Article content: comfortable reading measure and rhythm -------------- */
-.reader-content {
-  max-width: var(--reader-measure);
-  margin: 0 auto;
-  font-size: var(--text-reader);
-  line-height: var(--leading-reader);
-}
-.reader-content > :first-child {
-  margin-top: 0;
-}
-.reader-content > :last-child {
-  margin-bottom: 0;
-}
-.reader-content p {
-  margin: 0 0 var(--space-4);
-}
-.reader-content h1,
-.reader-content h2,
-.reader-content h3,
-.reader-content h4,
-.reader-content h5,
-.reader-content h6 {
-  margin: var(--space-6) 0 var(--space-3);
-  line-height: 1.3;
-  letter-spacing: -0.005em;
-}
-.reader-content ul,
-.reader-content ol {
-  margin: 0 0 var(--space-4);
-  padding-left: var(--space-5);
-}
-.reader-content li {
-  margin-bottom: var(--space-2);
-}
-.reader-content a {
-  color: var(--color-accent);
-}
-.reader-content img {
-  max-width: 100%;
-  height: auto;
-  border-radius: var(--radius-sm);
-}
-.reader-content blockquote {
-  margin: var(--space-4) 0;
-  padding: var(--space-1) 0 var(--space-1) var(--space-4);
-  border-left: 3px solid var(--color-border-strong);
-  color: var(--color-text-muted);
-}
-.reader-content pre {
-  overflow-x: auto;
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-2);
-}
-.reader-content code {
-  padding: 0.1em 0.3em;
-  border-radius: 4px;
-  background: var(--color-surface-2);
-  font-size: 0.9em;
-}
-.reader-content pre code {
-  padding: 0;
-  background: none;
-}
-.reader-content figure {
-  margin: var(--space-4) 0;
-}
-.reader-content figcaption {
-  margin-top: var(--space-2);
-  color: var(--color-text-muted);
-  font-size: var(--text-small);
-}
-.reader-content table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 0 0 var(--space-4);
-}
-.reader-content th,
-.reader-content td {
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  text-align: left;
 }
 
 @media (max-width: 640px) {

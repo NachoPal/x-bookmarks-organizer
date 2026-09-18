@@ -37,6 +37,10 @@ Usage:
                                   A small one-time PAID X read; --dry-run lists
                                   what would be read and its estimated cost
                                   without calling X.
+  node dist/index.js clear-summaries
+                                  Wipe all cached bookmark summaries so they
+                                  regenerate cleanly under the current logic.
+                                  No secrets, no network - just the DB.
   node dist/index.js help        Show this help
 
 Secrets resolve through a layered chain, first hit wins: the environment (a
@@ -171,6 +175,16 @@ async function cmdBackfillXArticles(config: Config, db: Database): Promise<void>
   }
 }
 
+/**
+ * Delete every cached summary so they regenerate under the current logic -
+ * e.g. after a bug cached bad/garbage summaries (the model's refusal text) as
+ * if they were real. Explicit and idempotent: never run automatically.
+ */
+async function cmdClearSummaries(db: Database): Promise<void> {
+  const removed = db.clearSummaries();
+  console.log(`Removed ${removed} cached summar${removed === 1 ? 'y' : 'ies'}.`);
+}
+
 async function cmdServe(config: Config, db: Database, store: CredentialStore): Promise<void> {
   // Summaries go through the same provider abstraction as categorization, on
   // the summary role's model. The button is offered whenever the provider says
@@ -232,6 +246,9 @@ async function main(): Promise<void> {
         break;
       case 'backfill-x-articles':
         await cmdBackfillXArticles(config, db);
+        break;
+      case 'clear-summaries':
+        await cmdClearSummaries(db);
         break;
       case 'serve':
         await cmdServe(config, db, store);

@@ -726,4 +726,28 @@ export class Database {
       )
       .run(record);
   }
+
+  /**
+   * Which of `bookmarkIds` already have a saved summary - a cheap existence
+   * check (no summary text) so the viewer can render "Summary" vs
+   * "Summarize" per card without an extra round trip.
+   */
+  getSummarizedBookmarkIds(bookmarkIds: number[]): Set<number> {
+    if (bookmarkIds.length === 0) return new Set();
+    const placeholders = bookmarkIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT bookmark_id FROM summaries WHERE bookmark_id IN (${placeholders})`)
+      .all(...bookmarkIds) as { bookmark_id: number }[];
+    return new Set(rows.map((row) => row.bookmark_id));
+  }
+
+  /**
+   * Delete every cached summary, so they regenerate cleanly under the
+   * current logic (e.g. after a bug cached bad/garbage summaries). Returns
+   * the number of rows removed. Never called automatically - only via the
+   * explicit `clear-summaries` command.
+   */
+  clearSummaries(): number {
+    return this.db.prepare('DELETE FROM summaries').run().changes;
+  }
 }
