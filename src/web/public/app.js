@@ -716,8 +716,9 @@
 
   /**
    * A single action row above the post: a left-aligned group (read/unread
-   * chip, then Summarize/Summary) and a right-aligned group (Open on X, then
-   * delete last). No author line - the embed (or the fallback's own byline)
+   * toggle, then Summarize/Summary) and a right-aligned group (delete only -
+   * opening the post on X is already reachable by clicking the card/embed,
+   * see #54). No author line - the embed (or the fallback's own byline)
    * already carries who posted it.
    */
   function renderCard(bm) {
@@ -744,13 +745,6 @@
     left.appendChild(summarizeBtn);
 
     const right = el("div", "bookmark-actions-group bookmark-actions-right");
-
-    const openLink = el("a", "link-external", "Open on X ↗");
-    openLink.href = bm.url;
-    openLink.target = "_blank";
-    openLink.rel = "noopener noreferrer";
-    openLink.addEventListener("click", () => setRead(bm, card, true));
-    right.appendChild(openLink);
 
     const deleteBtn = el("button", "icon-btn delete-btn");
     deleteBtn.type = "button";
@@ -887,24 +881,18 @@
   }
 
   /**
-   * The read/unread status chip, also the toggle button: a click flips it.
-   * Both states render as a colored dot + short label, in distinct colors;
-   * the read timestamp is still stored (see `bm.readAt`) but never shown on
-   * the chip itself.
+   * The read/unread toggle button: a click flips it. The label names the
+   * ACTION a click performs, not the current state (issue #54), so it reads
+   * "Mark as read" on an unread post and "Mark as unread" on a read one.
+   * Both states render as a colored dot + label, in distinct colors; the
+   * read timestamp is still stored (see `bm.readAt`) but never shown here.
    */
   function renderPill(bm, card) {
     const pill = el("button", "read-pill");
     pill.type = "button";
     pill.appendChild(el("span", "dot"));
-    if (bm.read) {
-      pill.classList.add("is-read");
-      pill.appendChild(document.createTextNode("Read"));
-      pill.setAttribute("aria-label", "Mark as unread");
-    } else {
-      pill.classList.add("is-unread");
-      pill.appendChild(document.createTextNode("Unread"));
-      pill.setAttribute("aria-label", "Mark as read");
-    }
+    pill.classList.add(bm.read ? "is-read" : "is-unread");
+    pill.appendChild(document.createTextNode(window.XBOReadToggle.readToggleLabel(bm.read)));
     pill.addEventListener("click", () => setRead(bm, card, !bm.read));
     return pill;
   }
