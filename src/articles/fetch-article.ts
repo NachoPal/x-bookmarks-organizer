@@ -1,6 +1,7 @@
 import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 import sanitizeHtml from 'sanitize-html';
+import { isXArticleUrl } from '../x/article';
 
 // linkedom's type declarations only expose `parseHTML(html)`, but its runtime
 // implementation also accepts a `globals` second argument used to seed
@@ -88,6 +89,24 @@ const MIN_TEXT_LENGTH = 200;
 const NON_ARTICLE_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com']);
 
 const NOT_AN_ARTICLE_REASON = 'This link points to a post on X, not an article.';
+
+/**
+ * An X-native Article (`x.com/i/article/<id>`) is not fetchable as a web page
+ * (x.com serves a login-walled app shell); its title, preview and body come
+ * from the X API's `article` field instead - see `src/x/article.ts`.
+ */
+export const X_ARTICLE_REASON =
+  'This link is an X Article; its content comes from the X API, not from fetching the page.';
+
+/** The typed failure for a link that has resolved to an x.com host. */
+function nonArticleResult(url: string): ArticleExtractionFailed {
+  return {
+    status: 'failed',
+    reason: isXArticleUrl(url) ? X_ARTICLE_REASON : NOT_AN_ARTICLE_REASON,
+    preview: null,
+    resolvedUrl: url,
+  };
+}
 
 /** Only the tags/attributes a reader view needs to render body copy safely. */
 const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
@@ -369,9 +388,7 @@ export class HttpArticleFetcher implements ArticleFetcher {
       let currentUrl = url;
       for (let hop = 0; ; hop++) {
         const requestedHost = safeHostname(currentUrl);
-        if (requestedHost && NON_ARTICLE_HOSTS.has(requestedHost)) {
-          return { status: 'failed', reason: NOT_AN_ARTICLE_REASON, preview: null, resolvedUrl: currentUrl };
-        }
+        if (requestedHost && NON_ARTICLE_HOSTS.has(requestedHost)) return nonArticleResult(currentUrl);
 
         const res = await fetch(currentUrl, {
           signal: controller.signal,
@@ -394,9 +411,7 @@ export class HttpArticleFetcher implements ArticleFetcher {
         }
 
         const finalHost = safeHostname(landedUrl) ?? requestedHost;
-        if (finalHost && NON_ARTICLE_HOSTS.has(finalHost)) {
-          return { status: 'failed', reason: NOT_AN_ARTICLE_REASON, preview: null, resolvedUrl: landedUrl };
-        }
+        if (finalHost && NON_ARTICLE_HOSTS.has(finalHost)) return nonArticleResult(landedUrl);
 
         const contentType = res.headers.get('content-type') ?? '';
         if (contentType && !contentType.includes('html')) {

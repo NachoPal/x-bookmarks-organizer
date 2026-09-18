@@ -3,7 +3,7 @@ import path from 'node:path';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { extractArticle, HttpArticleFetcher } from './fetch-article';
+import { extractArticle, HttpArticleFetcher, X_ARTICLE_REASON } from './fetch-article';
 
 const FIXTURE_PATH = path.join(__dirname, '../web/public/fixtures/sample-article.html');
 const FIXTURE_HTML = fs.readFileSync(FIXTURE_PATH, 'utf-8');
@@ -288,6 +288,27 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
     expect(result.reason).toMatch(/not an article|post on X/i);
+  });
+
+  it('short-circuits an x.com/i/article link with the X Article reason, without fetching it', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new HttpArticleFetcher().fetch('https://x.com/i/article/2094692428037177344');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: 'failed', reason: X_ARTICLE_REASON });
+  });
+
+  it('reports the X Article reason when a t.co link lands on an x.com/i/article page', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse('<html></html>', { url: 'https://x.com/i/article/2094692428037177344' })),
+    );
+    const result = await new HttpArticleFetcher().fetch('https://t.co/abc123');
+    expect(result).toMatchObject({
+      status: 'failed',
+      reason: X_ARTICLE_REASON,
+      resolvedUrl: 'https://x.com/i/article/2094692428037177344',
+    });
   });
 });
 

@@ -332,6 +332,61 @@ db.saveArticleLinkMetadata({
   fetchedAt: new Date().toISOString(),
 });
 
+// X-native Articles (x.com/i/article/...): X's embed shows these as a bare
+// link, so the viewer renders its own "X Article" card from the `article`
+// data the X API returns with the bookmark. Stored through the same atomic
+// storeCategorizedBatch path ingest uses. One bookmark IS an Article's host
+// post (with a cover served locally, fully offline); one quotes an Article
+// that has no cover, to exercise the text-only card.
+const xArticleParent = ensurePath(['X Article Demo']);
+const xArticleCoverUrl = `http://127.0.0.1:${webPort}/fixtures/x-article-cover.svg`;
+db.storeCategorizedBatch(
+  [
+    {
+      postId: '900000000000095001',
+      authorUsername: 'hamelhusain',
+      authorName: 'Hamel Husain',
+      text: 'https://t.co/xArticleDemo1',
+      url: 'https://x.com/hamelhusain/status/900000000000095001',
+      postCreatedAt: new Date().toISOString(),
+      xArticle: {
+        restId: '900000000000095101',
+        title: 'Start ugly, write evals anyway: a field guide to evaluating LLM agents in production',
+        previewText:
+          'TLDR; understanding the importance of evals, and how they can make yours and your agent life easier. ' +
+          'We walk through the loop we use every day: collect traces, label failures, write the smallest eval that ' +
+          'catches each one, and only then touch the prompt.',
+        plainText:
+          'Most teams skip evals because the first version feels too ugly to measure. That is backwards. ' +
+          'Collect real traces, label the failures you see, and write the smallest eval that catches each one. ' +
+          'Only then change the prompt or the model, and rerun the evals to see whether you actually improved.',
+        coverUrl: xArticleCoverUrl,
+        coverWidth: 1500,
+        coverHeight: 600,
+      },
+    },
+    {
+      postId: '900000000000095002',
+      authorUsername: 'simonw',
+      authorName: 'Simon Willison',
+      text: 'This is the clearest explanation of agent memory I have read so far https://t.co/xArticleDemo2',
+      url: 'https://x.com/simonw/status/900000000000095002',
+      postCreatedAt: new Date().toISOString(),
+      quotedPostId: '900000000000095003',
+      quotedXArticle: {
+        restId: '900000000000095103',
+        title: 'How to Build Agent Memory: Search & Retrieval',
+        previewText: 'Memory is a retrieval problem wearing a trench coat. Here is how we index, rank and forget.',
+        plainText: null,
+        coverUrl: null,
+        coverWidth: null,
+        coverHeight: null,
+      },
+    },
+  ],
+  () => [xArticleParent],
+);
+
 // Mark a spread of bookmarks read so read/unread states both render.
 const all = db.getAllBookmarks();
 all.forEach((bm, i) => {

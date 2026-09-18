@@ -808,3 +808,78 @@ describe('GET /api/bookmarks/:id/summary', () => {
     expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
   });
 });
+
+describe('X-native Articles in the viewer API', () => {
+  let db: Database;
+  let app: FastifyInstance;
+
+  const xArticle = {
+    restId: '777',
+    title: 'An X Article',
+    previewText: 'Its preview text.',
+    plainText: 'The full plain-text body of the X Article.',
+    coverUrl: 'https://pbs.twimg.com/media/c.jpg',
+    coverWidth: 1500,
+    coverHeight: 600,
+  };
+
+  async function setup(opts: { summaryGenerator?: SummaryGenerator; articleFetcher?: ArticleFetcher } = {}) {
+    db = new Database(':memory:');
+    const cat = db.getOrCreateCategory('Articles', null, new Date().toISOString());
+    db.storeCategorizedBatch(
+      [
+        // An Article host post whose text is only its t.co link.
+        { ...bm('1'), text: 'https://t.co/aBcD1234Xy', xArticle },
+        { ...bm('2'), text: 'Worth a read https://t.co/q', quotedPostId: '9', quotedXArticle: { ...xArticle, restId: null, title: 'Quoted one', coverUrl: null } },
+        bm('3'),
+      ],
+      () => [cat.id],
+    );
+    app = buildServer(db, opts);
+    await app.ready();
+    return cat.id;
+  }
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it('exposes xArticle (own and quoted) on each bookmark, without the body, and null otherwise', async () => {
+    const catId = await setup();
+    const res = await app.inject({ method: 'GET', url: `/api/categories/${catId}/bookmarks` });
+    const byPostId = new Map(
+      (res.json() as { bookmarks: { postId: string; xArticle: Record<string, unknown> | null }[] }).bookmarks.map(
+        (b) => [b.postId, b.xArticle],
+      ),
+    );
+    expect(byPostId.get('1')).toEqual({
+      title: 'An X Article',
+      previewText: 'Its preview text.',
+      coverUrl: 'https://pbs.twimg.com/media/c.jpg',
+      coverWidth: 1500,
+      coverHeight: 600,
+      url: 'https://x.com/i/article/777',
+      quoted: false,
+    });
+    expect(byPostId.get('2')).toMatchObject({ title: 'Quoted one', quoted: true, url: 'https://x.com/i/web/status/9' });
+    expect(byPostId.get('3')).toBeNull();
+  });
+
+  it('summarizes an article-only post from its X Article body instead of answering 422', async () => {
+    const generator = new FakeSummaryGenerator('A summary of the X Article.');
+    const fetcher = new FakeArticleFetcher({ status: 'failed', reason: 'unused' });
+    await setup({ summaryGenerator: generator, articleFetcher: fetcher });
+    const b1 = db.getBookmarkByPostId('1')!;
+
+    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    expect(res.statusCode).toBe(200);
+    expect(generator.calls[0]).toMatchObject({
+      articleTitle: 'An X Article',
+      articleText: 'The full plain-text body of the X Article.',
+      articleSiteName: 'X Article',
+    });
+    // Its t.co link only leads back to x.com: never fetched.
+    expect(fetcher.calls).toEqual([]);
+  });
+});

@@ -791,7 +791,87 @@
 
     card.append(actions, slot);
 
+    // X-native Article card (x.com/i/article/...): X's embed shows these as a
+    // bare link, so render the Article's cover/title/preview from the X API
+    // data stored at ingest. Independent of external links - those get X's
+    // own card inside the embed.
+    const xArticleCard = renderXArticleCard(bm, card);
+    if (xArticleCard) card.appendChild(xArticleCard);
+
     return card;
+  }
+
+  /** Cover aspect ratio, clamped so an odd cover never dominates the card. */
+  const X_ARTICLE_COVER_RATIO = { min: 1.5, max: 3, fallback: 2.5 };
+
+  /**
+   * The "X Article" card for a bookmark that hosts or quotes an X Article:
+   * cover (when there is one), label, title and a 2-line preview, as one
+   * link to the Article. Returns null for every other bookmark.
+   */
+  function renderXArticleCard(bm, card) {
+    const article = bm.xArticle;
+    if (!article || !(article.title || article.previewText)) return null;
+
+    const link = el("a", "x-article-card");
+    link.href = article.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const label = article.quoted ? "Quoted X Article" : "X Article";
+    link.setAttribute(
+      "aria-label",
+      `${label}: ${article.title || article.previewText} (opens on X in a new tab)`,
+    );
+
+    if (article.coverUrl) {
+      const cover = el("div", "x-article-cover");
+      const { coverWidth: w, coverHeight: h } = article;
+      const ratio = w > 0 && h > 0 ? w / h : X_ARTICLE_COVER_RATIO.fallback;
+      const clamped = Math.min(X_ARTICLE_COVER_RATIO.max, Math.max(X_ARTICLE_COVER_RATIO.min, ratio));
+      cover.style.setProperty("--x-article-cover-ratio", String(clamped));
+      const img = document.createElement("img");
+      img.className = "x-article-cover-image";
+      img.src = article.coverUrl;
+      img.alt = "";
+      img.loading = "lazy";
+      img.decoding = "async";
+      // A cover that fails to load drops out rather than leaving a broken box.
+      img.addEventListener("error", () => cover.remove());
+      cover.appendChild(img);
+      link.appendChild(cover);
+    }
+
+    const body = el("div", "x-article-body");
+    const kicker = el("p", "x-article-label");
+    kicker.appendChild(articleIcon());
+    kicker.appendChild(document.createTextNode(label));
+    body.appendChild(kicker);
+    if (article.title) body.appendChild(el("p", "x-article-title", article.title));
+    if (article.previewText) body.appendChild(el("p", "x-article-preview", article.previewText));
+    link.appendChild(body);
+
+    // Following the link out counts as engaging with the bookmark, exactly
+    // like "Open on X" does.
+    link.addEventListener("click", () => setRead(bm, card, true));
+    return link;
+  }
+
+  function articleIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("class", "x-article-icon");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute(
+      "d",
+      "M5 3h10a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm2 3.5h6M7 9.5h6M7 12.5h4",
+    );
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.5");
+    path.setAttribute("stroke-linecap", "round");
+    svg.appendChild(path);
+    return svg;
   }
 
   function bookIcon() {
