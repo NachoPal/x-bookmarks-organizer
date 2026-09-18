@@ -53,6 +53,18 @@ describe('hasSummarizableContent', () => {
     ).toBe(true);
   });
 
+  it('is true for a link-only post whose link yielded only a preview card (issue #45)', () => {
+    expect(
+      hasSummarizableContent({
+        postText: 'https://t.co/aBcD1234Xy',
+        authorName: 'Ada',
+        authorUsername: 'ada',
+        articleTitle: 'A Tool, Not An Article',
+        articleDescription: 'One place every agent plugs in.',
+      }),
+    ).toBe(true);
+  });
+
   it('is true when the link yielded article text, or only its cached metadata', () => {
     const linkOnly = { ...base, postText: 'https://t.co/aBcD1234Xy' };
     expect(hasSummarizableContent({ ...linkOnly, articleText: 'The body.' })).toBe(true);
@@ -120,6 +132,22 @@ describe('buildSummaryPrompt', () => {
     expect(prompt).toContain('Title: Why Evals Beat Vibes');
     expect(prompt).toContain('Description: A case for treating prompt edits like code edits.');
     expect(prompt).not.toContain('https://t.co/aBcD1234Xy');
+  });
+
+  it('summarizes a link-only post from the preview card alone, with its site (issue #45)', () => {
+    const prompt = buildSummaryPrompt({
+      postText: 'https://t.co/aBcD1234Xy',
+      authorName: 'Ada',
+      authorUsername: 'ada',
+      articleTitle: 'A Tool, Not An Article',
+      articleDescription: 'One place every agent plugs into every tool you already use.',
+      articleSiteName: 'tool.example.com',
+    });
+    expect(prompt).toContain('Title: A Tool, Not An Article');
+    expect(prompt).toContain('One place every agent plugs into');
+    expect(prompt).toContain('Site: tool.example.com');
+    // It is a page, not necessarily an article - the prompt must not claim more.
+    expect(prompt).toContain('links a page');
   });
 });
 

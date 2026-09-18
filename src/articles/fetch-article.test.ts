@@ -104,36 +104,82 @@ describe('extractArticle (pure, no network)', () => {
   });
 });
 
-describe('extractArticle OpenGraph preview fields (issue #26, pure, no network)', () => {
+describe('extractArticle preview card fields (issues #26/#45, pure, no network)', () => {
   it('extracts og:title/og:description/og:image/og:site_name and resolves a relative image URL', () => {
     const result = extractArticle(FIXTURE_HTML, FIXTURE_URL);
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') throw new Error('expected ok');
 
-    expect(result.ogTitle).toBe("Reader View, and Why Bookmarking Isn't the Same as Reading");
-    expect(result.ogDescription).toContain('save for later');
-    expect(result.ogSiteName).toBe('Sample Times');
+    expect(result.preview?.title).toBe("Reader View, and Why Bookmarking Isn't the Same as Reading");
+    expect(result.preview?.description).toContain('save for later');
+    expect(result.preview?.siteName).toBe('Sample Times');
     // The fixture's og:image is a root-relative path - resolved against the
     // fetched page's own URL, exactly like a relative <a>/<img> in the body.
-    expect(result.ogImage).toBe('https://example.com/fixtures/sample-article-cover.svg');
+    expect(result.preview?.image).toBe('https://example.com/fixtures/sample-article-cover.svg');
   });
 
-  it('falls back to null OG fields (never a crash) on a page with no OpenGraph tags', () => {
-    const html = `<!doctype html><html><body><article>
+  it('falls back to the <title> and null card fields (never a crash) on a page with no OpenGraph tags', () => {
+    const html = `<!doctype html><html><head><title>No OG Tags Here</title></head><body><article>
       <h1>No OG Tags Here</h1>
       <p>${'Padding content so the extractor treats this as a real article body. '.repeat(15)}</p>
     </article></body></html>`;
     const result = extractArticle(html, 'https://example.com/posts/no-og');
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') throw new Error('expected ok');
-    expect(result.ogTitle).toBeNull();
-    expect(result.ogDescription).toBeNull();
-    expect(result.ogImage).toBeNull();
-    expect(result.ogSiteName).toBeNull();
+    expect(result.preview?.title).toBe('No OG Tags Here');
+    expect(result.preview?.description).toBeNull();
+    expect(result.preview?.image).toBeNull();
+    expect(result.preview?.siteName).toBeNull();
+  });
+
+  it('reports no card at all for a page with neither OG tags nor a <title>', () => {
+    const html = `<!doctype html><html><body><article>
+      <h1>Titleless</h1>
+      <p>${'Padding content so the extractor treats this as a real article body. '.repeat(15)}</p>
+    </article></body></html>`;
+    const result = extractArticle(html, 'https://example.com/posts/titleless');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.preview).toBeNull();
+  });
+
+  it('falls back to the twitter:* card tags when a page ships those instead of og:*', () => {
+    const html = `<!doctype html><html><head>
+      <title>Ignored fallback title</title>
+      <meta name="twitter:title" content="A Twitter-Card Tool" />
+      <meta name="twitter:description" content="What this tool does, in one line." />
+      <meta name="twitter:image" content="/card.png" />
+    </head><body><p>Short landing page copy.</p></body></html>`;
+    const result = extractArticle(html, 'https://tool.example.com/');
+    expect(result.preview?.title).toBe('A Twitter-Card Tool');
+    expect(result.preview?.description).toBe('What this tool does, in one line.');
+    expect(result.preview?.image).toBe('https://tool.example.com/card.png');
+  });
+
+  it('returns the card for a page with OG tags but NO readable body (the common real-world case)', () => {
+    // A tool/product landing page: a perfectly good preview card, no article.
+    const html = `<!doctype html><html><head>
+      <meta property="og:title" content="Executor - connect your agent to everything" />
+      <meta property="og:description" content="One place every agent plugs into every tool you already use." />
+      <meta property="og:image" content="https://executor.example/card.png" />
+      <meta property="og:site_name" content="Executor" />
+    </head><body><main><p>Get started</p></main></body></html>`;
+    const result = extractArticle(html, 'https://executor.example/');
+
+    // No body to read...
+    expect(result.status).toBe('failed');
+    // ...but the card survives, which is what the preview renders from.
+    expect(result.preview).toEqual({
+      title: 'Executor - connect your agent to everything',
+      description: 'One place every agent plugs into every tool you already use.',
+      image: 'https://executor.example/card.png',
+      siteName: 'Executor',
+    });
   });
 
   it('ignores an og:image with a non-http(s) scheme rather than passing it through', () => {
     const html = `<!doctype html><html><head>
+      <title>Malicious OG Image Test</title>
       <meta property="og:image" content="javascript:alert(1)" />
     </head><body><article>
       <h1>Malicious OG Image Test</h1>
@@ -142,12 +188,13 @@ describe('extractArticle OpenGraph preview fields (issue #26, pure, no network)'
     const result = extractArticle(html, 'https://example.com/posts/bad-image');
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') throw new Error('expected ok');
-    expect(result.ogImage).toBeNull();
+    expect(result.preview?.image).toBeNull();
   });
 
   it('collapses whitespace and caps an overlong og:description', () => {
     const longDescription = 'word '.repeat(200).trim();
     const html = `<!doctype html><html><head>
+      <title>Long Description Test</title>
       <meta property="og:description" content="${longDescription}" />
     </head><body><article>
       <h1>Long Description Test</h1>
@@ -156,8 +203,8 @@ describe('extractArticle OpenGraph preview fields (issue #26, pure, no network)'
     const result = extractArticle(html, 'https://example.com/posts/long-description');
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') throw new Error('expected ok');
-    expect(result.ogDescription!.length).toBeLessThanOrEqual(300);
-    expect(result.ogDescription!.endsWith('…')).toBe(true);
+    expect(result.preview!.description!.length).toBeLessThanOrEqual(300);
+    expect(result.preview!.description!.endsWith('…')).toBe(true);
   });
 });
 
@@ -292,6 +339,119 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
 
     try {
       const result = await new HttpArticleFetcher().fetch(fixture.url('/article'));
+      expect(result.status).toBe('ok');
+      if (result.status !== 'ok') throw new Error('expected ok');
+      expect(result.title).toContain('Resolved Article');
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('follows a t.co-style HTML interstitial (HTTP 200 + meta refresh/location.replace), not just a 301', async () => {
+    // This is the real-world failure this test pins down: t.co answers a
+    // realistic *browser* User-Agent (issue #28) with HTTP 200 and a tiny
+    // bounce page instead of a 301, which `redirect: 'follow'` cannot see. A
+    // fetcher that stops there gets no body and no card for EVERY link in the
+    // library, since every link in a post is t.co-shortened.
+    const fixture = await startFixtureServer((req, res) => {
+      if (req.url === '/shortlink') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(
+          '<head><noscript><META http-equiv="refresh" content="0;URL=' +
+            fixture.url('/real-article') +
+            '"></noscript><title>' +
+            fixture.url('/real-article') +
+            '</title></head><script>window.opener = null; location.replace("' +
+            fixture.url('/real-article').replace(/\//g, '\\/') +
+            '")</script>',
+        );
+        return;
+      }
+      if (req.url === '/real-article') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(ARTICLE_HTML);
+        return;
+      }
+      res.writeHead(404);
+      res.end('not found');
+    });
+
+    try {
+      const result = await new HttpArticleFetcher().fetch(fixture.url('/shortlink'));
+      expect(result.status).toBe('ok');
+      if (result.status !== 'ok') throw new Error('expected ok');
+      expect(result.title).toContain('Resolved Article');
+      // The card/domain must reflect the DESTINATION, not the shortener.
+      expect(result.resolvedUrl).toBe(fixture.url('/real-article'));
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('caches a card (not a failure) for a shortened link to a page with OG tags but no readable body', async () => {
+    const fixture = await startFixtureServer((req, res) => {
+      if (req.url === '/shortlink') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(
+          `<head><noscript><META http-equiv="refresh" content="0;URL=${fixture.url('/tool')}"></noscript></head>`,
+        );
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(
+        '<!doctype html><html><head>' +
+          '<meta property="og:title" content="A Tool, Not An Article" />' +
+          '<meta property="og:description" content="Short pitch." />' +
+          '</head><body><p>Sign up</p></body></html>',
+      );
+    });
+
+    try {
+      const result = await new HttpArticleFetcher().fetch(fixture.url('/shortlink'));
+      expect(result.status).toBe('failed');
+      expect(result.preview?.title).toBe('A Tool, Not An Article');
+      expect(result.resolvedUrl).toBe(fixture.url('/tool'));
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('stops after a bounded number of interstitial hops instead of looping forever', async () => {
+    let hops = 0;
+    const fixture = await startFixtureServer((_req, res) => {
+      hops++;
+      res.writeHead(200, { 'content-type': 'text/html' });
+      // Always bounces somewhere new, so only the hop cap can end this.
+      res.end(`<head><meta http-equiv="refresh" content="0;URL=${fixture.url(`/hop-${hops}`)}"></head>`);
+    });
+
+    try {
+      const result = await new HttpArticleFetcher().fetch(fixture.url('/hop-0'));
+      expect(result.status).toBe('failed');
+      expect(hops).toBeLessThanOrEqual(5);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('does not mistake a real article that happens to contain a redirect snippet for an interstitial', async () => {
+    const fixture = await startFixtureServer((req, res) => {
+      if (req.url === '/article-with-script') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(
+          ARTICLE_HTML.replace(
+            '</body>',
+            '<script>if (false) location.replace("https://evil.example/elsewhere")</script></body>',
+          ),
+        );
+        return;
+      }
+      res.writeHead(404);
+      res.end('not found');
+    });
+
+    try {
+      const result = await new HttpArticleFetcher().fetch(fixture.url('/article-with-script'));
       expect(result.status).toBe('ok');
       if (result.status !== 'ok') throw new Error('expected ok');
       expect(result.title).toContain('Resolved Article');

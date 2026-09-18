@@ -18,15 +18,36 @@ export interface ArticleMetadataCache {
 const DEFAULT_CONCURRENCY = 4;
 
 function toContext(record: ArticleLinkMetadata): ArticleContext | undefined {
-  if (record.status !== 'ok' || !record.title) return undefined;
+  // A `card`-only page carries just as much categorization signal as a
+  // readable article does: a title and a description are exactly what a
+  // link-heavy post is missing (issue #25).
+  if (record.status === 'failed' || !record.title) return undefined;
   return { title: record.title, description: record.description ?? undefined };
 }
 
+/** An empty (nothing usable) record for a url whose fetch yielded no card and no body. */
+function failedRecord(url: string, resolvedUrl: string | null, fetchedAt: string): ArticleLinkMetadata {
+  return {
+    url,
+    status: 'failed',
+    title: null,
+    description: null,
+    image: null,
+    siteName: null,
+    resolvedUrl,
+    fetchedAt,
+  };
+}
+
 /**
- * Fetch (or reuse the cached) metadata for a single URL. Exported so the web
- * viewer's server can reuse the exact same cache-or-fetch + failure-caching
- * semantics for the link-preview card (issue #26) as ingest uses for
- * categorization signal (issue #25) - the same cache row serves both.
+ * Fetch (or reuse the cached) metadata for a single URL, resolving it to one
+ * of three outcomes - a readable article (`ok`), a preview card only (`card`)
+ * or nothing usable (`failed`); see {@link ArticleLinkMetadata.status}.
+ *
+ * Exported so the web viewer's server can reuse the exact same
+ * cache-or-fetch + failure-caching semantics for the link-preview card
+ * (issue #26) as ingest uses for categorization signal (issue #25) - the same
+ * cache row serves both.
  */
 export async function resolveArticleLinkMetadata(
   url: string,
@@ -40,25 +61,43 @@ export async function resolveArticleLinkMetadata(
   let record: ArticleLinkMetadata;
   try {
     const result = await fetcher.fetch(url);
-    record =
-      result.status === 'ok'
-        ? {
-            url,
-            status: 'ok',
-            // Prefer OpenGraph-specific fields (purpose-built for a preview
-            // card) and fall back to the readability-derived ones when a page
-            // has no OG tags.
-            title: result.ogTitle || result.title,
-            description: result.ogDescription ?? result.excerpt,
-            image: result.ogImage ?? null,
-            siteName: result.ogSiteName ?? result.siteName,
-            fetchedAt,
-          }
-        : { url, status: 'failed', title: null, description: null, image: null, siteName: null, fetchedAt };
+    const preview = result.preview ?? null;
+    if (result.status === 'ok') {
+      record = {
+        url,
+        status: 'ok',
+        // Prefer the OpenGraph/card fields (purpose-built for a preview card)
+        // and fall back to the readability-derived ones when a page has none.
+        title: preview?.title || result.title,
+        description: preview?.description ?? result.excerpt,
+        image: preview?.image ?? null,
+        siteName: preview?.siteName ?? result.siteName,
+        resolvedUrl: result.resolvedUrl ?? null,
+        fetchedAt,
+      };
+    } else if (preview?.title) {
+      // The page has no readable body, but it does have a card - which is the
+      // common case for the tools, product pages, repos and videos that make
+      // up most of a real library. Caching this as `failed` (what we used to
+      // do) is what left every preview empty; cache the card instead, marked
+      // `card` so the reader-view affordance stays gated on a real body.
+      record = {
+        url,
+        status: 'card',
+        title: preview.title,
+        description: preview.description,
+        image: preview.image,
+        siteName: preview.siteName,
+        resolvedUrl: result.resolvedUrl ?? null,
+        fetchedAt,
+      };
+    } else {
+      record = failedRecord(url, result.resolvedUrl ?? null, fetchedAt);
+    }
   } catch {
     // A fetcher must never take down ingest - a thrown error degrades to
     // today's behavior (no article context) exactly like a typed failure.
-    record = { url, status: 'failed', title: null, description: null, image: null, siteName: null, fetchedAt };
+    record = failedRecord(url, null, fetchedAt);
   }
   cache.saveArticleLinkMetadata(record);
   return record;

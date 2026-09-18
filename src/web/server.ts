@@ -52,27 +52,31 @@ export interface ServerOptions {
   summaryUnavailableReason?: string;
 }
 
-/** The link-preview card data shipped alongside a bookmark that has a confirmed article link. */
+/** The link-preview card data shipped alongside a bookmark whose link has a card. */
 interface ArticlePreview {
   title: string;
   description: string | null;
   image: string | null;
   siteName: string | null;
   domain: string;
+  /** The resolved destination, so the card can open the real page (not `t.co`). */
+  url: string;
 }
 
 /**
  * A bookmark as shipped to the viewer, with the primary article link (if any)
- * computed from its text, whether that link is a confirmed article
- * (`hasArticle`) and its preview card data (issue #26) - gating the "Read
- * article" affordance and the preview card - and the ids of the categories it
- * is directly filed under so the client can patch only the affected sidebar
- * counters (plus their ancestors) on a read-state toggle or delete, instead
- * of reloading the whole tree.
+ * computed from its text and TWO independent capability flags:
+ * `hasPreview` (the link has a preview card - most links do, including tools,
+ * repos and videos) gates the preview card, and `hasArticle` (the link's body
+ * is actually extractable) gates the "Read article" reader affordance. It
+ * also carries the ids of the categories it is directly filed under so the
+ * client can patch only the affected sidebar counters (plus their ancestors)
+ * on a read-state toggle or delete, instead of reloading the whole tree.
  */
 type BookmarkForViewer = StoredBookmark & {
   articleUrl: string | null;
   hasArticle: boolean;
+  hasPreview: boolean;
   preview: ArticlePreview | null;
   categoryIds: number[];
 };
@@ -86,20 +90,28 @@ function domainFromUrl(url: string): string {
   }
 }
 
+/**
+ * The card for a link, from its cached metadata - built for BOTH a readable
+ * article (`ok`) and a card-only page (`card`), since a preview card only
+ * needs OpenGraph-style metadata. The domain comes from the resolved
+ * destination, never the opaque `t.co` URL X leaves in the post text.
+ */
 function toPreview(url: string, metadata: ArticleLinkMetadata | undefined): ArticlePreview | null {
-  if (!metadata || metadata.status !== 'ok' || !metadata.title) return null;
+  if (!metadata || metadata.status === 'failed' || !metadata.title) return null;
+  const destination = metadata.resolvedUrl ?? url;
   return {
     title: metadata.title,
     description: metadata.description,
     image: metadata.image,
     siteName: metadata.siteName,
-    domain: domainFromUrl(url),
+    domain: domainFromUrl(destination),
+    url: destination,
   };
 }
 
 /**
  * Build the viewer's bookmark shape for a page of bookmarks. Preview data
- * comes ONLY from the `article_link_metadata` cache (issue #25/#26) - never a
+ * comes ONLY from the `article_link_metadata` cache (issue #25/#26/#45) - never a
  * live fetch here - because that cache is already populated at ingest time
  * (`buildArticleContext`, run over every bookmark on `run`/`recategorize`),
  * so a bookmark's "Read article" affordance and preview card appear once
@@ -114,7 +126,10 @@ function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryId
     return {
       ...bookmark,
       articleUrl,
-      hasArticle: preview !== null,
+      // Only a readable body earns the reader affordance; the card earns only
+      // the card.
+      hasArticle: metadata?.status === 'ok' && preview !== null,
+      hasPreview: preview !== null,
       preview,
       categoryIds: categoryIdsByBookmark.get(bookmark.id) ?? [],
     };
@@ -309,10 +324,12 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     // When the reader-view extraction produced no readable body, fall back to
     // the ingest-time link-metadata cache (issue #25/#26): an OpenGraph title
     // and description are often all a link-only post has to go on, and they
-    // are already on disk, so this stays a pure cache read with no live fetch.
+    // are already on disk, so this stays a pure cache read with no live
+    // fetch. A `card`-only row counts here exactly like an `ok` one - the
+    // card IS the content for a page with no readable body.
     const linkMetadata =
       articleUrl && !readableArticle ? db.getArticleLinkMetadata(articleUrl) : undefined;
-    const cachedPreview = linkMetadata?.status === 'ok' ? linkMetadata : null;
+    const cachedPreview = linkMetadata && linkMetadata.status !== 'failed' ? linkMetadata : null;
 
     const input: SummaryInput = {
       postText: bookmark.text,
@@ -320,6 +337,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       authorUsername: bookmark.authorUsername,
       articleTitle: readableArticle?.title ?? cachedPreview?.title ?? null,
       articleDescription: cachedPreview?.description ?? null,
+      articleSiteName:
+        cachedPreview?.siteName ??
+        (cachedPreview ? domainFromUrl(cachedPreview.resolvedUrl ?? cachedPreview.url) : null),
       articleText: readableArticle ? htmlToPlainText(readableArticle.contentHtml ?? '') : null,
     };
 

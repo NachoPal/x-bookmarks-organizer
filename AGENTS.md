@@ -228,22 +228,42 @@ injection seam for offline tests (defaults to a real `HttpArticleFetcher`, mirro
 over every stored bookmark, it is also how the owner reaches this benefit for bookmarks already
 sitting in `Uncategorized` from before this feature existed.
 
-## Article previews + gated "Read article" affordance (issue #26)
+## Preview cards vs. readable articles (issues #26, #45)
 
-Like X, a bookmark whose link resolves to a confirmed article shows a compact preview
-card (thumbnail, title, description, domain) instead of a bare URL, and ONLY such a
-bookmark gets the "Read article" control - a plain post, or one whose link turned out not
-to be an article, gets neither. "Confirmed" means `article_link_metadata.status === 'ok'`
-(the same URL-keyed cache issue #25 introduced): `src/articles/fetch-article.ts`'s
-`extractArticle` additionally scrapes OpenGraph meta tags (`extractOpenGraph`) from the
-same parsed document used for Readability, onto optional `ogTitle`/`ogDescription`/
-`ogImage`/`ogSiteName` fields on `ArticleExtractionOk` (sanitized: whitespace-collapsed,
-length-capped, image resolved to an absolute http(s) URL or dropped) - `link-metadata.ts`'s
-`resolveArticleLinkMetadata` prefers these over the plain `title`/`excerpt`/`siteName`
-fields when present. The cache table gained `image`/`site_name` columns (`ArticleLinkMetadata`
-in `src/types.ts`); `Database`'s constructor runs a `PRAGMA table_info`-guarded migration
-(`ARTICLE_LINK_METADATA_ADDED_COLUMNS` in `src/db/schema.ts`) so an existing on-disk DB
-gains the columns without losing data.
+A **preview card** and a **readable article** are two independent capabilities, and
+conflating them is what once left every preview on the owner's real library empty. A card
+needs only OpenGraph/`twitter:*` metadata, which most pages have (tools, repos, videos,
+product pages); a readable body is rarer. So `article_link_metadata.status` is TRI-state -
+`ok` (card + readable body), `card` (card only) or `failed` (nothing usable) - and the
+viewer splits them: `hasPreview` (status not `failed`, card renders) vs `hasArticle`
+(status `ok`, "Read article" + reader modal). `resolveArticleLinkMetadata`
+(`src/articles/link-metadata.ts`) is the single place that decides which of the three a
+fetch produced; a `card` row is real content everywhere - it feeds the categorization
+context (issue #25) and the summary prompt (issue #5) just like an `ok` row does.
+
+**`t.co` does not HTTP-redirect for a browser User-Agent.** It answers the realistic UA
+issue #28 introduced with HTTP 200 and a tiny `<meta refresh>` + `location.replace(...)`
+bounce page (a bot UA still gets a 301), so `fetch`'s `redirect: 'follow'` never reaches
+the destination and EVERY link in the library died at that interstitial. `HttpArticleFetcher`
+therefore follows HTML interstitials itself (`extractInterstitialRedirect`, bounded hops,
+only on a page with no visible text) and reports the `resolvedUrl` it landed on - which is
+what the card's domain and "open the original" must use, never the `t.co` URL. Validate
+any change to this against REAL links, not fixtures: fixtures cannot reproduce it.
+
+A bookmark whose link resolves to a confirmed article also gets the "Read article" control;
+a plain post, or one whose link yielded nothing, gets neither. "Confirmed" means
+`article_link_metadata.status === 'ok'` (the same URL-keyed cache issue #25 introduced): `src/articles/fetch-article.ts`'s
+`extractArticle` scrapes the card (`extractLinkPreview`, OpenGraph -> `twitter:*` ->
+`<meta name=description>`/`<title>`) from the same parsed document used for Readability,
+onto a `preview: LinkPreviewData | null` carried by BOTH result variants (sanitized:
+whitespace-collapsed, length-capped, image resolved to an absolute http(s) URL or dropped);
+a card with no title is null, since a domain-only box beats nothing by less than the plain
+link does. `link-metadata.ts`'s `resolveArticleLinkMetadata` prefers those fields over the
+plain `title`/`excerpt`/`siteName` ones, and a card on a FAILED body extraction is exactly
+the `card` outcome. The cache table gained `image`/`site_name`/`resolved_url`
+columns (`ArticleLinkMetadata` in `src/types.ts`); `Database`'s constructor runs a
+`PRAGMA table_info`-guarded migration (`ARTICLE_LINK_METADATA_ADDED_COLUMNS` in
+`src/db/schema.ts`) so an existing on-disk DB gains the columns without losing data.
 
 Critically, the bookmark list endpoint (`toViewerBookmarks` in `src/web/server.ts`) only
 ever READS this cache - it never fetches live. The cache is populated once, at ingest time,
@@ -259,12 +279,14 @@ see issue #39 below for the lightweight way to backfill this without a full `rec
 not call it, since it never fetches.
 
 Frontend: `renderArticlePreview` in `src/web/public/app.js` renders the `.article-preview`
-button (styles in `styles.css`) only when `bm.hasArticle` is true, gracefully omitting the
+control (styles in `styles.css`) whenever `bm.hasPreview` is true - as a `<button>` opening
+the in-app reader when `bm.hasArticle`, otherwise as an `<a>` to `preview.url` (there is no
+body to read in-app) - gracefully omitting the
 thumbnail when `preview.image` is null (and hiding it client-side too if the image URL
 404s/blocks) and the description line when `preview.description` is null - never a broken
-box. Clicking it calls the same `openReader` as the "Read article" text button. Both are
-gated identically off `bm.hasArticle`, which is `preview !== null` server-side, itself
-`metadata?.status === 'ok' && metadata.title` truthy - see `toPreview` in `server.ts`.
+box. The reader affordances (the text button and, for a readable article, the card) are gated
+off `bm.hasArticle`; the card itself is gated off `bm.hasPreview` - see `toPreview` and
+`toViewerBookmarks` in `server.ts`.
 
 ## Metadata backfill for a pre-existing library (issue #39)
 

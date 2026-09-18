@@ -55,7 +55,7 @@ describe('backfillArticlePreviews', () => {
     const summary = await backfillArticlePreviews(db, fetcher);
 
     expect(fetcher.calls).toEqual(['https://example.com/article']);
-    expect(summary).toEqual({ totalLinks: 1, fetched: 1, ok: 1, failed: 0, skipped: 0 });
+    expect(summary).toEqual({ totalLinks: 1, fetched: 1, ok: 1, card: 0, failed: 0, skipped: 0 });
     const cached = db.getArticleLinkMetadata('https://example.com/article');
     expect(cached).toMatchObject({ status: 'ok', title: 'A Great Article' });
   });
@@ -73,10 +73,10 @@ describe('backfillArticlePreviews', () => {
     });
 
     const first = await backfillArticlePreviews(db, fetcher);
-    expect(first).toEqual({ totalLinks: 1, fetched: 1, ok: 1, failed: 0, skipped: 0 });
+    expect(first).toEqual({ totalLinks: 1, fetched: 1, ok: 1, card: 0, failed: 0, skipped: 0 });
 
     const second = await backfillArticlePreviews(db, fetcher);
-    expect(second).toEqual({ totalLinks: 1, fetched: 0, ok: 0, failed: 0, skipped: 1 });
+    expect(second).toEqual({ totalLinks: 1, fetched: 0, ok: 0, card: 0, failed: 0, skipped: 1 });
     expect(fetcher.calls).toEqual(['https://example.com/article']);
   });
 
@@ -89,7 +89,7 @@ describe('backfillArticlePreviews', () => {
 
     const summary = await backfillArticlePreviews(db, fetcher);
 
-    expect(summary).toEqual({ totalLinks: 2, fetched: 2, ok: 1, failed: 1, skipped: 0 });
+    expect(summary).toEqual({ totalLinks: 2, fetched: 2, ok: 1, card: 0, failed: 1, skipped: 0 });
     expect(db.getArticleLinkMetadata('https://example.com/dead')).toMatchObject({ status: 'failed' });
     expect(db.getArticleLinkMetadata('https://example.com/ok')).toMatchObject({ status: 'ok' });
   });
@@ -101,7 +101,7 @@ describe('backfillArticlePreviews', () => {
     expect(fetcher.calls).toEqual(['https://example.com/dead']);
 
     const second = await backfillArticlePreviews(db, fetcher);
-    expect(second).toEqual({ totalLinks: 1, fetched: 0, ok: 0, failed: 0, skipped: 1 });
+    expect(second).toEqual({ totalLinks: 1, fetched: 0, ok: 0, card: 0, failed: 0, skipped: 1 });
     expect(fetcher.calls).toEqual(['https://example.com/dead']);
   });
 
@@ -121,8 +121,53 @@ describe('backfillArticlePreviews', () => {
     });
     const summary = await backfillArticlePreviews(db, recoveringFetcher, { retryFailed: true });
 
-    expect(summary).toEqual({ totalLinks: 1, fetched: 1, ok: 1, failed: 0, skipped: 0 });
+    expect(summary).toEqual({ totalLinks: 1, fetched: 1, ok: 1, card: 0, failed: 0, skipped: 0 });
     expect(db.getArticleLinkMetadata('https://example.com/flaky')).toMatchObject({ status: 'ok', title: 'Recovered' });
+  });
+
+  it('caches a card (not a failure) for a link with preview metadata but no readable body - issue #45', async () => {
+    storeUncategorized(db, bm('1', 'great tool https://t.co/tool'));
+    const fetcher = new FakeFetcher({
+      'https://t.co/tool': {
+        status: 'failed',
+        reason: 'This page does not look like a readable article.',
+        preview: {
+          title: 'A Tool, Not An Article',
+          description: 'Short pitch.',
+          image: 'https://tool.example.com/card.png',
+          siteName: 'Tool',
+        },
+        resolvedUrl: 'https://tool.example.com/',
+      },
+    });
+
+    const summary = await backfillArticlePreviews(db, fetcher);
+
+    expect(summary).toEqual({ totalLinks: 1, fetched: 1, ok: 0, card: 1, failed: 0, skipped: 0 });
+    expect(db.getArticleLinkMetadata('https://t.co/tool')).toMatchObject({
+      status: 'card',
+      title: 'A Tool, Not An Article',
+      description: 'Short pitch.',
+      image: 'https://tool.example.com/card.png',
+      siteName: 'Tool',
+      resolvedUrl: 'https://tool.example.com/',
+    });
+  });
+
+  it('leaves an already-cached card alone on a second run (a card counts as resolved)', async () => {
+    storeUncategorized(db, bm('1', 'great tool https://t.co/tool'));
+    const fetcher = new FakeFetcher({
+      'https://t.co/tool': {
+        status: 'failed',
+        reason: 'no body',
+        preview: { title: 'Tool', description: null, image: null, siteName: null },
+        resolvedUrl: 'https://tool.example.com/',
+      },
+    });
+    await backfillArticlePreviews(db, fetcher);
+    const second = await backfillArticlePreviews(db, fetcher, { retryFailed: true });
+    expect(second).toEqual({ totalLinks: 1, fetched: 0, ok: 0, card: 0, failed: 0, skipped: 1 });
+    expect(fetcher.calls).toEqual(['https://t.co/tool']);
   });
 
   it('does not modify any category or taxonomy state', async () => {

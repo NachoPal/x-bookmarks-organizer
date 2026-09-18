@@ -57,11 +57,26 @@ export interface SummaryRecord {
  */
 export interface ArticleLinkMetadata {
   url: string;
-  status: 'ok' | 'failed';
+  /**
+   * Three distinct outcomes, because a preview card and a readable article are
+   * separate capabilities (most links have the former, not the latter):
+   * - `ok`   - readable article: has a card AND a body the reader view can show.
+   * - `card` - preview card only (a tool, product page, video, repo...): the
+   *            card renders, but there is no body, so no "Read article".
+   * - `failed` - nothing usable (dead link, non-HTML, or a link back to X).
+   */
+  status: 'ok' | 'card' | 'failed';
   title: string | null;
   description: string | null;
   image: string | null;
   siteName: string | null;
+  /**
+   * Where `url` actually landed once HTTP redirects and shortener
+   * interstitials were followed. Every link in a post is `t.co`-shortened, so
+   * this - not `url` - is the card's real domain and "open the original"
+   * target. Null for a row cached before this was recorded.
+   */
+  resolvedUrl: string | null;
   fetchedAt: string;
 }
 

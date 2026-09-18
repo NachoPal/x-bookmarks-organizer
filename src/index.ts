@@ -135,8 +135,9 @@ async function cmdBackfillPreviews(db: Database): Promise<void> {
     logger: (msg) => console.log(msg),
   });
   console.log(
-    `\nDone. ${summary.totalLinks} article link(s) found, ${summary.fetched} fetched ` +
-      `(${summary.ok} ok, ${summary.failed} failed), ${summary.skipped} already cached.`,
+    `\nDone. ${summary.totalLinks} link(s) found, ${summary.fetched} fetched ` +
+      `(${summary.ok} readable article(s), ${summary.card} preview card(s), ` +
+      `${summary.failed} with nothing usable), ${summary.skipped} already cached.`,
   );
 }
 
