@@ -80,6 +80,8 @@ export interface ProviderModel {
   label: string;
   /** Roles this model is a sensible default for. */
   suggestedFor: LlmRole[];
+  /** One line on when to pick it, shown as the hint in the settings selector. */
+  description?: string;
   maxInputTokens?: number;
 }
 
@@ -113,6 +115,14 @@ export interface ProviderDefinition {
   configKeys: ProviderConfigKey[];
   models: ProviderModel[];
   capabilities: ProviderCapabilities;
+  /**
+   * Reasoning-effort levels this provider accepts, in ascending order - the
+   * catalog the in-app settings selector offers (and validates against), the
+   * same way `models` is. Empty or omitted means the provider has no effort
+   * axis, which `capabilities.effort` already says; the two are kept in step
+   * by the adapter that declares them.
+   */
+  efforts?: readonly string[];
   /** Cheap availability check. MUST NOT spend money or quota. */
   check(cfg: ResolvedProviderConfig): Promise<Health>;
   create(

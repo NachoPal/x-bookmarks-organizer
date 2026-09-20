@@ -18,8 +18,14 @@ export const CLAUDE_BIN_KEY = 'XBOOKMARKS_CLAUDE_BIN';
 /** Env key holding the Claude *subscription* token. Optional: a logged-in CLI needs no token. */
 export const CLAUDE_TOKEN_KEY = 'CLAUDE_CODE_OAUTH_TOKEN';
 
-/** Effort levels the `claude` CLI accepts for `--effort`. */
-const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+/**
+ * Effort levels the `claude` CLI accepts for `--effort`, in ascending order.
+ * Exported as the provider's own catalog (`ProviderDefinition.efforts`) so the
+ * in-app settings selector offers exactly what this adapter will accept.
+ */
+export const CLAUDE_CLI_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+const VALID_EFFORTS = new Set<string>(CLAUDE_CLI_EFFORTS);
 
 /** Applied when an effort level is requested but not one the CLI knows. */
 const DEFAULT_EFFORT = 'high';
@@ -221,22 +227,26 @@ export const claudeCliProvider: ProviderDefinition = {
       id: 'claude-opus-4-8',
       label: 'Claude Opus 4.8',
       suggestedFor: ['taxonomy'],
+      description: 'Most capable. The default for designing the category tree.',
       maxInputTokens: 200_000,
     },
     {
       id: 'claude-haiku-4-5',
       label: 'Claude Haiku 4.5',
       suggestedFor: ['assignment', 'chat'],
+      description: 'Fastest and lightest. The default for filing each bookmark.',
       maxInputTokens: 200_000,
     },
     {
       id: 'claude-sonnet-5',
       label: 'Claude Sonnet 5',
       suggestedFor: ['summary'],
+      description: 'Balanced. The default for summaries.',
       maxInputTokens: 200_000,
     },
   ],
   capabilities: { jsonMode: false, effort: true, temperature: false, streaming: false },
+  efforts: CLAUDE_CLI_EFFORTS,
   check: checkClaudeCli,
   create(cfg, opts): LlmClient {
     const params = opts.params ?? {};

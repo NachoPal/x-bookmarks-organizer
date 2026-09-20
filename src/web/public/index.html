@@ -162,6 +162,23 @@
             </div>
 
             <div class="settings-group">
+              <span class="settings-label" id="settings-categorization-label">Categorization</span>
+              <p class="settings-hint">How a sync sorts new bookmarks into the tree.</p>
+              <div
+                id="settings-categorization"
+                class="field-stack"
+                aria-labelledby="settings-categorization-label"
+              ></div>
+              <p id="settings-categorization-note" class="settings-note" hidden></p>
+              <div class="settings-actions">
+                <button id="settings-save" class="btn btn-primary settings-save" type="button">
+                  Save
+                </button>
+                <span id="settings-save-status" class="settings-save-status" role="status"></span>
+              </div>
+            </div>
+
+            <div class="settings-group">
               <span class="settings-label">Appearance</span>
               <button
                 id="theme-switch"
@@ -235,68 +252,115 @@
       </nav>
 
       <div class="main-column">
-        <div
-          id="filter-tabs"
-          class="filter-tabs"
-          role="tablist"
-          aria-label="Filter bookmarks"
-        >
-          <button
-            class="filter-tab"
-            type="button"
-            role="tab"
-            id="filter-tab-unread"
-            data-filter="unread"
-            aria-selected="false"
-            aria-controls="bookmark-list"
-            tabindex="-1"
+        <div class="toolbar">
+          <div
+            id="filter-tabs"
+            class="filter-tabs"
+            role="tablist"
+            aria-label="Filter bookmarks"
           >
-            <span class="filter-tab-label">Unread</span>
+            <button
+              class="filter-tab"
+              type="button"
+              role="tab"
+              id="filter-tab-unread"
+              data-filter="unread"
+              aria-selected="false"
+              aria-controls="bookmark-list"
+              tabindex="-1"
+            >
+              <span class="filter-tab-label">Unread</span>
+            </button>
+            <button
+              class="filter-tab"
+              type="button"
+              role="tab"
+              id="filter-tab-read"
+              data-filter="read"
+              aria-selected="false"
+              aria-controls="bookmark-list"
+              tabindex="-1"
+            >
+              <span class="filter-tab-label">Read</span>
+            </button>
+            <button
+              class="filter-tab"
+              type="button"
+              role="tab"
+              id="filter-tab-all"
+              data-filter="all"
+              aria-selected="true"
+              aria-controls="bookmark-list"
+              tabindex="0"
+            >
+              <span class="filter-tab-label">All</span>
+            </button>
+            <button
+              class="filter-tab"
+              type="button"
+              role="tab"
+              id="filter-tab-favorite"
+              data-filter="favorite"
+              aria-selected="false"
+              aria-controls="bookmark-list"
+              tabindex="-1"
+            >
+              <svg class="filter-tab-icon icon-star" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path
+                  d="M10 2.6l2.3 4.7 5.2.76-3.75 3.66.88 5.18L10 14.45l-4.63 2.45.88-5.18L2.5 8.06l5.2-.76L10 2.6z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <span class="filter-tab-label">Favorites</span>
+            </button>
+          </div>
+          <div class="toolbar-actions">
+            <button id="sync-btn" class="btn btn-primary sync-btn" type="button">
+              <svg class="icon-glyph icon-refresh" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path
+                  d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
+                <path
+                  d="M16.8 2.6v3.6h-3.6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <span class="sync-btn-label">Sync</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="sync-progress" class="sync-progress" role="status" aria-live="polite" hidden>
+          <span id="sync-progress-icon" class="sync-progress-icon" aria-hidden="true"></span>
+          <div class="sync-progress-body">
+            <p id="sync-progress-text" class="sync-progress-text"></p>
+            <details id="sync-progress-details" class="sync-progress-details" hidden>
+              <summary class="sync-progress-summary">Details</summary>
+              <ol id="sync-progress-log" class="sync-progress-log"></ol>
+            </details>
+          </div>
+          <button id="sync-progress-retry" class="btn btn-secondary sync-progress-btn" type="button" hidden>
+            Try again
           </button>
           <button
-            class="filter-tab"
+            id="sync-progress-dismiss"
+            class="icon-btn sync-progress-dismiss"
             type="button"
-            role="tab"
-            id="filter-tab-read"
-            data-filter="read"
-            aria-selected="false"
-            aria-controls="bookmark-list"
-            tabindex="-1"
+            aria-label="Dismiss sync status"
+            hidden
           >
-            <span class="filter-tab-label">Read</span>
-          </button>
-          <button
-            class="filter-tab"
-            type="button"
-            role="tab"
-            id="filter-tab-all"
-            data-filter="all"
-            aria-selected="true"
-            aria-controls="bookmark-list"
-            tabindex="0"
-          >
-            <span class="filter-tab-label">All</span>
-          </button>
-          <button
-            class="filter-tab"
-            type="button"
-            role="tab"
-            id="filter-tab-favorite"
-            data-filter="favorite"
-            aria-selected="false"
-            aria-controls="bookmark-list"
-            tabindex="-1"
-          >
-            <svg class="filter-tab-icon icon-star" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <path
-                d="M10 2.6l2.3 4.7 5.2.76-3.75 3.66.88 5.18L10 14.45l-4.63 2.45.88-5.18L2.5 8.06l5.2-.76L10 2.6z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <span class="filter-tab-label">Favorites</span>
+            <span class="icon-x" aria-hidden="true"></span>
           </button>
         </div>
 
@@ -317,6 +381,73 @@
             </div>
           </div>
         </main>
+      </div>
+    </div>
+
+    <div id="setup-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="setup-modal"
+      class="reader-modal setup-modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="setup-title"
+      aria-describedby="setup-step-hint"
+    >
+      <div class="setup-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="setup-title" class="setup-title">Set up your library</h2>
+            <p id="setup-step-hint" class="setup-step-hint"></p>
+          </div>
+          <button id="setup-close" class="icon-btn reader-close" type="button" aria-label="Close setup">
+            <span class="icon-x" aria-hidden="true"></span>
+          </button>
+        </div>
+
+        <ol id="setup-steps" class="setup-steps">
+          <li class="setup-step" data-step="1"><span class="setup-step-num">1</span>Connect X</li>
+          <li class="setup-step" data-step="2"><span class="setup-step-num">2</span>Categorization</li>
+          <li class="setup-step" data-step="3"><span class="setup-step-num">3</span>First sync</li>
+        </ol>
+
+        <div class="setup-body">
+          <section id="setup-pane-1" class="setup-pane" aria-labelledby="setup-pane-1-title">
+            <h3 id="setup-pane-1-title" class="setup-pane-title">Connect your X account</h3>
+            <p class="setup-pane-body">
+              The app reads your bookmarks straight from X. Authorizing it opens X's consent page
+              once; every later sync runs on its own.
+            </p>
+            <div id="setup-x-state" class="setup-status"></div>
+            <p id="setup-x-error" class="setup-error" hidden></p>
+          </section>
+
+          <section id="setup-pane-2" class="setup-pane" aria-labelledby="setup-pane-2-title" hidden>
+            <h3 id="setup-pane-2-title" class="setup-pane-title">Choose how bookmarks are sorted</h3>
+            <p class="setup-pane-body">
+              A first sync designs a category tree, then files every bookmark into it. You can
+              change any of this later in Settings.
+            </p>
+            <div id="setup-categorization" class="field-stack"></div>
+            <p id="setup-categorization-note" class="settings-note" hidden></p>
+          </section>
+
+          <section id="setup-pane-3" class="setup-pane" aria-labelledby="setup-pane-3-title" hidden>
+            <h3 id="setup-pane-3-title" class="setup-pane-title">Run the first sync</h3>
+            <p class="setup-pane-body">
+              This fetches your bookmarks from X and categorizes them. A large library can take a
+              few minutes - you can keep using the app while it runs.
+            </p>
+            <dl id="setup-summary" class="setup-summary"></dl>
+            <div id="setup-sync-state" class="setup-status" hidden></div>
+            <p id="setup-blockers" class="setup-error" hidden></p>
+          </section>
+        </div>
+
+        <div class="setup-footer">
+          <button id="setup-back" class="btn btn-secondary" type="button">Back</button>
+          <button id="setup-next" class="btn btn-primary" type="button">Continue</button>
+        </div>
       </div>
     </div>
 
@@ -358,6 +489,7 @@
     <script src="tree-counts.js" defer></script>
     <script src="read-toggle.js" defer></script>
     <script src="filter-cache.js" defer></script>
+    <script src="categorization.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

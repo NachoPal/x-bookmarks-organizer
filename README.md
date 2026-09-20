@@ -4,7 +4,8 @@ Fetch your X (Twitter) bookmarks, auto-categorize them into a nested topic tree 
 store them in a local SQLite database you fully own, and browse them through a simple local
 web interface with read-tracking.
 
-Runs occasionally and incrementally: each run only processes bookmarks added since the last run.
+Runs occasionally and incrementally: each run only processes bookmarks added since the last run -
+from the **Sync** button in the viewer, or from the CLI.
 
 - Requirements / acceptance spec: [`docs/prds/0001-x-bookmarks-organizer.md`](docs/prds/0001-x-bookmarks-organizer.md)
 - One-time setup (X app, OAuth, vault, credit): [`docs/setup.md`](docs/setup.md)
@@ -112,6 +113,33 @@ av inject +XBOOKMARKS_CLIENT_ID +XBOOKMARKS_CLIENT_SECRET -- node dist/index.js
 
 ## Usage
 
+You can drive the whole thing from the app, or from the CLI - they share the same code and the
+same local database, so either is fine.
+
+### From the app (no terminal after the first start)
+
+```bash
+node dist/index.js serve
+# then open http://127.0.0.1:5173
+```
+
+An empty library opens a three-step setup: authorize X, choose how categorization runs, run the
+first sync. After that, the **Sync** button in the toolbar fetches new bookmarks and categorizes
+them server-side, showing the same progress the CLI prints and refreshing the viewer when it
+finishes. The categorization choice - the method (the Claude model, or Jev), the model provider,
+the per-pass models and the reasoning effort - is saved in the local database and reused by every
+later sync; change it any time in the Settings panel (the gear).
+
+The server still needs your X app credentials to sync: it resolves `XBOOKMARKS_CLIENT_ID` and
+`XBOOKMARKS_CLIENT_SECRET` through the same layered chain as everything else (environment, `.env`,
+OS keychain, `~/.config/x-bookmarks-organizer/credentials.json` - see [Secrets](#secrets)), so
+provide them however you prefer *before* starting `serve`. If it cannot reach them, the app says
+exactly which one is missing and where it looked, rather than failing mid-sync. Choosing Jev
+additionally needs `TYPESAFE_API_KEY` on that same chain, and it is **paid per token** - the app
+says so before you pick it, and the sync's progress repeats it on every run.
+
+### From the CLI
+
 **1. One-time login** (opens a browser once; stores a rotating refresh token locally so all later
 runs are headless). With a `.env` file in place (see Secrets), just:
 
@@ -174,7 +202,7 @@ Articles and already-checked quotes are skipped. The first real run logs the raw
 shape X returns, so a field-naming mismatch is visible. Afterwards, `recategorize` re-files any of
 these bookmarks that were sitting in `Uncategorized`.
 
-**3. Browse** (the web viewer needs no X secrets - browsing and cached summaries work without any):
+**3. Browse** (browsing and cached summaries need no secrets at all):
 
 ```bash
 node dist/index.js serve
@@ -183,7 +211,9 @@ node dist/index.js serve
 
 Generating NEW summaries additionally needs the configured LLM provider to be available. With the
 default `claude-cli` provider that just means the `claude` CLI is installed and logged in; `serve`
-prints which provider and model it resolved, or why summaries are disabled.
+prints which provider and model it resolved, or why summaries are disabled. Syncing from the
+viewer needs the X credentials as described above; `serve` also prints how the next sync will be
+billed, before you press the button.
 
 **Re-fetch unreadable articles** (optional) - Summarize caches each bookmark's article fetch, and a
 link cached as unreadable stays that way even after the fetcher improves. This re-fetches every
@@ -271,10 +301,18 @@ interface BookmarkContent {
 Model names and effort levels are interpreted by the selected provider, so a provider that has no
 notion of an effort level simply ignores `XBOOKMARKS_TAXONOMY_EFFORT` rather than failing.
 
+The categorizer, provider, per-pass models and taxonomy effort can also be chosen **in the app**
+(Settings → Categorization), which stores them in the local database. Precedence differs by caller,
+deliberately: in the viewer the saved choice always wins, so the panel can never read "Claude model"
+while a stray variable in the shell that launched `serve` quietly bills per token; on the CLI an
+explicitly exported `XBOOKMARKS_*` variable still overrides the saved choice, so a one-off
+`XBOOKMARKS_MODEL=... node dist/index.js run` means what it always did.
+
 ## Choosing the assignment categorizer (optional, opt-in, **paid**)
 
 The **assignment** pass - filing each bookmark into the existing tree - can run on either of two
-implementations, selected with `XBOOKMARKS_CATEGORIZER`:
+implementations. The app's Settings panel is the easiest way to choose (and is what an in-app sync
+uses); on the CLI it is `XBOOKMARKS_CATEGORIZER`:
 
 | Value | What runs | Cost |
 | --- | --- | --- |
@@ -286,7 +324,8 @@ code path can spend money. The **taxonomy-design pass always stays on the LLM** 
 classifier and invents no labels.
 
 `typesafe` requires BOTH the explicit opt-in and a `TYPESAFE_API_KEY` resolved through the usual
-credential chain; without a key it refuses to run rather than falling back silently. Every run
+credential chain; without a key it refuses to run rather than falling back silently (in the app, the
+selector says so before you can start a sync). Every run
 prints how the pass is billed before making a call. Note that with it enabled your bookmark text is
 sent to a third-party hosted API, where today it stays on your machine.
 

@@ -64,7 +64,7 @@ function waitForCallback(config: Config, expectedState: string, authUrl: string)
       const respond = (message: string) => {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(`<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:2rem">
-          <h2>${message}</h2><p>You can close this tab and return to the terminal.</p></body>`);
+          <h2>${message}</h2><p>You can close this tab and return to X Bookmarks Organizer.</p></body>`);
       };
       if (state !== expectedState) {
         respond('Login failed: state mismatch.');
