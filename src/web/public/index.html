@@ -121,6 +121,10 @@
                           </svg>
                           <span class="sync-btn-label">Sync</span>
                         </button>
+            <div class="sync-reset">
+              <p class="sync-reset-note">Start over from an empty library. Your X sign-in is kept.</p>
+              <button id="reset-open" class="btn btn-danger" type="button">Reset library</button>
+            </div>
           </div>
         </div>
 
@@ -469,6 +473,39 @@
         <div class="setup-footer">
           <button id="setup-back" class="btn btn-secondary" type="button">Back</button>
           <button id="setup-next" class="btn btn-primary" type="button">Continue</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="reset-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="reset-modal"
+      class="reader-modal setup-modal"
+      hidden
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="reset-title"
+      aria-describedby="reset-body"
+    >
+      <div class="setup-panel reset-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="reset-title" class="setup-title">Reset your library?</h2>
+          </div>
+        </div>
+        <div class="reset-body">
+          <p id="reset-body" class="reset-text">
+            This deletes every bookmark, category, summary and score stored <strong>on this computer</strong>,
+            and the next sync pulls everything again from the start.
+          </p>
+          <p class="reset-text reset-text-muted">
+            Nothing is removed from X, and your X sign-in and categorization settings are kept.
+          </p>
+          <p id="reset-error" class="setup-error" hidden></p>
+        </div>
+        <div class="setup-footer">
+          <button id="reset-cancel" class="btn btn-secondary" type="button">Cancel</button>
+          <button id="reset-confirm" class="btn btn-danger" type="button">Delete local library</button>
         </div>
       </div>
     </div>

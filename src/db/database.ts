@@ -264,6 +264,8 @@ function toArticleRecord(row: ArticleRow): ArticleRecord {
   };
 }
 
+// Mirrors `SETTINGS_KEY` in settings/settings.ts (which imports this class).
+const SETTINGS_STATE_KEY = 'app_settings';
 const MARKER_KEY = 'newest_seen_post_id';
 const REFRESH_TOKEN_KEY = 'x_refresh_token';
 const LAST_SYNCED_AT_KEY = 'last_synced_at';
@@ -766,6 +768,32 @@ export class Database {
       .all(...ids) as QuotedPostRow[];
     for (const row of rows) result.set(row.post_id, toQuotedPost(row));
     return result;
+  }
+
+  /**
+   * Return the library to its never-synced state: every bookmark (and, by
+   * cascade, its category links, article/summary/score rows), the taxonomy,
+   * the URL-keyed and X-article/quote caches, delete tombstones, and the sync
+   * cursor. KEPT: the X refresh token (no re-login) and the saved
+   * categorization settings. Idempotent.
+   */
+  resetLibrary(): void {
+    const keep = [REFRESH_TOKEN_KEY, SETTINGS_STATE_KEY];
+    this.db.transaction(() => {
+      for (const table of [
+        'bookmarks',
+        'categories',
+        'deleted_bookmarks',
+        'article_link_metadata',
+        'x_articles',
+        'quoted_posts',
+      ]) {
+        this.db.prepare(`DELETE FROM ${table}`).run();
+      }
+      this.db
+        .prepare(`DELETE FROM run_state WHERE key NOT IN (${keep.map(() => '?').join(',')})`)
+        .run(...keep);
+    })();
   }
 
   // --- Run state ---------------------------------------------------------
