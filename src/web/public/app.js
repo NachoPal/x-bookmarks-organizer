@@ -955,21 +955,11 @@
 
     actions.append(left, right);
 
-    card.appendChild(actions);
-
-    // Our own expandable full post text (issue #36): the primary, in-app way
-    // to read the words, since X's embed truncates long posts behind its own
-    // "Show more" that leaves the app. RawBookmark.text is already the full,
-    // untruncated text.
-    const postTextEl = renderPostText(bm);
-    if (postTextEl) card.appendChild(postTextEl);
-
-    // Embed slot with link fallback, kept for media/quotes/rich content (and
-    // as the sole text source when the post can't embed). Opening the
-    // fallback link also marks read.
+    // Embed slot with link fallback. Opening the fallback link also marks read.
     const slot = el("div", "embed-slot");
     renderEmbed(slot, bm, () => setRead(bm, card, true));
-    card.appendChild(slot);
+
+    card.append(actions, slot);
 
     // X-native Article card (x.com/i/article/...): X's embed shows these as a
     // bare link, so render the Article's cover/title/preview from the X API
@@ -979,44 +969,6 @@
     if (xArticleCard) card.appendChild(xArticleCard);
 
     return card;
-  }
-
-  /**
-   * The card's own expandable full post text (issue #36). Short text renders
-   * fully with no toggle; text long enough to need clamping renders with a
-   * "Show more"/"Show less" button that expands/collapses it in place - no
-   * redirect, since the full text (`RawBookmark.text`) is already on hand.
-   * Text is set via `el()`'s `textContent`, never `innerHTML`, so untrusted
-   * post content can never inject markup. Returns null for a bookmark with
-   * no text (e.g. a pure X Article host).
-   */
-  function renderPostText(bm) {
-    const text = bm.text || "";
-    if (!text.trim()) return null;
-
-    const wrap = el("div", "bookmark-post-text");
-    const bodyId = `post-text-${bm.id}`;
-    const body = el("p", "bookmark-post-text-body", text);
-    body.id = bodyId;
-    wrap.appendChild(body);
-
-    if (window.XBOPostText.isLongPostText(text)) {
-      wrap.classList.add("is-clamped");
-      const toggle = el("button", "post-text-toggle", "Show more");
-      toggle.type = "button";
-      toggle.setAttribute("aria-expanded", "false");
-      toggle.setAttribute("aria-controls", bodyId);
-      toggle.addEventListener("click", () => {
-        const expanded = !wrap.classList.contains("is-expanded");
-        wrap.classList.toggle("is-expanded", expanded);
-        wrap.classList.toggle("is-clamped", !expanded);
-        toggle.textContent = expanded ? "Show less" : "Show more";
-        toggle.setAttribute("aria-expanded", String(expanded));
-      });
-      wrap.appendChild(toggle);
-    }
-
-    return wrap;
   }
 
   /** Cover aspect ratio, clamped so an odd cover never dominates the card. */
@@ -1177,13 +1129,12 @@
       const fallback = el("div", "embed-fallback");
       // The card itself carries no author line (the embed normally shows
       // it); a fallback has no embed, so it needs its own byline to avoid
-      // leaving the post with zero context about who posted it. The post
-      // text itself is not repeated here - the card's own expandable text
-      // block (renderPostText, issue #36) already renders it above.
+      // leaving the post with zero context about who posted it.
       const author = el("p", "embed-fallback-author");
       author.append(document.createTextNode(bm.authorName || bm.authorUsername));
       author.appendChild(el("span", "bookmark-handle", ` @${bm.authorUsername}`));
       fallback.appendChild(author);
+      if (bm.text) fallback.appendChild(el("p", null, bm.text));
       const link = el("a", "link-external", "View this post on X ↗");
       link.href = bm.url;
       link.target = "_blank";
