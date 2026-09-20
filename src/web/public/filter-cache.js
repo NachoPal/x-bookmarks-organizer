@@ -13,6 +13,10 @@
  */
 (function (root) {
   const MAX_CACHED_CATEGORIES = 3;
+  // Rendered cards (each holding a live X embed iframe) kept mounted, keyed
+  // by post - issue #67. Bounded so a long session never grows the DOM
+  // without limit; the oldest post not on screen is released first.
+  const MAX_POOLED_POSTS = 120;
 
   /**
    * Move `categoryId` to the most-recently-used end of `order`, evicting the
@@ -27,6 +31,45 @@
     const evicted = [];
     while (next.length > limit) evicted.push(next.shift());
     return { order: next, evicted };
+  }
+
+  /**
+   * Per-post LRU (issue #67): mark `ids` most recently used in `order`
+   * (oldest first) and evict the oldest posts beyond `max` - never one in
+   * `protectedIds` (the posts on screen), even if that leaves the pool over
+   * the cap. Returns a fresh `{ order, evicted }`; the input is not mutated.
+   */
+  function touchPool(order, ids, max, protectedIds) {
+    const limit = max || MAX_POOLED_POSTS;
+    const touched = new Set(ids);
+    const keep = new Set(protectedIds || []);
+    const next = order.filter((id) => !touched.has(id));
+    for (const id of ids) next.push(id);
+    const evicted = [];
+    let over = next.length - limit;
+    const kept = [];
+    for (const id of next) {
+      if (over > 0 && !keep.has(id)) {
+        evicted.push(id);
+        over -= 1;
+      } else {
+        kept.push(id);
+      }
+    }
+    return { order: kept, evicted };
+  }
+
+  /**
+   * The ids of a complete "All" list (`allIds`, `bmById`) that belong in
+   * `filter`, in the same order - the server sorts every filter the same
+   * way, so an Unread/Read/Favorites view of a fully loaded category needs
+   * no fetch at all.
+   */
+  function deriveFilterIds(filter, allIds, bmById) {
+    return allIds.filter((id) => {
+      const bm = bmById.get(id);
+      return bm && survivesFilter(filter, bm);
+    });
   }
 
   /**
@@ -58,7 +101,10 @@
 
   const api = {
     MAX_CACHED_CATEGORIES,
+    MAX_POOLED_POSTS,
     touchLru,
+    touchPool,
+    deriveFilterIds,
     survivesFilter,
     isFilterEntryStale,
   };

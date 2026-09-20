@@ -247,28 +247,20 @@ scroll: `GET /api/categories/:id/bookmarks` takes `filter`/`offset`/`limit` (`fi
 drives it with an IntersectionObserver sentinel against the content pane; changing the tab re-pages
 from the top. The dense-category seed leaf exists to exercise this.
 
-Switching tabs (or going back to a category already visited) does NOT re-fetch or re-render from
-scratch (issue #33): `app.js`'s `viewCaches` snapshots a settled view's DOM pane + bookmark
-objects, keyed by category id -> filter, when the owner navigates away from it
-(`saveCurrentViewToCache`). Each view renders into its own `.view-pane` that stays MOUNTED (just
-`hidden`) - never `replaceChildren()`/re-append cards: detaching an iframe and re-attaching it
-reloads it, which is what blanked the X embeds (issue #33 follow-up). `activatePane` shows one
-pane; `releaseOrphanPanes` removes any pane no cache entry retains. A real load shows the spinner
-placeholder (`.state-loading`) in a fresh pane. Bounded to `XBOFilterCache.MAX_CACHED_CATEGORIES`
-(3) categories via LRU eviction (`src/web/public/filter-cache.js`, the pure/testable half of this -
-LRU touch/evict and `isFilterEntryStale`). A view mid-fetch is never cached (`viewReady` guard) -
-caching one would poison that category+filter with a false "0 results" snapshot if the owner
-switches categories again before the fetch settles. A read-state or favorite toggle
-(`syncCachedViewsOnChange` in `app.js`) fully INVALIDATES (deletes, never just prunes) any cached
-Unread/Read/Favorites entry whose membership for that bookmark is now stale - across the bookmark's
-direct categories AND every ancestor via `XBOTreeCounts.affectedCategoryIds`, since a cached view
-can be a parent category's rolled-up list that never appears in the bookmark's own `categoryIds` -
-so the next visit fetches fresh rather than silently missing the bookmark in the cache it now
-belongs to (pruning alone only makes it disappear from the one it left). Every SURVIVING entry
-(including "all", whose membership never changes) is patched in place instead: its cached bookmark
-copy and its card's pill + star, since e.g. a favorite toggle leaves a cached Unread view's
-membership intact but its star stale. `survivesFilter` / `isFilterEntryStale` in `filter-cache.js`
-own that membership decision, DOM-free and unit-tested.
+Switching tabs or categories never reloads a post already loaded anywhere (issues #33, #67): `app.js`
+keeps a per-POST pool (`cardPool`, id -> `{bm, card}`) of rendered cards, all MOUNTED in `listRoot`
+(detaching/re-attaching an iframe reloads the X embed). A view is only an id list: `paintViewCards`
+`hidden`s every card outside it and sequences the rest with inline flex `order` - never move or
+`replaceChildren()` cards. `poolPost` reuses the pooled bm+card for a server row (folding in its fresher
+read/favorite state), so only genuinely new posts render and spin. `viewCaches` (category -> filter ->
+`{ids, bmById, offset, hasMore}`, LRU of `MAX_CACHED_CATEGORIES`) holds paging state only; the pool is
+LRU-bounded by `XBOFilterCache.MAX_POOLED_POSTS` (`touchPool`), never evicting on-screen posts. A
+Unread/Read/Favorites view of a category whose cached All list is complete is DERIVED locally
+(`deriveViewEntry`/`deriveFilterIds`, same server sort) - no fetch. A view mid-fetch is never cached
+(`viewReady`). A read/favorite toggle patches the shared card once (`patchCardControls`), a card that
+drops out of the live tab is `hidden` (not removed), and `syncCachedViewsOnChange` deletes only the
+stale id lists so the next visit re-derives or re-fetches while reusing the pooled cards; a delete
+releases the card (`purgeFromCache`). `filter-cache.js` holds the pure, DOM-free half.
 
 **Favorites** (issue #63) mirror read state end to end: a `favorite` column on `bookmarks` added
 through the same `PRAGMA table_info`-guarded migration (`BOOKMARKS_ADDED_COLUMNS`),
