@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
-import { ARTICLE_LINK_METADATA_ADDED_COLUMNS, BOOKMARKS_ADDED_COLUMNS, SCHEMA_SQL } from './schema';
+import {
+  ARTICLE_LINK_METADATA_ADDED_COLUMNS,
+  BOOKMARKS_ADDED_COLUMNS,
+  CATEGORIES_ADDED_COLUMNS,
+  SCHEMA_SQL,
+} from './schema';
 import type {
   ArticleLinkMetadata,
   ArticleRecord,
@@ -41,6 +46,8 @@ interface CategoryRow {
   id: number;
   parent_id: number | null;
   name: string;
+  /** Absent on a row written before the column existed - see `CATEGORIES_ADDED_COLUMNS`. */
+  description?: string | null;
   created_at: string;
 }
 
@@ -127,7 +134,13 @@ function toQuotedPost(row: QuotedPostRow): QuotedPost {
 }
 
 function toCategoryNode(row: CategoryRow): CategoryNode {
-  return { id: row.id, parentId: row.parent_id, name: row.name, createdAt: row.created_at };
+  return {
+    id: row.id,
+    parentId: row.parent_id,
+    name: row.name,
+    description: row.description ?? null,
+    createdAt: row.created_at,
+  };
 }
 
 interface SummaryRow {
@@ -212,6 +225,7 @@ export class Database {
   private migrate(): void {
     this.addMissingColumns('article_link_metadata', ARTICLE_LINK_METADATA_ADDED_COLUMNS);
     this.addMissingColumns('bookmarks', BOOKMARKS_ADDED_COLUMNS);
+    this.addMissingColumns('categories', CATEGORIES_ADDED_COLUMNS);
   }
 
   private addMissingColumns(table: string, columns: { name: string; ddl: string }[]): void {
@@ -447,9 +461,22 @@ export class Database {
   /**
    * Find a child of `parentId` by case-insensitive name, or create it.
    * `parentId` null means a root node.
+   *
+   * `description` is the one-line gloss the taxonomy pass emits per node
+   * (issue #61). It is only ever FILLED IN, never cleared: an existing node
+   * whose description is still null gains one when a later design pass supplies
+   * it, but a node that already has one keeps it, so an ad-hoc `extend` node
+   * created without a description is upgraded on the next `recategorize` while
+   * a real description is never overwritten with nothing.
    */
-  getOrCreateCategory(name: string, parentId: number | null, when: string): CategoryNode {
+  getOrCreateCategory(
+    name: string,
+    parentId: number | null,
+    when: string,
+    description?: string | null,
+  ): CategoryNode {
     const trimmed = name.trim();
+    const desc = description?.trim() || null;
     const existing =
       parentId === null
         ? (this.db
@@ -458,12 +485,24 @@ export class Database {
         : (this.db
             .prepare('SELECT * FROM categories WHERE parent_id = ? AND name = ? COLLATE NOCASE')
             .get(parentId, trimmed) as CategoryRow | undefined);
-    if (existing) return toCategoryNode(existing);
+    if (existing) {
+      if (desc && !existing.description) {
+        this.db.prepare('UPDATE categories SET description = ? WHERE id = ?').run(desc, existing.id);
+        return toCategoryNode({ ...existing, description: desc });
+      }
+      return toCategoryNode(existing);
+    }
 
     const info = this.db
-      .prepare('INSERT INTO categories (parent_id, name, created_at) VALUES (?, ?, ?)')
-      .run(parentId, trimmed, when);
-    return { id: Number(info.lastInsertRowid), parentId, name: trimmed, createdAt: when };
+      .prepare('INSERT INTO categories (parent_id, name, description, created_at) VALUES (?, ?, ?, ?)')
+      .run(parentId, trimmed, desc, when);
+    return {
+      id: Number(info.lastInsertRowid),
+      parentId,
+      name: trimmed,
+      description: desc,
+      createdAt: when,
+    };
   }
 
   linkBookmarkToCategory(bookmarkId: number, categoryId: number): void {

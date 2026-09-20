@@ -699,3 +699,100 @@ describe('Database quoted post content', () => {
     }
   });
 });
+
+describe('Database category descriptions (issue #61)', () => {
+  const when = '2024-01-01T00:00:00.000Z';
+  let db: Database;
+  beforeEach(() => {
+    db = new Database(':memory:');
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it('stores a description on create and returns it', () => {
+    const node = db.getOrCreateCategory('AI', null, when, 'Machine learning and tooling.');
+
+    expect(node.description).toBe('Machine learning and tooling.');
+    expect(db.getAllCategories()[0]!.description).toBe('Machine learning and tooling.');
+  });
+
+  it('defaults to null when no description is supplied', () => {
+    expect(db.getOrCreateCategory('AI', null, when).description).toBeNull();
+  });
+
+  it('fills in a missing description on a node that already exists', () => {
+    db.getOrCreateCategory('AI', null, when);
+
+    const updated = db.getOrCreateCategory('AI', null, when, 'Filled in later.');
+
+    expect(updated.description).toBe('Filled in later.');
+    expect(db.getAllCategories()).toHaveLength(1);
+  });
+
+  it('never overwrites an existing description with a different one', () => {
+    db.getOrCreateCategory('AI', null, when, 'The original.');
+
+    const again = db.getOrCreateCategory('AI', null, when, 'A replacement.');
+
+    expect(again.description).toBe('The original.');
+  });
+
+  it('never clears an existing description when none is supplied', () => {
+    db.getOrCreateCategory('AI', null, when, 'The original.');
+
+    expect(db.getOrCreateCategory('AI', null, when).description).toBe('The original.');
+  });
+
+  it('treats a blank description as absent', () => {
+    expect(db.getOrCreateCategory('AI', null, when, '   ').description).toBeNull();
+  });
+
+  it('migrates a database created before the column existed, without losing data', () => {
+    const dbPath = path.join(os.tmpdir(), `xbookmarks-cat-desc-migration-${Date.now()}-${Math.random()}.db`);
+    try {
+      // A pre-#61 categories table: no `description` column, already populated.
+      const raw = new BetterSqlite3(dbPath);
+      raw.exec(`
+        CREATE TABLE categories (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          parent_id  INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+          name       TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(parent_id, name)
+        );
+      `);
+      raw
+        .prepare('INSERT INTO categories (parent_id, name, created_at) VALUES (?, ?, ?)')
+        .run(null, 'Legacy Root', when);
+      raw.close();
+
+      const migrated = new Database(dbPath);
+      try {
+        const nodes = migrated.getAllCategories();
+        expect(nodes).toHaveLength(1);
+        expect(nodes[0]!.name).toBe('Legacy Root');
+        expect(nodes[0]!.description).toBeNull();
+
+        // The migrated column is writable, so a later pass can fill it in.
+        expect(migrated.getOrCreateCategory('Legacy Root', null, when, 'Now described.').description).toBe(
+          'Now described.',
+        );
+      } finally {
+        migrated.close();
+      }
+
+      // Re-opening is a no-op: the PRAGMA guard makes the migration idempotent.
+      const reopened = new Database(dbPath);
+      try {
+        expect(reopened.getAllCategories()[0]!.description).toBe('Now described.');
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+        if (fs.existsSync(f)) fs.rmSync(f);
+      }
+    }
+  });
+});

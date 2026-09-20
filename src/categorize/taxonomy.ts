@@ -9,6 +9,12 @@ const MAX_TEXT_CHARS = 220;
 const MAX_ARTICLE_CHARS = 160;
 
 /**
+ * Cap on a designed node's one-line description (issue #61). The prompt asks
+ * for one sentence; this is the hard bound applied to whatever comes back.
+ */
+export const MAX_NODE_DESCRIPTION_CHARS = 160;
+
+/**
  * Pull a human-meaningful domain out of a post's text, if one is present.
  * X wraps outbound links as `t.co` shortlinks, which carry no topical signal,
  * so those are ignored; a real domain (e.g. `arxiv.org`) is a useful hint for
@@ -82,14 +88,15 @@ If the section above lists real categories, KEEP them and extend the tree around
 - Do NOT collapse everything into two or three broad buckets (like a bare "AI" or "Development" with no substructure). Split broad areas into meaningful subtopics and give each branch real depth.
 - Use specific, descriptive labels. You have complete freedom over the labels and the structure.
 - Do not nest deeper than ${maxDepth} levels.
+- Give EVERY node a one-sentence "description" saying what belongs under it. Write each description to SEPARATE that node from its siblings - what goes here that does not go in the node next to it. Keep it under 160 characters. This is what later passes use to file a bookmark into the right branch.
 
 # Bookmarks
 ${items}
 
 # Output
 Return ONLY a JSON object, no prose, no markdown fences, of exactly this shape:
-{"tree":[{"name":"Top","children":[{"name":"Sub","children":[{"name":"Leaf","children":[]}]}]}]}
-Every node has a non-empty "name"; leaf nodes have "children": [].`;
+{"tree":[{"name":"Top","description":"What belongs under Top, and what does not.","children":[{"name":"Sub","description":"...","children":[{"name":"Leaf","description":"...","children":[]}]}]}]}
+Every node has a non-empty "name" and a one-sentence "description"; leaf nodes have "children": [].`;
 }
 
 /** Strip surrounding markdown code fences if the model wrapped its JSON. */
@@ -145,7 +152,19 @@ function normalizeNodes(raw: unknown): TaxonomyNode[] {
     const key = name.toLowerCase();
     if (seen.has(key)) continue; // drop duplicate siblings
     seen.add(key);
-    out.push({ name, children: normalizeNodes((entry as { children?: unknown }).children) });
+    const descriptionRaw = (entry as { description?: unknown }).description;
+    const description =
+      typeof descriptionRaw === 'string'
+        ? descriptionRaw.replace(/\s+/g, ' ').trim().slice(0, MAX_NODE_DESCRIPTION_CHARS)
+        : '';
+    const node: TaxonomyNode = {
+      name,
+      children: normalizeNodes((entry as { children?: unknown }).children),
+    };
+    // Omit rather than store an empty string, so "has no description" is one
+    // value everywhere (null in the DB, undefined here).
+    if (description) node.description = description;
+    out.push(node);
   }
   return out;
 }
@@ -154,7 +173,9 @@ function normalizeNodes(raw: unknown): TaxonomyNode[] {
  * Parse and validate the taxonomy-design response into a clean tree.
  *
  * Accepts either `{"tree":[...]}` or a bare top-level array. Nodes with empty
- * names are dropped and duplicate siblings collapsed. Throws if no JSON is
+ * names are dropped and duplicate siblings collapsed. A node's optional
+ * one-line `description` (issue #61) is whitespace-collapsed and length-capped;
+ * a response that omits it parses exactly as before. Throws if no JSON is
  * present at all, so the caller fails loudly rather than proceeding with an
  * empty taxonomy.
  */

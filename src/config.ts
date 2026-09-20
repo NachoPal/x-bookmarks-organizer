@@ -43,7 +43,48 @@ export interface Config {
    * every post - and every X embed - at once.
    */
   pageSize: number;
+  /**
+   * Which implementation runs the ASSIGNMENT pass (env: XBOOKMARKS_CATEGORIZER).
+   * Deliberately separate from `XBOOKMARKS_LLM_PROVIDER`: TypeSafe is not an
+   * LLM provider and must never be selectable for the summary or chat roles.
+   * Defaults to `claude-cli`, so categorization stays on the flat-rate Claude
+   * subscription unless the owner opts in.
+   */
+  categorizer: CategorizerId;
+  /** Tuning for the TypeSafe categorizer. Inert unless it is the selected one. */
+  typesafe: TypeSafeConfig;
 }
+
+/** The assignment-pass implementations the owner can choose between. */
+export const CATEGORIZER_IDS = ['claude-cli', 'typesafe'] as const;
+export type CategorizerId = (typeof CATEGORIZER_IDS)[number];
+
+/**
+ * Knobs for the TypeSafe/Jev assignment pass (issue #61).
+ *
+ * The thresholds are the quality/precision dials the scout report calls out as
+ * needing tuning against a real library, so each is an env override rather than
+ * a constant buried in the walk.
+ */
+export interface TypeSafeConfig {
+  /** Model id; the SDK's own default (`jev-latest`) when unset. */
+  model?: string;
+  /** Paths kept alive per tree level. 1 is greedy descent. */
+  beamWidth: number;
+  /** Floor an edge's probability and the level's confidence must clear to descend. */
+  confidenceThreshold: number;
+  /** Floor on a path's normalized score to be kept as an ADDITIONAL label. */
+  multiLabelThreshold: number;
+  /** Cap on how many categories one bookmark may be filed under. */
+  maxLabels: number;
+  /** How many bookmarks are walked concurrently. */
+  concurrency: number;
+  /** API root override, mainly for testing against a local stub. */
+  baseUrl?: string;
+}
+
+/** The credential the TypeSafe categorizer needs, resolved via the credential chain. */
+export const TYPESAFE_API_KEY = 'TYPESAFE_API_KEY';
 
 const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:3000/callback';
 const DEFAULT_AUTH_PORT = 3000;
@@ -54,12 +95,26 @@ const DEFAULT_BATCH_SIZE = 15;
 const DEFAULT_MIN_DEPTH = 3;
 const DEFAULT_MAX_DEPTH = 4;
 const DEFAULT_PAGE_SIZE = 20;
+const DEFAULT_CATEGORIZER: CategorizerId = 'claude-cli';
+const DEFAULT_TYPESAFE_BEAM_WIDTH = 3;
+const DEFAULT_TYPESAFE_CONFIDENCE = 0.55;
+const DEFAULT_TYPESAFE_MULTILABEL = 0.6;
+const DEFAULT_TYPESAFE_MAX_LABELS = 3;
+const DEFAULT_TYPESAFE_CONCURRENCY = 8;
 
-function intFromEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
+function intFromEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name];
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** A 0..1 ratio from the environment; anything outside that range keeps the default. */
+function ratioFromEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
 }
 
 /** A trimmed env value, or undefined when unset or blank (so "" never overrides a default). */
@@ -109,6 +164,42 @@ function llmFromEnv(env: NodeJS.ProcessEnv): LlmConfig {
   };
 }
 
+/** The message an unknown `XBOOKMARKS_CATEGORIZER` produces. */
+export function unknownCategorizerMessage(id: string): string {
+  return (
+    `Unknown categorizer "${id}". Available: ${CATEGORIZER_IDS.join(', ')}. ` +
+    'Set XBOOKMARKS_CATEGORIZER to one of these.'
+  );
+}
+
+/**
+ * Resolve which implementation runs the assignment pass.
+ *
+ * Unset means `claude-cli`, so the default path never spends money. An
+ * unrecognized value throws rather than silently falling back, because
+ * "I thought I selected Jev" and "I thought I was still on Claude" are both
+ * bad surprises when one of them is billable.
+ */
+function categorizerFromEnv(env: NodeJS.ProcessEnv): CategorizerId {
+  const raw = optionalFromEnv(env, 'XBOOKMARKS_CATEGORIZER');
+  if (!raw) return DEFAULT_CATEGORIZER;
+  const match = CATEGORIZER_IDS.find((id) => id === raw.toLowerCase());
+  if (!match) throw new Error(unknownCategorizerMessage(raw));
+  return match;
+}
+
+function typeSafeFromEnv(env: NodeJS.ProcessEnv): TypeSafeConfig {
+  return {
+    model: optionalFromEnv(env, 'XBOOKMARKS_TYPESAFE_MODEL'),
+    beamWidth: intFromEnv(env, 'XBOOKMARKS_TYPESAFE_BEAM_WIDTH', DEFAULT_TYPESAFE_BEAM_WIDTH),
+    confidenceThreshold: ratioFromEnv(env, 'XBOOKMARKS_TYPESAFE_CONFIDENCE', DEFAULT_TYPESAFE_CONFIDENCE),
+    multiLabelThreshold: ratioFromEnv(env, 'XBOOKMARKS_TYPESAFE_MULTILABEL', DEFAULT_TYPESAFE_MULTILABEL),
+    maxLabels: intFromEnv(env, 'XBOOKMARKS_TYPESAFE_MAX_LABELS', DEFAULT_TYPESAFE_MAX_LABELS),
+    concurrency: intFromEnv(env, 'XBOOKMARKS_TYPESAFE_CONCURRENCY', DEFAULT_TYPESAFE_CONCURRENCY),
+    baseUrl: optionalFromEnv(env, 'XBOOKMARKS_TYPESAFE_BASE_URL'),
+  };
+}
+
 /**
  * Build the runtime config from the environment.
  *
@@ -135,13 +226,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, store?: Credent
     xClientSecret: xClientSecret ?? '',
     dbPath,
     redirectUri: env.XBOOKMARKS_REDIRECT_URI ?? DEFAULT_REDIRECT_URI,
-    authCallbackPort: intFromEnv('XBOOKMARKS_AUTH_PORT', DEFAULT_AUTH_PORT),
-    webPort: intFromEnv('XBOOKMARKS_WEB_PORT', DEFAULT_WEB_PORT),
+    authCallbackPort: intFromEnv(env, 'XBOOKMARKS_AUTH_PORT', DEFAULT_AUTH_PORT),
+    webPort: intFromEnv(env, 'XBOOKMARKS_WEB_PORT', DEFAULT_WEB_PORT),
     llm: llmFromEnv(env),
-    batchSize: intFromEnv('XBOOKMARKS_BATCH_SIZE', DEFAULT_BATCH_SIZE),
-    minCategoryDepth: intFromEnv('XBOOKMARKS_MIN_DEPTH', DEFAULT_MIN_DEPTH),
-    maxCategoryDepth: intFromEnv('XBOOKMARKS_MAX_DEPTH', DEFAULT_MAX_DEPTH),
-    pageSize: intFromEnv('XBOOKMARKS_PAGE_SIZE', DEFAULT_PAGE_SIZE),
+    batchSize: intFromEnv(env, 'XBOOKMARKS_BATCH_SIZE', DEFAULT_BATCH_SIZE),
+    minCategoryDepth: intFromEnv(env, 'XBOOKMARKS_MIN_DEPTH', DEFAULT_MIN_DEPTH),
+    maxCategoryDepth: intFromEnv(env, 'XBOOKMARKS_MAX_DEPTH', DEFAULT_MAX_DEPTH),
+    pageSize: intFromEnv(env, 'XBOOKMARKS_PAGE_SIZE', DEFAULT_PAGE_SIZE),
+    categorizer: categorizerFromEnv(env),
+    typesafe: typeSafeFromEnv(env),
   };
 }
 
@@ -153,4 +246,25 @@ export function requireXCredentials(config: Config): void {
   if (missing.length > 0) {
     throw new Error(missingCredentialMessage(missing));
   }
+}
+
+/**
+ * Assert the TypeSafe API key is present before anything can spend money.
+ *
+ * Called from the categorization preflight when - and only when - the owner
+ * selected the `typesafe` categorizer, so the default Claude path never asks
+ * for this key. The key resolves through the same layered chain as every other
+ * secret, and its VALUE is never surfaced (only whether one was found).
+ */
+export function requireTypeSafeCredentials(store: CredentialStore): string {
+  const resolved = store.get(TYPESAFE_API_KEY);
+  if (!resolved.value) {
+    throw new Error(
+      `${missingCredentialMessage([TYPESAFE_API_KEY])}\n\n` +
+        'XBOOKMARKS_CATEGORIZER=typesafe routes the assignment pass through the TypeSafe/Jev\n' +
+        'API, which is PAID per token. Unset XBOOKMARKS_CATEGORIZER to go back to the\n' +
+        'default Claude-subscription categorizer, which costs nothing per call.',
+    );
+  }
+  return resolved.value;
 }

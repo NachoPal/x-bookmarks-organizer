@@ -131,6 +131,12 @@ export interface CategoryNode {
   id: number;
   parentId: number | null;
   name: string;
+  /**
+   * One-line gloss emitted by the taxonomy-design pass, written to separate
+   * this node from its siblings (issue #61). Null for any node designed before
+   * the column existed, or created ad hoc by an `extend` run.
+   */
+  description?: string | null;
   createdAt: string;
 }
 
@@ -142,6 +148,8 @@ export interface CategoryTreeNode {
   id: number;
   parentId: number | null;
   name: string;
+  /** See {@link CategoryNode.description}. Null when the node has none. */
+  description?: string | null;
   /** Full path from the root, e.g. ["AI", "Harnesses"]. */
   path: string[];
   /** Bookmarks in this node and all descendants. */
@@ -167,5 +175,11 @@ export interface Assignment {
  */
 export interface TaxonomyNode {
   name: string;
+  /**
+   * A one-line gloss of what belongs under this node, asked for by the
+   * taxonomy-design prompt and written to `categories.description`. Optional:
+   * a response that omits it still materializes fine.
+   */
+  description?: string;
   children: TaxonomyNode[];
 }
