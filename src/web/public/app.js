@@ -112,6 +112,7 @@
    * view pane. The pane sorts after every card via CSS `order`.
    */
   function ensureViewHost() {
+    listRoot.removeAttribute("aria-busy");
     if (!hostMounted) {
       const pane = el("div", "view-pane");
       listRoot.replaceChildren(pane);
@@ -354,7 +355,7 @@
   }
 
   /** Show the selected category+filter: a cache hit restores instantly, a miss fetches. */
-  async function showCategoryView() {
+  async function showCategoryView(opts) {
     const catCache = viewCaches.get(selectedCategoryId);
     if (catCache) categoryCounts = catCache.counts;
     const cached = catCache && catCache.filters.get(activeFilter);
@@ -368,7 +369,100 @@
       restoreViewFromCache(derived);
       return;
     }
-    await fetchAndRenderFirstPage();
+    await fetchAndRenderFirstPage(opts);
+  }
+
+  // ---- persisted last view (issue #78) ------------------------------------
+  // The selection (category + tab) survives a reload in localStorage, and a
+  // bounded snapshot of the fetched pages in sessionStorage lets that reload
+  // restore the view from data instead of re-fetching it (view-persist.js owns
+  // the format, bounds and freshness). X embeds re-initialize on any fresh
+  // page load regardless - only the server round trip is avoided. Every drop
+  // of `viewCaches` below also clears the snapshot.
+  let viewRestoreDone = false; // never overwrite the stored view before it was read
+
+  function persistSelection() {
+    if (window.XBOViewPersist && viewRestoreDone) {
+      window.XBOViewPersist.writeSelection(window.localStorage, selectedCategoryId, activeFilter);
+    }
+  }
+
+  function clearPersistedViews() {
+    if (window.XBOViewPersist) window.XBOViewPersist.clearSnapshot(window.sessionStorage);
+  }
+
+  function persistViewSnapshot() {
+    if (!window.XBOViewPersist || !viewRestoreDone) return;
+    saveCurrentViewToCache();
+    const views = [];
+    for (const categoryId of cacheOrder) {
+      const catCache = viewCaches.get(categoryId);
+      if (!catCache) continue;
+      for (const [filter, entry] of catCache.filters) {
+        const bookmarks = entry.ids.map((id) => entry.bmById.get(id)).filter(Boolean);
+        views.push({
+          categoryId,
+          filter,
+          counts: catCache.counts,
+          bookmarks,
+          offset: entry.offset,
+          hasMore: entry.hasMore,
+        });
+      }
+    }
+    // The open view goes last so the size bound drops the others first.
+    const live = views.findIndex((v) => v.categoryId === selectedCategoryId && v.filter === activeFilter);
+    if (live !== -1) views.push(views.splice(live, 1)[0]);
+    window.XBOViewPersist.writeSnapshot(window.sessionStorage, views, activeSort, Date.now());
+  }
+
+  /** Seed `viewCaches` from the stored snapshot, for categories that still exist. */
+  function hydrateViewSnapshot() {
+    const views = window.XBOViewPersist.readSnapshot(window.sessionStorage, activeSort, Date.now());
+    for (const view of views) {
+      const node = categoryIndex.get(view.categoryId);
+      if (!node) continue; // renamed/removed since (e.g. a recategorize)
+      const catCache = ensureCategoryCache(view.categoryId);
+      // The tree just loaded is authoritative for the rollup counts.
+      catCache.counts = { ...view.counts, total: node.total, unread: node.unread };
+      catCache.filters.set(view.filter, {
+        ids: view.bookmarks.map((b) => b.id),
+        bmById: new Map(view.bookmarks.map((b) => [b.id, b])),
+        offset: view.offset,
+        hasMore: Boolean(view.hasMore),
+      });
+    }
+  }
+
+  /**
+   * On load: reopen the persisted category + tab, from the persisted pages
+   * when there are any. A category that no longer exists falls back to the
+   * empty "Select a category" state - never an error.
+   */
+  async function restoreLastView() {
+    await loadTree();
+    try {
+      const saved = window.XBOViewPersist && window.XBOViewPersist.readSelection(window.localStorage);
+      if (saved && selectedCategoryId == null) {
+        activeFilter = saved.filter;
+        renderFilterTabs();
+      }
+      if (saved && saved.categoryId != null && selectedCategoryId == null) {
+        const node = categoryIndex.get(saved.categoryId);
+        const button = treeEl.querySelector(`[data-category-id="${saved.categoryId}"]`);
+        if (node && button) {
+          hydrateViewSnapshot();
+          viewRestoreDone = true;
+          await selectCategory(node, button);
+          return;
+        }
+      }
+    } catch (_) {
+      /* storage or a stale record must never break the viewer */
+    } finally {
+      viewRestoreDone = true;
+    }
+    persistSelection(); // nothing (valid) to restore: forget a dead selection
   }
 
   // ---- sidebar (pushes the content, issue #65) ---------------------------
@@ -402,8 +496,22 @@
     return bodyEl.getAttribute("data-sidebar") === "collapsed";
   }
 
+  // The wide-screen push slides the whole viewer with a transform-only
+  // keyframe (styles.css `viewer-slide-*`); this just names the run and clears
+  // it afterwards. Silent (initial) changes and the narrow overlay drawer,
+  // which has its own transition, never animate the viewer.
+  const viewerEl = document.getElementById("viewer");
+  function playViewerSlide(collapsed) {
+    bodyEl.removeAttribute("data-sidebar-anim");
+    if (!viewerEl || drawerQuery.matches) return;
+    void viewerEl.offsetWidth; // restart the keyframe if a run is in flight
+    bodyEl.setAttribute("data-sidebar-anim", collapsed ? "close" : "open");
+  }
+
   function setCollapsed(collapsed, opts) {
     const options = opts || {};
+    const changed = isCollapsed() !== collapsed;
+    if (changed && !options.silent) playViewerSlide(collapsed);
     if (collapsed) bodyEl.setAttribute("data-sidebar", "collapsed");
     else bodyEl.removeAttribute("data-sidebar");
 
@@ -430,6 +538,31 @@
     setCollapsed(readStoredCollapsed(), { silent: true });
 
     toggleBtn.addEventListener("click", () => setCollapsed(!isCollapsed()));
+    if (viewerEl) {
+      viewerEl.addEventListener("animationend", (e) => {
+        if (e.target === viewerEl) bodyEl.removeAttribute("data-sidebar-anim");
+      });
+    }
+    // The empty-state prompts (landing card + top-bar title) open the same
+    // animated sidebar as the menu toggle.
+    const openFromPrompt = () => {
+      if (isCollapsed()) setCollapsed(false);
+      else {
+        const first = treeEl.querySelector(".tree-node") || searchInput;
+        if (first) first.focus();
+      }
+    };
+    document.addEventListener("click", (e) => {
+      if (e.target.closest && e.target.closest("[data-open-categories]")) openFromPrompt();
+    });
+    listRoot.addEventListener("keydown", (e) => {
+      const prompt = e.target.closest && e.target.closest(".state-prompt");
+      if (!prompt || e.target !== prompt) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openFromPrompt();
+      }
+    });
     backdropEl.addEventListener("click", () => setCollapsed(true));
 
     // The bar's search control is an entry point to the drawer's own filter
@@ -574,6 +707,7 @@
     if (id === activeSort || !window.XBOSortOrder) return;
     window.XBOSortOrder.writeSortOrder(window.localStorage, id);
     applySortOrder(id);
+    clearPersistedViews();
     viewCaches = new Map();
     cacheOrder = [];
     releaseOrphanPanes();
@@ -977,6 +1111,7 @@
 
     if (selectedCategoryId !== node.id) saveCurrentViewToCache();
     selectedCategoryId = node.id;
+    persistSelection();
 
     renderTitle(node.path);
 
@@ -985,6 +1120,16 @@
     if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
 
     await showCategoryView();
+  }
+
+  /** The bar's title with nothing selected: a button that opens the sidebar. */
+  function renderEmptyTitle() {
+    const prompt = el("button", "topbar-prompt", "Select a category");
+    prompt.type = "button";
+    prompt.setAttribute("aria-controls", "sidebar");
+    prompt.setAttribute("data-open-categories", "");
+    titleEl.replaceChildren(prompt);
+    titleEl.removeAttribute("title");
   }
 
   /**
@@ -1061,28 +1206,48 @@
    * restores instantly from `viewCaches` instead when this exact
    * category+filter was already loaded.
    */
-  async function fetchAndRenderFirstPage() {
+  async function fetchAndRenderFirstPage(opts) {
     const seq = ++requestSeq;
     teardownObserver();
     pageLoading = false;
     viewReady = false; // mid-fetch: not safe to cache until this settles
     pageOffset = 0;
     pageHasMore = false;
-    currentViewBookmarks = [];
-    clearTabCounts();
-    ensureViewHost();
-    paintViewCards(); // hide the previous view's cards (kept mounted in the pool)
-    stateMessage(listEl, "loading", "Loading bookmarks…");
+    // A tab switch inside an open category keeps the current view on screen
+    // (dimmed) until the first page lands - never a blank frame between
+    // views; anything else shows the gray loading placeholder at once.
+    const keep =
+      window.XBOFilterCache.loadingStrategy(!(opts && opts.sameCategory), hostMounted) ===
+      "keep-content";
+    if (keep) {
+      listRoot.setAttribute("aria-busy", "true");
+    } else {
+      currentViewBookmarks = [];
+      clearTabCounts();
+      ensureViewHost();
+      paintViewCards(); // hide the previous view's cards (kept mounted in the pool)
+      stateMessage(listEl, "loading", "Loading bookmarks…");
+    }
 
     let data;
     try {
       data = await fetchPage(0);
     } catch (err) {
       if (seq !== requestSeq) return; // a newer view took over
+      currentViewBookmarks = [];
+      clearTabCounts();
+      ensureViewHost();
+      paintViewCards();
       stateMessage(listEl, "error", "Could not load bookmarks for this category.");
       return;
     }
     if (seq !== requestSeq) return; // superseded while awaiting
+    if (keep) {
+      // Swap in one synchronous step: the old view's cards hide in the same
+      // task the new ones show, so no intermediate frame is ever painted.
+      currentViewBookmarks = [];
+      ensureViewHost();
+    }
 
     viewReady = true;
     categoryCounts = data.counts || emptyCounts();
@@ -2082,7 +2247,10 @@
     renderFilterTabs();
     // Changing the tab re-pages the category from the top, unless this exact
     // category+filter is already cached from a prior visit.
-    if (selectedCategoryId != null) showCategoryView();
+    if (selectedCategoryId != null) {
+      showCategoryView({ sameCategory: true });
+      persistSelection();
+    }
   }
 
   function initFilterTabs() {
@@ -2338,6 +2506,7 @@
    * missing a post.
    */
   async function refreshAfterSync() {
+    clearPersistedViews();
     viewCaches = new Map();
     cacheOrder = [];
     resetPool();
@@ -2925,7 +3094,11 @@
   let firstRunSyncBtn = null;
 
   function renderSelectPrompt() {
-    const box = el("div", "state state-empty state-welcome");
+    const box = el("div", "state state-empty state-welcome state-prompt");
+    box.setAttribute("role", "button");
+    box.tabIndex = 0;
+    box.setAttribute("aria-controls", "sidebar");
+    box.setAttribute("data-open-categories", "");
     box.append(
       el("span", "state-icon", "🔖"),
       el("p", "state-title", "Nothing selected yet"),
@@ -3078,12 +3251,13 @@
       resetConfirmBtn.classList.remove("is-loading");
     }
     // Back to the never-synced state everywhere the viewer remembers the old library.
+    clearPersistedViews();
     viewCaches = new Map();
     cacheOrder = [];
     resetPool();
     selectedCategoryId = null;
-    titleEl.replaceChildren(document.createTextNode("Select a category"));
-    titleEl.removeAttribute("title");
+    renderEmptyTitle();
+    persistSelection();
     lastSyncedAt = null;
     renderSyncStatus();
     if (syncProgressEl) syncProgressEl.hidden = true;
@@ -3126,7 +3300,11 @@
   initCategorizationSettings();
   initSetup();
   initReset();
-  loadTree();
+  void restoreLastView();
+  window.addEventListener("pagehide", persistViewSnapshot);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") persistViewSnapshot();
+  });
   loadSyncStatus();
   loadSummaryStatus();
   // Last: it decides whether the guided flow opens, which needs the tree's

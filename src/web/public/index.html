@@ -9,292 +9,292 @@
   <body>
     <a class="skip-link" href="#bookmarks">Skip to bookmarks</a>
 
-    <header class="topbar">
-      <div class="topbar-left">
-        <button
-          id="sidebar-toggle"
-          class="icon-btn menu-toggle"
-          type="button"
-          aria-controls="sidebar"
-          aria-expanded="true"
-          aria-label="Hide categories"
-        >
-          <span class="icon-menu" aria-hidden="true">
-            <span class="menu-bar"></span>
-            <span class="menu-bar"></span>
-            <span class="menu-bar"></span>
-          </span>
-        </button>
-      </div>
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 
-      <div class="topbar-center">
-        <h1 id="content-title" class="topbar-title">Select a category</h1>
-      </div>
-
-      <div class="topbar-right">
-        <button
-          id="search-open"
-          class="icon-btn"
-          type="button"
-          aria-controls="category-search"
-          aria-label="Search categories"
-        >
-          <svg class="icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-            <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
-            <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-          </svg>
-        </button>
-
-        <button
-          id="theme-toggle"
-          class="icon-btn theme-toggle"
-          type="button"
-          aria-pressed="false"
-          aria-label="Switch to dark theme"
-        >
-          <svg class="icon-sun icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-            <circle cx="10" cy="10" r="4" fill="none" stroke="currentColor" stroke-width="1.6" />
-            <g stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-              <line x1="10" y1="1.5" x2="10" y2="3.5" />
-              <line x1="10" y1="16.5" x2="10" y2="18.5" />
-              <line x1="1.5" y1="10" x2="3.5" y2="10" />
-              <line x1="16.5" y1="10" x2="18.5" y2="10" />
-              <line x1="4.2" y1="4.2" x2="5.6" y2="5.6" />
-              <line x1="14.4" y1="14.4" x2="15.8" y2="15.8" />
-              <line x1="4.2" y1="15.8" x2="5.6" y2="14.4" />
-              <line x1="14.4" y1="5.6" x2="15.8" y2="4.2" />
-            </g>
-          </svg>
-          <svg class="icon-moon icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-            <path
-              d="M15.5 12.3A6.5 6.5 0 0 1 7.7 4.5a6.5 6.5 0 1 0 7.8 7.8z"
-              fill="currentColor"
-            />
-          </svg>
-        </button>
-
-        <div class="settings-anchor">
+    <nav id="sidebar" class="sidebar" aria-label="Category tree">
+      <div class="sidebar-inner">
+        <div class="sidebar-topbar">
+          <h2 class="sidebar-heading">Categories</h2>
           <button
-            id="sync-toggle"
-            class="icon-btn"
+            id="color-toggle"
+            class="icon-btn is-toggle"
             type="button"
-            aria-haspopup="dialog"
-            aria-expanded="false"
-            aria-controls="sync-panel"
-            aria-label="Open sync"
+            aria-pressed="false"
+            aria-label="Turn category colors on"
           >
-            <svg class="icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              <path d="M16.8 2.6v3.6h-3.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
-
-          <div
-            id="sync-panel"
-            class="settings-panel sync-panel"
-            role="dialog"
-            aria-labelledby="sync-panel-title"
-            hidden
-          >
-            <h2 id="sync-panel-title" class="settings-panel-title">Sync</h2>
-            <p id="sync-status" class="sync-status" aria-live="polite">
-              <span id="sync-status-date" class="sync-status-date">Loading…</span>
-              <span id="sync-status-rel" class="sync-status-rel"></span>
-            </p>
-            <button id="sync-btn" class="btn btn-primary sync-btn" type="button">
-                          <svg class="icon-glyph icon-refresh" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                            <path
-                              d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                            />
-                            <path
-                              d="M16.8 2.6v3.6h-3.6"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                            />
-                          </svg>
-                          <span class="sync-btn-label">Sync</span>
-                        </button>
-            <div class="sync-reset">
-              <p class="sync-reset-note">Start over from an empty library. Your X sign-in is kept.</p>
-              <button id="reset-open" class="btn btn-danger" type="button">Reset library</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="settings-anchor">
-          <button
-            id="settings-toggle"
-            class="icon-btn settings-toggle"
-            type="button"
-            aria-haspopup="dialog"
-            aria-expanded="false"
-            aria-controls="settings-panel"
-            aria-label="Open settings"
-          >
-            <svg
-              class="icon-glyph"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <circle cx="12" cy="12" r="3" />
+            <svg class="icon-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path
-                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                d="M12 3a9 9 0 0 0 0 18 2 2 0 0 0 2-2 1.9 1.9 0 0 0-.5-1.3 1.9 1.9 0 0 1-.5-1.3 2 2 0 0 1 2-2H17a4 4 0 0 0 4-4c0-3.9-4-7.4-9-7.4z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linejoin="round"
               />
+              <circle cx="7.5" cy="11.5" r="1.3" fill="currentColor" />
+              <circle cx="11" cy="8" r="1.3" fill="currentColor" />
+              <circle cx="15.5" cy="9.5" r="1.3" fill="currentColor" />
+              <circle cx="7.5" cy="16" r="1.3" fill="currentColor" />
             </svg>
           </button>
-
-          <div
-            id="settings-panel"
-            class="settings-panel"
-            role="dialog"
-            aria-labelledby="settings-panel-title"
-            hidden
-          >
-            <h2 id="settings-panel-title" class="settings-panel-title">Settings</h2>
-
-            <div class="settings-group">
-              <span class="settings-label" id="post-scale-label">Post size</span>
-              <div
-                id="post-scale"
-                class="segmented settings-segmented"
-                role="radiogroup"
-                aria-labelledby="post-scale-label"
-              >
-                <label class="seg">
-                  <input class="seg-input" type="radio" name="post-scale" value="small" checked />
-                  <span class="seg-label">Small</span>
-                </label>
-                <label class="seg">
-                  <input class="seg-input" type="radio" name="post-scale" value="medium" />
-                  <span class="seg-label">Medium</span>
-                </label>
-                <label class="seg">
-                  <input class="seg-input" type="radio" name="post-scale" value="large" />
-                  <span class="seg-label">Large</span>
-                </label>
-              </div>
-              <p class="settings-hint">Resizes the post cards, embedded X post included.</p>
-            </div>
-
-            <div class="settings-group">
-              <span class="settings-label" id="sort-order-label">Order</span>
-              <div
-                id="sort-order"
-                class="segmented settings-segmented"
-                role="radiogroup"
-                aria-labelledby="sort-order-label"
-              >
-                <label class="seg">
-                  <input class="seg-input" type="radio" name="sort-order" value="recent" checked />
-                  <span class="seg-label">Newest</span>
-                </label>
-                <label class="seg">
-                  <input class="seg-input" type="radio" name="sort-order" value="score" />
-                  <span class="seg-label">Top score</span>
-                </label>
-              </div>
-              <p id="sort-order-hint" class="settings-hint">
-                Top score needs the ranking pass, which is paid per token and runs from the
-                command line: <code>node dist/index.js rank</code>.
-              </p>
-            </div>
-
-            <div class="settings-group">
-              <span class="settings-label" id="settings-categorization-label">Categorization</span>
-              <p class="settings-hint">A sync works in two phases: first it designs the category tree, then it files each bookmark into it.</p>
-              <div
-                id="settings-categorization"
-                class="field-stack"
-                aria-labelledby="settings-categorization-label"
-              ></div>
-              <p id="settings-categorization-note" class="settings-note" hidden></p>
-              <div class="settings-actions">
-                <button id="settings-save" class="btn btn-primary settings-save" type="button">
-                  Save
-                </button>
-                <span id="settings-save-status" class="settings-save-status" role="status"></span>
-              </div>
-            </div>
-          </div>
         </div>
-      </div>
-    </header>
-
-    <div class="app-body">
-      <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
-
-      <nav id="sidebar" class="sidebar" aria-label="Category tree">
-        <div class="sidebar-inner">
-          <div class="sidebar-topbar">
-            <h2 class="sidebar-heading">Categories</h2>
+        <div class="sidebar-search">
+          <label class="visually-hidden" for="category-search">Filter categories by name</label>
+          <div class="search-field">
+            <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
+              <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            <input
+              id="category-search"
+              class="search-input"
+              type="search"
+              placeholder="Filter categories…"
+              autocomplete="off"
+              spellcheck="false"
+              aria-controls="tree"
+            />
             <button
-              id="color-toggle"
-              class="icon-btn is-toggle"
+              id="category-search-clear"
+              class="search-clear"
               type="button"
-              aria-pressed="false"
-              aria-label="Turn category colors on"
+              aria-label="Clear category filter"
+              hidden
             >
-              <svg class="icon-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path
-                  d="M12 3a9 9 0 0 0 0 18 2 2 0 0 0 2-2 1.9 1.9 0 0 0-.5-1.3 1.9 1.9 0 0 1-.5-1.3 2 2 0 0 1 2-2H17a4 4 0 0 0 4-4c0-3.9-4-7.4-9-7.4z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linejoin="round"
-                />
-                <circle cx="7.5" cy="11.5" r="1.3" fill="currentColor" />
-                <circle cx="11" cy="8" r="1.3" fill="currentColor" />
-                <circle cx="15.5" cy="9.5" r="1.3" fill="currentColor" />
-                <circle cx="7.5" cy="16" r="1.3" fill="currentColor" />
-              </svg>
+              <span class="icon-x" aria-hidden="true"></span>
             </button>
           </div>
-          <div class="sidebar-search">
-            <label class="visually-hidden" for="category-search">Filter categories by name</label>
-            <div class="search-field">
-              <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
-                <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              </svg>
-              <input
-                id="category-search"
-                class="search-input"
-                type="search"
-                placeholder="Filter categories…"
-                autocomplete="off"
-                spellcheck="false"
-                aria-controls="tree"
+        </div>
+        <div id="tree" class="tree">
+          <p class="state state-loading" role="status">Loading categories…</p>
+        </div>
+      </div>
+    </nav>
+    <div id="viewer" class="viewer">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button
+            id="sidebar-toggle"
+            class="icon-btn menu-toggle"
+            type="button"
+            aria-controls="sidebar"
+            aria-expanded="true"
+            aria-label="Hide categories"
+          >
+            <span class="icon-menu" aria-hidden="true">
+              <span class="menu-bar"></span>
+              <span class="menu-bar"></span>
+              <span class="menu-bar"></span>
+            </span>
+          </button>
+        </div>
+
+        <div class="topbar-center">
+          <h1 id="content-title" class="topbar-title"><button type="button" class="topbar-prompt" data-open-categories aria-controls="sidebar">Select a category</button></h1>
+        </div>
+
+        <div class="topbar-right">
+          <button
+            id="search-open"
+            class="icon-btn"
+            type="button"
+            aria-controls="category-search"
+            aria-label="Search categories"
+          >
+            <svg class="icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
+              <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+          </button>
+
+          <button
+            id="theme-toggle"
+            class="icon-btn theme-toggle"
+            type="button"
+            aria-pressed="false"
+            aria-label="Switch to dark theme"
+          >
+            <svg class="icon-sun icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="10" cy="10" r="4" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <g stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <line x1="10" y1="1.5" x2="10" y2="3.5" />
+                <line x1="10" y1="16.5" x2="10" y2="18.5" />
+                <line x1="1.5" y1="10" x2="3.5" y2="10" />
+                <line x1="16.5" y1="10" x2="18.5" y2="10" />
+                <line x1="4.2" y1="4.2" x2="5.6" y2="5.6" />
+                <line x1="14.4" y1="14.4" x2="15.8" y2="15.8" />
+                <line x1="4.2" y1="15.8" x2="5.6" y2="14.4" />
+                <line x1="14.4" y1="5.6" x2="15.8" y2="4.2" />
+              </g>
+            </svg>
+            <svg class="icon-moon icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path
+                d="M15.5 12.3A6.5 6.5 0 0 1 7.7 4.5a6.5 6.5 0 1 0 7.8 7.8z"
+                fill="currentColor"
               />
-              <button
-                id="category-search-clear"
-                class="search-clear"
-                type="button"
-                aria-label="Clear category filter"
-                hidden
-              >
-                <span class="icon-x" aria-hidden="true"></span>
-              </button>
+            </svg>
+          </button>
+
+          <div class="settings-anchor">
+            <button
+              id="sync-toggle"
+              class="icon-btn"
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="sync-panel"
+              aria-label="Open sync"
+            >
+              <svg class="icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                <path d="M16.8 2.6v3.6h-3.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+
+            <div
+              id="sync-panel"
+              class="settings-panel sync-panel"
+              role="dialog"
+              aria-labelledby="sync-panel-title"
+              hidden
+            >
+              <h2 id="sync-panel-title" class="settings-panel-title">Sync</h2>
+              <p id="sync-status" class="sync-status" aria-live="polite">
+                <span id="sync-status-date" class="sync-status-date">Loading…</span>
+                <span id="sync-status-rel" class="sync-status-rel"></span>
+              </p>
+              <button id="sync-btn" class="btn btn-primary sync-btn" type="button">
+                            <svg class="icon-glyph icon-refresh" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                              <path
+                                d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                              />
+                              <path
+                                d="M16.8 2.6v3.6h-3.6"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                              />
+                            </svg>
+                            <span class="sync-btn-label">Sync</span>
+                          </button>
+              <div class="sync-reset">
+                <p class="sync-reset-note">Start over from an empty library. Your X sign-in is kept.</p>
+                <button id="reset-open" class="btn btn-danger" type="button">Reset library</button>
+              </div>
             </div>
           </div>
-          <div id="tree" class="tree">
-            <p class="state state-loading" role="status">Loading categories…</p>
+
+          <div class="settings-anchor">
+            <button
+              id="settings-toggle"
+              class="icon-btn settings-toggle"
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="settings-panel"
+              aria-label="Open settings"
+            >
+              <svg
+                class="icon-glyph"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <path
+                  d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                />
+              </svg>
+            </button>
+
+            <div
+              id="settings-panel"
+              class="settings-panel"
+              role="dialog"
+              aria-labelledby="settings-panel-title"
+              hidden
+            >
+              <h2 id="settings-panel-title" class="settings-panel-title">Settings</h2>
+
+              <div class="settings-group">
+                <span class="settings-label" id="post-scale-label">Post size</span>
+                <div
+                  id="post-scale"
+                  class="segmented settings-segmented"
+                  role="radiogroup"
+                  aria-labelledby="post-scale-label"
+                >
+                  <label class="seg">
+                    <input class="seg-input" type="radio" name="post-scale" value="small" checked />
+                    <span class="seg-label">Small</span>
+                  </label>
+                  <label class="seg">
+                    <input class="seg-input" type="radio" name="post-scale" value="medium" />
+                    <span class="seg-label">Medium</span>
+                  </label>
+                  <label class="seg">
+                    <input class="seg-input" type="radio" name="post-scale" value="large" />
+                    <span class="seg-label">Large</span>
+                  </label>
+                </div>
+                <p class="settings-hint">Resizes the post cards, embedded X post included.</p>
+              </div>
+
+              <div class="settings-group">
+                <span class="settings-label" id="sort-order-label">Order</span>
+                <div
+                  id="sort-order"
+                  class="segmented settings-segmented"
+                  role="radiogroup"
+                  aria-labelledby="sort-order-label"
+                >
+                  <label class="seg">
+                    <input class="seg-input" type="radio" name="sort-order" value="recent" checked />
+                    <span class="seg-label">Newest</span>
+                  </label>
+                  <label class="seg">
+                    <input class="seg-input" type="radio" name="sort-order" value="score" />
+                    <span class="seg-label">Top score</span>
+                  </label>
+                </div>
+                <p id="sort-order-hint" class="settings-hint">
+                  Top score needs the ranking pass, which is paid per token and runs from the
+                  command line: <code>node dist/index.js rank</code>.
+                </p>
+              </div>
+
+              <div class="settings-group">
+                <span class="settings-label" id="settings-categorization-label">Categorization</span>
+                <p class="settings-hint">A sync works in two phases: first it designs the category tree, then it files each bookmark into it.</p>
+                <div
+                  id="settings-categorization"
+                  class="field-stack"
+                  aria-labelledby="settings-categorization-label"
+                ></div>
+                <p id="settings-categorization-note" class="settings-note" hidden></p>
+                <div class="settings-actions">
+                  <button id="settings-save" class="btn btn-primary settings-save" type="button">
+                    Save
+                  </button>
+                  <span id="settings-save-status" class="settings-save-status" role="status"></span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-      </nav>
+      </header>
 
+    <div class="app-body">
       <div class="main-column">
         <div class="toolbar">
           <div
@@ -399,7 +399,7 @@
               aria-labelledby="filter-tab-all"
               aria-live="polite"
             >
-              <div class="state state-empty state-welcome">
+              <div class="state state-empty state-welcome state-prompt" role="button" tabindex="0" data-open-categories aria-controls="sidebar">
                 <span class="state-icon" aria-hidden="true">🔖</span>
                 <p class="state-title">Nothing selected yet</p>
                 <p class="state-body">Choose a category from the sidebar to see its bookmarks.</p>
@@ -408,6 +408,7 @@
           </div>
         </main>
       </div>
+    </div>
     </div>
 
     <div id="setup-backdrop" class="reader-backdrop" hidden></div>
@@ -548,6 +549,7 @@
     <script src="tree-counts.js" defer></script>
     <script src="read-toggle.js" defer></script>
     <script src="filter-cache.js" defer></script>
+    <script src="view-persist.js" defer></script>
     <script src="sort-order.js" defer></script>
     <script src="categorization.js" defer></script>
     <script src="app.js" defer></script>
