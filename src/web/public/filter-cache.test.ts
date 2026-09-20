@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 // Plain browser JS, required directly (not compiled by tsc).
-const { MAX_CACHED_CATEGORIES, touchLru, survivesFilter, isFilterEntryStale } = require("./filter-cache.js");
+const { MAX_CACHED_CATEGORIES, touchLru, touchPool, deriveFilterIds, survivesFilter, isFilterEntryStale } = require("./filter-cache.js");
 
 /** A bookmark's cacheable state, as the viewer tracks it per card. */
 const state = (read: boolean, favorite = false) => ({ read, favorite });
@@ -109,5 +109,45 @@ describe("isFilterEntryStale", () => {
   it("is not stale when the cached presence already matches the new state", () => {
     expect(isFilterEntryStale([1, 2, 3], "unread", 2, state(false))).toBe(false);
     expect(isFilterEntryStale([1, 3], "unread", 2, state(true))).toBe(false);
+  });
+});
+
+describe("touchPool (per-post LRU, issue #67)", () => {
+  it("marks touched posts most recent without duplicating them", () => {
+    const { order, evicted } = touchPool([1, 2, 3], [1], 10, []);
+    expect(order).toEqual([2, 3, 1]);
+    expect(evicted).toEqual([]);
+  });
+
+  it("evicts the oldest posts beyond the cap, bounding the pool", () => {
+    const { order, evicted } = touchPool([1, 2, 3, 4], [5, 6], 4, []);
+    expect(order).toEqual([3, 4, 5, 6]);
+    expect(evicted).toEqual([1, 2]);
+  });
+
+  it("never evicts a protected (on-screen) post, even over the cap", () => {
+    const { order, evicted } = touchPool([1, 2, 3], [4], 3, [1]);
+    expect(evicted).toEqual([2]);
+    expect(order).toEqual([1, 3, 4]);
+  });
+
+  it("does not mutate its input", () => {
+    const input = [1, 2, 3];
+    touchPool(input, [4], 2, []);
+    expect(input).toEqual([1, 2, 3]);
+  });
+});
+
+describe("deriveFilterIds", () => {
+  const byId = new Map([
+    [1, { read: false, favorite: false }],
+    [2, { read: true, favorite: false }],
+    [3, { read: false, favorite: true }],
+  ]);
+  it("derives each tab from a complete All list, keeping its order", () => {
+    expect(deriveFilterIds("unread", [3, 2, 1], byId)).toEqual([3, 1]);
+    expect(deriveFilterIds("read", [3, 2, 1], byId)).toEqual([2]);
+    expect(deriveFilterIds("favorite", [3, 2, 1], byId)).toEqual([3]);
+    expect(deriveFilterIds("all", [3, 2, 1], byId)).toEqual([3, 2, 1]);
   });
 });

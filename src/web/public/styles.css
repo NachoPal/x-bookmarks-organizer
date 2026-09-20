@@ -1151,15 +1151,15 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   gap: var(--space-3);
   max-width: var(--content-measure);
 }
-/* One pane per cached category+filter view; inactive panes stay mounted
-   (hidden) so their X embeds are never detached and reloaded. */
+/* The list host holds every pooled card (issue #67) - hidden while not part
+   of the active view, never detached, so X embeds are not reloaded - plus
+   this one pane for the loading/empty/error states and the scroll tail. Cards
+   are sequenced by inline `order`; the pane sorts after all of them. */
 .view-pane {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-}
-.view-pane[hidden] {
-  display: none;
+  order: 1000000;
 }
 .bookmark-card {
   /* The post-size setting. `zoom` (not `transform: scale`) because it scales

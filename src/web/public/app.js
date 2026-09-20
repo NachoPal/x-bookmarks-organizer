@@ -8,9 +8,9 @@
  */
 (function () {
   const treeEl = document.getElementById("tree");
-  // Host of the per-view panes. `listEl` is the ACTIVE pane (see the filter
-  // cache below); until the first category is opened it is the host itself,
-  // which still holds the static welcome state.
+  // Host of the card pool plus ONE view pane (`listEl`: loading/empty/error
+  // states, sentinel, end marker). Until the first category is opened
+  // `listEl` is the host itself, which still holds the static welcome state.
   const listRoot = document.getElementById("bookmark-list");
   let listEl = listRoot;
   const titleEl = document.getElementById("content-title");
@@ -77,63 +77,109 @@
   // loading placeholder or error state as if it were real content.
   let viewReady = false;
 
-  // ---- client-side filter cache (issue #33) -------------------------------
-  // Switching tabs (or switching back to a category already visited) reuses
-  // already-fetched pages and already-rendered DOM instead of re-fetching
-  // and re-rendering - no reload flash and no reloading the X embeds that
-  // were already loaded. Keyed by category id -> { counts,
-  // filters: Map(filter -> { ids, pane, cardEls, bmById, offset, hasMore }) }.
-  // Each view renders into its own `.view-pane` that STAYS MOUNTED in the
-  // document (just `hidden` while inactive): detaching an iframe and
-  // re-attaching it makes the browser reload it, which is what blanked the X
-  // embeds when the cache re-appended detached cards. Hiding never reloads.
-  // Bounded to XBOFilterCache.MAX_CACHED_CATEGORIES categories via LRU
-  // eviction, and every pane no cache entry retains is removed from the
-  // document, so neither memory nor DOM grows across a long session.
+  // ---- client-side view cache + per-post card pool (issues #33, #67) -----
+  // Rendered cards are pooled PER POST, not per view: a post loaded under any
+  // filter (All/Unread/Read/Favorites) or category is re-shown from the pool
+  // when it appears in another view, so its X embed never reloads and only
+  // genuinely new posts render (and spin). Every pooled card stays MOUNTED
+  // in `listRoot` - detaching an iframe and re-attaching it makes the
+  // browser reload it - and a view merely shows the cards of its own ids:
+  // the rest are `hidden`, and flex `order` sequences the visible ones, so no
+  // node is ever moved. `viewCaches` keeps only each view's id list and
+  // paging state: category id -> { counts, filters: Map(filter ->
+  // { ids, bmById, offset, hasMore }) }, bounded to
+  // XBOFilterCache.MAX_CACHED_CATEGORIES by LRU. The pool itself is bounded
+  // by XBOFilterCache.MAX_POOLED_POSTS; the posts on screen are never evicted.
   let viewCaches = new Map();
   let cacheOrder = []; // LRU order of cached category ids, oldest first
+  const cardPool = new Map(); // post id -> { bm, card }
+  let poolOrder = []; // LRU order of pooled post ids, oldest first
+  let hostMounted = false;
 
   function touchCategoryCache(categoryId) {
     const { order, evicted } = window.XBOFilterCache.touchLru(cacheOrder, categoryId);
     cacheOrder = order;
     for (const id of evicted) viewCaches.delete(id);
-    if (evicted.length) releaseOrphanPanes();
   }
 
-  /** Remove every pane (or stray static node) no cache entry retains and that is not on screen. */
-  function releaseOrphanPanes() {
-    const retained = new Set();
-    for (const catCache of viewCaches.values()) {
-      for (const entry of catCache.filters.values()) retained.add(entry.pane);
+  /**
+   * Swap the static welcome state for the live host (once) and clear the
+   * view pane. The pane sorts after every card via CSS `order`.
+   */
+  function ensureViewHost() {
+    if (!hostMounted) {
+      const pane = el("div", "view-pane");
+      listRoot.replaceChildren(pane);
+      listEl = pane;
+      hostMounted = true;
     }
-    for (const child of Array.from(listRoot.children)) {
-      if (child !== listEl && !retained.has(child)) child.remove();
+    listEl.replaceChildren();
+  }
+
+  /** Drop every pooled card (a sync makes every cached post suspect). */
+  function resetPool() {
+    for (const { card } of cardPool.values()) card.remove();
+    cardPool.clear();
+    poolOrder = [];
+  }
+
+  /** Release one pooled post (deleted, or evicted). */
+  function dropFromPool(id) {
+    const pooled = cardPool.get(id);
+    if (pooled) pooled.card.remove();
+    cardPool.delete(id);
+    poolOrder = poolOrder.filter((x) => x !== id);
+  }
+
+  /**
+   * The pooled bookmark + card for a server row: reuse them when the post was
+   * loaded before (folding in the row's fresher read/favorite state), else
+   * render a new card. Returns the POOLED bookmark object so every view of
+   * the post shares one.
+   */
+  function poolPost(row) {
+    const pooled = cardPool.get(row.id);
+    if (pooled) {
+      if (pooled.bm !== row) {
+        const changed = pooled.bm.read !== row.read || Boolean(pooled.bm.favorite) !== Boolean(row.favorite);
+        pooled.bm.read = row.read;
+        pooled.bm.readAt = row.readAt;
+        pooled.bm.favorite = row.favorite;
+        if (row.hasSummary) pooled.bm.hasSummary = true;
+        if (changed) patchCardControls(pooled.bm, pooled.card);
+      }
+      return pooled;
     }
+    const card = renderCard(row);
+    card.hidden = true; // paintViewCards reveals it
+    listRoot.insertBefore(card, listEl);
+    const created = { bm: row, card };
+    cardPool.set(row.id, created);
+    return created;
   }
 
-  /** Create a fresh (empty) pane for a new view and make it the visible one. */
-  function mountNewPane() {
-    const pane = el("div", "view-pane");
-    listRoot.appendChild(pane);
-    activatePane(pane);
-    return pane;
-  }
-
-  /** Show `pane`, hide every other pane (kept mounted, so embeds never reload). */
-  function activatePane(pane) {
-    for (const child of listRoot.children) child.hidden = child !== pane;
-    listEl = pane;
-    releaseOrphanPanes();
-  }
-
-  function ensureCategoryCache(categoryId) {
-    touchCategoryCache(categoryId);
-    let entry = viewCaches.get(categoryId);
-    if (!entry) {
-      entry = { counts: emptyCounts(), filters: new Map() };
-      viewCaches.set(categoryId, entry);
+  /** Show exactly the current view's cards, in order; hide the rest (never detach). */
+  function paintViewCards() {
+    const position = new Map(currentViewBookmarks.map((bm, i) => [bm.id, i]));
+    for (const [id, { card }] of cardPool) {
+      const i = position.get(id);
+      card.hidden = i === undefined;
+      card.style.order = i === undefined ? "" : String(i);
     }
-    return entry;
+    const { order, evicted } = window.XBOFilterCache.touchPool(
+      poolOrder,
+      currentViewBookmarks.map((bm) => bm.id),
+      window.XBOFilterCache.MAX_POOLED_POSTS,
+      position.keys(),
+    );
+    poolOrder = order;
+    for (const id of evicted) dropFromPool(id);
+  }
+
+  /** Add server rows to the current view, reusing pooled cards. */
+  function appendToView(rows) {
+    for (const row of rows) currentViewBookmarks.push(poolPost(row).bm);
+    paintViewCards();
   }
 
   /** Snapshot the currently rendered view into the cache, before leaving it. */
@@ -153,12 +199,20 @@
     }
     catCache.filters.set(activeFilter, {
       ids,
-      pane: listEl,
-      cardEls: Array.from(listEl.querySelectorAll(":scope > .bookmark-card")),
       bmById,
       offset: pageOffset,
       hasMore: pageHasMore,
     });
+  }
+
+  function ensureCategoryCache(categoryId) {
+    touchCategoryCache(categoryId);
+    let entry = viewCaches.get(categoryId);
+    if (!entry) {
+      entry = { counts: emptyCounts(), filters: new Map() };
+      viewCaches.set(categoryId, entry);
+    }
+    return entry;
   }
 
   /** Zeroed counts, one per tab that needs a total (see the server's payload). */
@@ -181,8 +235,9 @@
   }
 
   /**
-   * Render a cache-hit view directly from stored DOM nodes: no fetch, no
-   * re-render, and the embeds inside those nodes are reused as-is.
+   * Render a cache-hit view from the pool: no fetch, no re-render, and the
+   * embeds inside the pooled cards are reused as-is. A post evicted from the
+   * pool since is re-rendered (its embed reloads - it was released).
    */
   function restoreViewFromCache(entry) {
     teardownObserver();
@@ -191,22 +246,33 @@
     requestSeq += 1; // cancel any in-flight fetch from the view being left
     pageOffset = entry.offset;
     pageHasMore = entry.hasMore;
-    currentViewBookmarks = entry.ids.map((id) => entry.bmById.get(id)).filter(Boolean);
+    currentViewBookmarks = [];
+    ensureViewHost();
+    appendToView(entry.ids.map((id) => entry.bmById.get(id)).filter(Boolean));
 
-    activatePane(entry.pane);
+    renderCountLine();
     if (categoryCounts.total === 0) {
-      renderCountLine();
       stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
       return;
     }
-    renderCountLine();
     if (currentViewBookmarks.length === 0) {
       stateMessage(listEl, "empty", emptyFilterMessage());
       return;
     }
-    const staleState = listEl.querySelector(":scope > .state");
-    if (staleState) staleState.remove();
     updateTail();
+  }
+
+  /**
+   * A view of a fully loaded category under Unread/Read/Favorites needs no
+   * fetch: derive it from the cached complete "All" list (same server sort),
+   * so every card is a pooled one and the switch is instant.
+   */
+  function deriveViewEntry(catCache, filter) {
+    const all = catCache.filters.get("all");
+    if (!all || all.hasMore || filter === "all") return null;
+    const ids = window.XBOFilterCache.deriveFilterIds(filter, all.ids, all.bmById);
+    const bmById = new Map(ids.map((id) => [id, all.bmById.get(id)]));
+    return { ids, bmById, offset: ids.length, hasMore: false };
   }
 
   /**
@@ -214,15 +280,12 @@
    * than the one currently on screen, which the live DOM/bm patch already
    * handles) consistent, across every category the bookmark is filed under.
    *
-   * A cached Unread/Read/Favorites entry whose membership for this bookmark
-   * is now stale is fully invalidated (deleted, so the next visit fetches
-   * fresh) rather than patched: dropping the id alone would correctly make
-   * it disappear from the cache it left, but silently leave it missing from
-   * the cache it now belongs to (the correct sort position for a
-   * newly-qualifying post isn't knowable client-side). Every entry that
-   * SURVIVES still holds a stale copy of the bookmark and a stale card
-   * (e.g. a favorite toggled while the Unread view is open), so each one is
-   * patched in place - membership there never changed.
+   * The card itself is pooled and shared, so it is already up to date and is
+   * never touched here. A cached Unread/Read/Favorites id list whose
+   * membership for this bookmark is now stale is deleted, so the next visit
+   * re-derives it from a complete All list or re-fetches (the correct sort
+   * position of a newly-qualifying post isn't knowable otherwise) - either
+   * way the post's pooled card is reused, not reloaded.
    */
   function syncCachedViewsOnChange(bm) {
     // A cached view can be a PARENT category showing a rolled-up list of
@@ -248,52 +311,41 @@
         }
       }
 
+      // A bookmark object no longer shared with the pool (its card was
+      // evicted) still needs its copy in each entry kept current.
       for (const [filterName, entry] of catCache.filters) {
-        if (isLive(filterName)) continue; // the on-screen card is patched by the caller
-        patchCachedCard(entry, bm);
+        if (isLive(filterName)) continue;
+        const cachedBm = entry.bmById.get(bm.id);
+        if (cachedBm && cachedBm !== bm) {
+          cachedBm.read = bm.read;
+          cachedBm.readAt = bm.readAt;
+          cachedBm.favorite = bm.favorite;
+        }
       }
     }
-    releaseOrphanPanes(); // panes of invalidated entries leave the document
   }
 
-  /**
-   * Copy a bookmark's current read/favorite state into one cached entry's
-   * own copy of it, and re-render that entry's (detached-from-view but still
-   * mounted) card controls to match.
-   */
-  function patchCachedCard(entry, bm) {
-    const cachedBm = entry.bmById.get(bm.id);
-    if (!cachedBm) return;
-    cachedBm.read = bm.read;
-    cachedBm.readAt = bm.readAt;
-    cachedBm.favorite = bm.favorite;
-    const idx = entry.ids.indexOf(bm.id);
-    const cardEl = idx !== -1 ? entry.cardEls[idx] : null;
-    if (!cardEl) return;
-    cardEl.classList.toggle("is-unread", !cachedBm.read);
+  /** Re-render a card's read pill + star from its bookmark's current state. */
+  function patchCardControls(bm, cardEl) {
+    cardEl.classList.toggle("is-unread", !bm.read);
     const oldPill = cardEl.querySelector(".read-pill");
-    if (oldPill) oldPill.replaceWith(renderPill(cachedBm, cardEl));
+    if (oldPill) oldPill.replaceWith(renderPill(bm, cardEl));
     const oldStar = cardEl.querySelector(".fav-btn");
-    if (oldStar) oldStar.replaceWith(renderFavoriteButton(cachedBm, cardEl));
+    if (oldStar) oldStar.replaceWith(renderFavoriteButton(bm, cardEl));
   }
 
-  /** Permanently remove a deleted bookmark from every cached filter entry. */
+  /** Permanently remove a deleted bookmark from every cached view and the pool. */
   function purgeFromCache(bm) {
-    const affected = window.XBOTreeCounts
-      ? window.XBOTreeCounts.affectedCategoryIds(categoryIndex, bm.categoryIds || [])
-      : new Set(bm.categoryIds || []);
-    for (const categoryId of affected) {
-      const catCache = viewCaches.get(categoryId);
-      if (!catCache) continue;
-      for (const [, entry] of catCache.filters) {
+    for (const catCache of viewCaches.values()) {
+      for (const entry of catCache.filters.values()) {
         const idx = entry.ids.indexOf(bm.id);
         if (idx === -1) continue;
         entry.ids.splice(idx, 1);
-        entry.cardEls.splice(idx, 1)[0].remove();
         entry.bmById.delete(bm.id);
         entry.offset = Math.max(0, entry.offset - 1);
       }
     }
+    dropFromPool(bm.id);
   }
 
   /** Show the selected category+filter: a cache hit restores instantly, a miss fetches. */
@@ -304,6 +356,11 @@
     if (cached) {
       touchCategoryCache(selectedCategoryId);
       restoreViewFromCache(cached);
+      return;
+    }
+    const derived = catCache && deriveViewEntry(catCache, activeFilter);
+    if (derived) {
+      restoreViewFromCache(derived);
       return;
     }
     await fetchAndRenderFirstPage();
@@ -955,7 +1012,8 @@
     pageHasMore = false;
     currentViewBookmarks = [];
     clearTabCounts();
-    mountNewPane();
+    ensureViewHost();
+    paintViewCards(); // hide the previous view's cards (kept mounted in the pool)
     stateMessage(listEl, "loading", "Loading bookmarks…");
 
     let data;
@@ -987,10 +1045,7 @@
       stateMessage(listEl, "empty", emptyFilterMessage());
       return;
     }
-    for (const bm of data.bookmarks) {
-      currentViewBookmarks.push(bm);
-      listEl.appendChild(renderCard(bm));
-    }
+    appendToView(data.bookmarks);
     updateTail();
   }
 
@@ -1019,10 +1074,7 @@
     if (data.counts) categoryCounts = data.counts;
 
     removeTail();
-    for (const bm of data.bookmarks) {
-      currentViewBookmarks.push(bm);
-      listEl.appendChild(renderCard(bm));
-    }
+    appendToView(data.bookmarks);
     renderCountLine();
     updateTail();
   }
@@ -1074,7 +1126,7 @@
       listEl.appendChild(sentinelEl);
       ensureObserver();
       observer.observe(sentinelEl);
-    } else if (listEl.querySelector(".bookmark-card")) {
+    } else if (currentViewBookmarks.length > 0) {
       const end = el("p", "list-end");
       end.setAttribute("role", "status");
       end.textContent = `You've reached the end · ${filteredTotal()} shown`;
@@ -1481,17 +1533,18 @@
       // cached view (not the one on screen, patched below) consistent.
       syncCachedViewsOnChange(bm);
 
+      patchCardControls(bm, card); // the pooled card is reused by other tabs
       const dropsOut =
         (activeFilter === "unread" && bm.read) || (activeFilter === "read" && !bm.read);
       if (dropsOut) {
         // The card no longer belongs in the filtered view: drop it out. That
         // row also leaves the server-side filtered set, so shift the offset
         // back by one to keep the next batch aligned.
-        card.remove();
+        card.hidden = true; // stays pooled and mounted: no reload if it reappears
         const idx = currentViewBookmarks.indexOf(bm);
         if (idx !== -1) currentViewBookmarks.splice(idx, 1);
         pageOffset = Math.max(0, pageOffset - 1);
-        if (listEl.querySelector(".bookmark-card")) {
+        if (currentViewBookmarks.length > 0) {
           renderCountLine();
           updateTail(); // keep the "N shown" end-of-list marker in step
         } else if (pageHasMore) {
@@ -1504,9 +1557,6 @@
           stateMessage(listEl, "empty", emptyFilterMessage());
         }
       } else {
-        card.classList.toggle("is-unread", !bm.read);
-        const oldPill = card.querySelector(".read-pill");
-        if (oldPill) oldPill.replaceWith(renderPill(bm, card));
         renderCountLine();
       }
     } catch (err) {
@@ -1537,15 +1587,21 @@
       categoryCounts.favorite = Math.max(0, (categoryCounts.favorite || 0) + (bm.favorite ? 1 : -1));
       syncCachedViewsOnChange(bm);
 
+      if (starBtn) {
+        // The pooled card outlives a drop-out, so settle its star either way.
+        starBtn.classList.remove("is-loading");
+        starBtn.disabled = false;
+        applyFavoriteButtonState(starBtn, bm.favorite);
+      }
       if (activeFilter === "favorite" && !bm.favorite) {
         // Unstarred while the Favorites tab is open: the row also leaves the
         // server-side filtered set, so shift the offset back by one to keep
         // the next batch aligned (same bookkeeping as a read-state drop-out).
-        card.remove();
+        card.hidden = true; // stays pooled and mounted: no reload if it reappears
         const idx = currentViewBookmarks.indexOf(bm);
         if (idx !== -1) currentViewBookmarks.splice(idx, 1);
         pageOffset = Math.max(0, pageOffset - 1);
-        if (listEl.querySelector(".bookmark-card")) {
+        if (currentViewBookmarks.length > 0) {
           renderCountLine();
           updateTail();
         } else if (pageHasMore) {
@@ -1559,11 +1615,6 @@
         return;
       }
 
-      if (starBtn) {
-        starBtn.classList.remove("is-loading");
-        starBtn.disabled = false;
-        applyFavoriteButtonState(starBtn, bm.favorite);
-      }
       renderCountLine();
     } catch (err) {
       if (starBtn) {
@@ -1611,20 +1662,18 @@
   }
 
   function deleteBookmark(bm, card) {
-    const parent = card.parentNode;
-    const nextSibling = card.nextSibling;
     const wasUnread = !bm.read;
     const wasFavorite = Boolean(bm.favorite);
     const bmIndex = currentViewBookmarks.indexOf(bm);
 
-    card.remove();
+    card.hidden = true; // released from the pool only once the delete is final
     if (bmIndex !== -1) currentViewBookmarks.splice(bmIndex, 1);
     categoryCounts.total = Math.max(0, categoryCounts.total - 1);
     if (wasUnread && categoryCounts.unread > 0) categoryCounts.unread -= 1;
     if (wasFavorite && categoryCounts.favorite > 0) categoryCounts.favorite -= 1;
     pageOffset = Math.max(0, pageOffset - 1);
     renderCountLine();
-    if (!listEl.querySelector(".bookmark-card")) {
+    if (currentViewBookmarks.length === 0) {
       if (pageHasMore) {
         loadMore();
       } else {
@@ -1638,21 +1687,14 @@
     function restore() {
       // Deleting the last visible card swaps the list to the empty-state
       // message; clear it before putting the card back.
-      const emptyMsg = parent.querySelector(":scope > .state-empty");
+      const emptyMsg = listEl.querySelector(":scope > .state-empty");
       if (emptyMsg) emptyMsg.remove();
-      // nextSibling may no longer be attached (e.g. the tail/sentinel was
-      // replaced by that empty-state message while the card sat in its
-      // toast's undo window), so fall back to appending rather than throwing.
-      if (nextSibling && nextSibling.parentNode === parent) {
-        parent.insertBefore(card, nextSibling);
-      } else {
-        parent.appendChild(card);
-      }
       if (bmIndex !== -1 && bmIndex <= currentViewBookmarks.length) {
         currentViewBookmarks.splice(bmIndex, 0, bm);
       } else {
         currentViewBookmarks.push(bm);
       }
+      paintViewCards(); // re-shows the card at its old position
       categoryCounts.total += 1;
       if (wasUnread) categoryCounts.unread += 1;
       if (wasFavorite) categoryCounts.favorite = (categoryCounts.favorite || 0) + 1;
@@ -2194,6 +2236,7 @@
   async function refreshAfterSync() {
     viewCaches = new Map();
     cacheOrder = [];
+    resetPool();
     const keepId = selectedCategoryId;
     await loadTree();
     await fetchSetup();
