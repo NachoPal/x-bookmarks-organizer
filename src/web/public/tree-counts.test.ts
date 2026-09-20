@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 // Plain browser JS, required directly (not compiled by tsc).
-const { buildCategoryIndex, ancestorChainIds, affectedCategoryIds, applyCountDelta } = require("./tree-counts.js");
+const { tabCounts, buildCategoryIndex, ancestorChainIds, affectedCategoryIds, applyCountDelta } = require("./tree-counts.js");
 
 /** AI (1) -> Evals (2), Harnesses (3); Design (4) -> UI (5). */
 function sampleTree() {
@@ -91,5 +91,27 @@ describe("applyCountDelta", () => {
     const index = buildCategoryIndex(sampleTree());
     expect(() => applyCountDelta(index, [999], -1, -1)).not.toThrow();
     expect(applyCountDelta(index, [999], -1, -1)).toEqual([]);
+  });
+});
+
+describe("tabCounts (filter tab badges, issue #72)", () => {
+  it("maps rolled-up counts to each tab, deriving read", () => {
+    expect(tabCounts({ total: 10, unread: 4, favorite: 2 })).toEqual({
+      unread: 4,
+      read: 6,
+      all: 10,
+      favorite: 2,
+    });
+  });
+
+  it("tracks a read toggle and a favorite toggle", () => {
+    const counts = { total: 5, unread: 5, favorite: 0 };
+    counts.unread -= 1; // mark one read
+    counts.favorite += 1; // star one
+    expect(tabCounts(counts)).toEqual({ unread: 4, read: 1, all: 5, favorite: 1 });
+  });
+
+  it("tolerates a missing favorite total", () => {
+    expect(tabCounts({ total: 2, unread: 1 } as never).favorite).toBe(0);
   });
 });

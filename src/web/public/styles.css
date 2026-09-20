@@ -340,17 +340,6 @@ body {
   color: var(--color-text-muted);
   font-weight: 500;
 }
-.topbar-count {
-  flex: 0 0 auto;
-  color: var(--color-text-muted);
-  font-size: var(--text-small);
-  white-space: nowrap;
-}
-.topbar-count:not(:empty)::before {
-  content: "·";
-  margin-right: var(--space-2);
-}
-
 .sync-status {
   min-width: 0;
   margin: 0;
@@ -901,6 +890,26 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.filter-tab-count {
+  flex: 0 0 auto;
+  min-width: 1.5rem;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.filter-tab-count:empty {
+  display: none;
+}
+.filter-tab[aria-selected="true"] .filter-tab-count {
+  background: var(--color-surface);
+  color: inherit;
+}
 .filter-tab-icon {
   flex: 0 0 auto;
   width: 1.125rem;
@@ -966,7 +975,6 @@ body:not([data-sidebar="collapsed"]) .sidebar {
 @media (max-width: 560px) {
   /* Counts are still one tap away in the tree's badges, and the ancestor
      crumb would cost the leaf most of the line it has left. */
-  .topbar-count,
   .topbar-crumb {
     display: none;
   }
@@ -974,6 +982,14 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   .filter-tab {
     gap: var(--space-1);
     padding: var(--space-2) var(--space-1);
+  }
+  /* The label + badge matter more than the star at this width. */
+  .filter-tab-icon {
+    display: none;
+  }
+  .filter-tab-count {
+    min-width: 0;
+    padding: 0 var(--space-1);
   }
 }
 
