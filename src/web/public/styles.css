@@ -476,19 +476,37 @@ body:not([data-sidebar="collapsed"]) .menu-toggle .menu-bar:nth-child(3) {
 
 
 /* ============================================================
-   App body / sidebar (issues #65, #78)
-   Wide screens: the sidebar is a full-height panel beside `.viewer`, which
-   holds the ENTIRE chrome (top bar, tab bar, posts). Opening it gives the
-   viewer a left margin, so it is displaced as ONE unit (top bar + title
-   included) and its content re-centers in the space left; nothing is ever
-   hidden underneath. The open/close SLIDE is transform-only: the layout
-   change happens once, up front, and a keyframe (`viewer-slide-*`) starts the
-   viewer at its previous on-screen position and glides it home - animating
-   width/margin would relayout the tab bar, every card and every embedded
-   tweet on each frame. app.js sets `data-sidebar-anim` for the run.
-   Narrow screens (<=820px): a pushed column would have no room left, so the
-   sidebar stays the overlay drawer under the bar, with its scrim and its
-   auto-dismiss on picking a category; the viewer never moves.
+   App body / sidebar (issues #65, #78, #86)
+   Wide screens (>=821px): `body` is a two-column GRID - the sidebar track,
+   then `.viewer`, which holds the ENTIRE chrome (top bar, tab bar, posts).
+   Opening transitions ONE declaration, `grid-template-columns`, from
+   `0 minmax(0, 1fr)` to `var(--sidebar-width) minmax(0, 1fr)`: the sidebar
+   grows and the content column gives up exactly that width on the same
+   frames, out of a single interpolation. Two columns resizing together, in
+   lockstep by construction - no second animation to keep in sync, and
+   nothing ever translates off-screen.
+   Resizing a column IS a layout animation, and the naive form of it is
+   genuinely dangerous: relayouting a container that owns embedded tweets
+   re-lays-out every iframe per frame. Two things keep that from happening
+   here. (1) `.sidebar-inner` is pinned to the FULL --sidebar-width and the
+   shrinking `.sidebar` track (overflow: hidden) only clips it, so the tree's
+   labels and counts never rewrap mid-run. (2) the posts sit in
+   `.content-inner`, a fixed --content-measure block with auto margins, so on
+   a wide viewport a card's width is CONSTANT through the whole animation -
+   only the empty column space around it changes, and an iframe whose box
+   never changes size is never re-laid-out. `.bookmark-card` also carries
+   `contain: layout`, making each card its own layout root.
+   Measured on the dev seed with 55 cards and a live X embed mounted: zero
+   frames over 20ms in either direction, embed width identical every frame.
+   Do NOT replace this with a transform slide of the whole `.viewer`: that
+   was the #78 approach and it reads as the entire app sliding as one block
+   with its right edge clipped off-screen (owner rejected it in #86).
+   Narrow screens (<=820px): a resized column would have no room left, so the
+   sidebar stays the FIXED overlay drawer under the bar, sliding on transform
+   with its scrim and its auto-dismiss on picking a category; the viewer
+   never moves and never resizes.
+   `prefers-reduced-motion` is covered by the global block at the end of this
+   file, which flattens the transition to an instant resize.
    ============================================================ */
 .viewer {
   flex: 1 1 auto;
@@ -560,39 +578,44 @@ body:not([data-sidebar="collapsed"]) .sidebar {
 }
 
 @media (min-width: 821px) {
+  /* `body` becomes the two-column grid, and the ONE animated declaration in
+     this whole mechanism is its `grid-template-columns`. Interpolating the
+     track list resizes both columns from a single interpolation, so they
+     cannot drift apart the way two separately-timed animations would.
+     (Animatable tracks: Firefox 66+, Chrome/Edge 107+, Safari 16.1+. The
+     track COUNT never changes and both lists are length + `minmax(0, 1fr)`,
+     which is what keeps them interpolable; a browser without it simply
+     snaps.) Every other body child - skip link, scrims, modals, toasts - is
+     absolutely or fixed positioned, so only these two take a cell. */
+  body {
+    display: grid;
+    grid-template-columns: 0 minmax(0, 1fr);
+    grid-template-rows: 100%;
+    transition: grid-template-columns var(--motion-med) var(--ease);
+  }
+  body:not([data-sidebar="collapsed"]) {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  }
   .sidebar {
-    top: 0;
-    width: var(--sidebar-width);
+    /* `relative` only to be the containing block for `.sidebar-inner`; the
+       drawer's own `top`/`left` offsets must be cleared, or relative
+       positioning would shift the whole column down by the header height. */
+    position: relative;
+    inset: auto;
+    grid-area: 1 / 1;
+    width: auto; /* the track sizes it now */
+    transform: none;
+    /* The divider is an INSET shadow, not a border: it paints on the track's
+       own right edge, so it follows the resize and vanishes at width 0 (a
+       border-box border would leave a 1px seam on a closed column). */
+    border-right: 0;
+    box-shadow: inset -1px 0 0 var(--color-border);
   }
   body:not([data-sidebar="collapsed"]) .sidebar {
-    box-shadow: none;
+    box-shadow: inset -1px 0 0 var(--color-border);
   }
-  body:not([data-sidebar="collapsed"]) .viewer {
-    margin-left: var(--sidebar-width);
-  }
-  body[data-sidebar-anim="open"] .viewer {
-    animation: viewer-slide-open var(--motion-slow) var(--ease);
-  }
-  body[data-sidebar-anim="close"] .viewer {
-    animation: viewer-slide-close var(--motion-slow) var(--ease);
-  }
-  /* On close the (already full-width) viewer starts one sidebar-width to the
-     right of the viewport; body's own overflow: hidden clips it. */
-}
-@keyframes viewer-slide-open {
-  from {
-    transform: translateX(calc(var(--sidebar-width) * -1));
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-@keyframes viewer-slide-close {
-  from {
-    transform: translateX(var(--sidebar-width));
-  }
-  to {
-    transform: translateX(0);
+  .viewer {
+    grid-area: 1 / 2;
   }
 }
 .sidebar-inner {
@@ -604,6 +627,22 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+/* Held at the FULL sidebar width, anchored to the track's RIGHT edge, so the
+   shrinking track only ever CLIPS it: letting it follow the track would
+   rewrap every tree label and count on every frame of the resize, and
+   leaving it in flow would let the browser's own scroll anchoring decide
+   which edge it clings to. Anchoring right means the tree slides in from the
+   left exactly as the <=820px drawer does, in step with the column's growth.
+   Declared after the base rule so it wins. */
+@media (min-width: 821px) {
+  .sidebar-inner {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: var(--sidebar-width);
+  }
 }
 .sidebar-topbar {
   display: flex;
@@ -1207,6 +1246,11 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4);
   box-shadow: var(--shadow-sm);
+  /* A card is its own layout root, so reflowing the column during the
+     sidebar resize (see "App body / sidebar") never descends into a card's
+     embedded tweet. `layout` only - `paint`/`size` would clip or freeze the
+     embed's own height as the widget settles. */
+  contain: layout;
 }
 .bookmark-card.is-unread {
   border-left-color: var(--color-unread);
