@@ -159,27 +159,27 @@
             <h2 id="settings-panel-title" class="settings-panel-title">Settings</h2>
 
             <div class="settings-group">
-              <span class="settings-label" id="text-size-label">Text size</span>
+              <span class="settings-label" id="post-scale-label">Post size</span>
               <div
-                id="text-size"
+                id="post-scale"
                 class="segmented settings-segmented"
                 role="radiogroup"
-                aria-labelledby="text-size-label"
+                aria-labelledby="post-scale-label"
               >
                 <label class="seg">
-                  <input class="seg-input" type="radio" name="text-size" value="small" />
+                  <input class="seg-input" type="radio" name="post-scale" value="small" />
                   <span class="seg-label">Small</span>
                 </label>
                 <label class="seg">
-                  <input class="seg-input" type="radio" name="text-size" value="medium" checked />
+                  <input class="seg-input" type="radio" name="post-scale" value="medium" checked />
                   <span class="seg-label">Medium</span>
                 </label>
                 <label class="seg">
-                  <input class="seg-input" type="radio" name="text-size" value="large" />
+                  <input class="seg-input" type="radio" name="post-scale" value="large" />
                   <span class="seg-label">Large</span>
                 </label>
               </div>
-              <p class="settings-hint">Scales the post and interface text.</p>
+              <p class="settings-hint">Resizes the post cards, embedded X post included.</p>
             </div>
 
             <div class="settings-group">
@@ -221,14 +221,6 @@
         <div class="sidebar-inner">
           <div class="sidebar-topbar">
             <h2 class="sidebar-heading">Categories</h2>
-            <button
-              id="sidebar-close"
-              class="icon-btn sidebar-close"
-              type="button"
-              aria-label="Close categories"
-            >
-              <span class="icon-x" aria-hidden="true"></span>
-            </button>
           </div>
           <div class="sidebar-search">
             <label class="visually-hidden" for="category-search">Filter categories by name</label>
@@ -308,7 +300,7 @@
     <script src="vendor/dompurify.min.js" defer></script>
     <script src="render-markdown.js" defer></script>
     <script src="theme.js" defer></script>
-    <script src="text-size.js" defer></script>
+    <script src="post-scale.js" defer></script>
     <script src="sidebar-state.js" defer></script>
     <script src="tree-color.js" defer></script>
     <script src="tree-counts.js" defer></script>

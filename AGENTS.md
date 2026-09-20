@@ -117,12 +117,22 @@ beside the open drawer. `--header-offset` (the bar's real outer height, safe-are
 the fixed drawer and scrim hang off - keep them on that token. `--z-header` sits ABOVE `--z-sidebar`
 so the settings popover, which is a child of the bar, is not painted over by the drawer.
 
-The **settings popover** (gear, issue #37) holds the text-size control plus the theme and
-category-color switches. Text size is one `--text-scale` multiplier on `:root` that every `--text-*`
-token multiplies into (`calc(clamp(...) * var(--text-scale))`), so type scales without any layout
-measure moving; steps and their guarded persistence live in `text-size.js` (`XBOTextSize`), the
-drawer's own state in `sidebar-state.js` (`XBOSidebarState`), both pure/testable like `theme.js`.
-Escape closes the popover and the drawer and returns focus to their triggers.
+The **settings popover** (gear, issue #37) holds the post-size control plus the theme and
+category-color switches. Post size resizes the POST, not the app's chrome - scaling the viewer's own
+text was the first cut and is what browser zoom already does. It is one `--post-scale` multiplier
+applied as **`zoom` on `.bookmark-card`**: `zoom` and not `transform: scale`, because it scales the
+LAYOUT box as well as the rendering (transform leaves the original box behind, so scaled-down cards
+strand a gap and scaled-up ones overlap), it re-renders rather than re-rasterizing so text stays
+crisp, and Chrome carries it into the cross-origin X embed - the only way to resize a widget X owns,
+since its iframe's font cannot be restyled from here. The step range is bounded at both ends and
+`post-scale.test.ts` asserts it: small must keep the action row's shortest control a >=24px pointer
+target, large must keep the 36rem card inside the 44rem content column. Percentages resolve in the
+zoomed coordinate space, so `width: 100%` needs no compensation - a narrow card fills its column at
+every step and only its content scales. Steps and their guarded persistence live in `post-scale.js`
+(`XBOPostScale`), the drawer's own state in `sidebar-state.js` (`XBOSidebarState`), both
+pure/testable like `theme.js`. Escape closes the popover and the drawer and returns focus to their
+triggers; the bar's menu toggle is the ONLY close control for the drawer (the in-drawer close button
+was a duplicate and is gone).
 
 A category's posts load lazily in batches (`XBOOKMARKS_PAGE_SIZE`, default 20) via infinite
 scroll: `GET /api/categories/:id/bookmarks` takes `filter`/`offset`/`limit` and pages the

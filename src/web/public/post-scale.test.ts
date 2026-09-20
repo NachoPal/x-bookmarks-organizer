@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 
 // Plain browser JS, required directly (not compiled by tsc).
 const {
-  DEFAULT_TEXT_SIZE,
-  TEXT_SIZES,
-  isKnownSize,
-  readTextSize,
-  writeTextSize,
+  DEFAULT_POST_SCALE,
+  POST_SCALES,
+  isKnownScale,
+  readPostScale,
+  writePostScale,
   scaleFor,
-} = require("./text-size.js");
+} = require("./post-scale.js");
 
 /** A minimal in-memory Storage stand-in so these tests don't need jsdom. */
 function fakeStorage(): Storage {
@@ -45,17 +45,27 @@ function throwingStorage(): Storage {
   } as Storage;
 }
 
-describe("text size steps", () => {
+describe("post scale steps", () => {
   it("offers steps in ascending scale order around an unscaled default", () => {
-    const scales = TEXT_SIZES.map((s: { scale: number }) => s.scale);
+    const scales = POST_SCALES.map((s: { scale: number }) => s.scale);
     expect(scales).toEqual([...scales].sort((a, b) => a - b));
-    expect(scaleFor(DEFAULT_TEXT_SIZE)).toBe(1);
+    expect(scaleFor(DEFAULT_POST_SCALE)).toBe(1);
+  });
+
+  it("keeps every step inside the bounds the card layout can absorb", () => {
+    // Lower bound: the action row's shortest control (the 1.75rem read pill)
+    // must stay a >=24px pointer target once zoomed.
+    // Upper bound: the 36rem card must still fit the 44rem content column.
+    for (const step of POST_SCALES) {
+      expect(28 * step.scale).toBeGreaterThanOrEqual(24);
+      expect(36 * step.scale).toBeLessThanOrEqual(44);
+    }
   });
 
   it("recognizes only the offered step ids", () => {
-    for (const size of TEXT_SIZES) expect(isKnownSize(size.id)).toBe(true);
-    expect(isKnownSize("gigantic")).toBe(false);
-    expect(isKnownSize(null)).toBe(false);
+    for (const step of POST_SCALES) expect(isKnownScale(step.id)).toBe(true);
+    expect(isKnownScale("gigantic")).toBe(false);
+    expect(isKnownScale(null)).toBe(false);
   });
 
   it("falls back to an unscaled multiplier for an unknown id", () => {
@@ -63,37 +73,37 @@ describe("text size steps", () => {
   });
 });
 
-describe("text size persistence", () => {
+describe("post scale persistence", () => {
   it("defaults to medium when nothing is stored", () => {
-    expect(readTextSize(fakeStorage())).toBe(DEFAULT_TEXT_SIZE);
-    expect(DEFAULT_TEXT_SIZE).toBe("medium");
+    expect(readPostScale(fakeStorage())).toBe(DEFAULT_POST_SCALE);
+    expect(DEFAULT_POST_SCALE).toBe("medium");
   });
 
   it("round-trips each offered step", () => {
-    for (const size of TEXT_SIZES) {
+    for (const step of POST_SCALES) {
       const storage = fakeStorage();
-      writeTextSize(storage, size.id);
-      expect(readTextSize(storage)).toBe(size.id);
+      writePostScale(storage, step.id);
+      expect(readPostScale(storage)).toBe(step.id);
     }
   });
 
   it("ignores a write of an unknown step", () => {
     const storage = fakeStorage();
-    writeTextSize(storage, "gigantic");
-    expect(readTextSize(storage)).toBe(DEFAULT_TEXT_SIZE);
+    writePostScale(storage, "gigantic");
+    expect(readPostScale(storage)).toBe(DEFAULT_POST_SCALE);
   });
 
   it("falls back to the default when a stale stored value is no longer offered", () => {
     const storage = fakeStorage();
-    storage.setItem("xbo:text-size", "enormous");
-    expect(readTextSize(storage)).toBe(DEFAULT_TEXT_SIZE);
+    storage.setItem("xbo:post-scale", "enormous");
+    expect(readPostScale(storage)).toBe(DEFAULT_POST_SCALE);
   });
 
   it("falls back to the default when storage throws on read", () => {
-    expect(readTextSize(throwingStorage())).toBe(DEFAULT_TEXT_SIZE);
+    expect(readPostScale(throwingStorage())).toBe(DEFAULT_POST_SCALE);
   });
 
   it("does not throw when storage throws on write", () => {
-    expect(() => writeTextSize(throwingStorage(), "large")).not.toThrow();
+    expect(() => writePostScale(throwingStorage(), "large")).not.toThrow();
   });
 });
