@@ -126,7 +126,7 @@ node dist/index.js serve
 An empty library opens a three-step setup: authorize X, choose how categorization runs, run the
 first sync. After that, the **Sync** button in the toolbar fetches new bookmarks and categorizes
 them server-side, showing the same progress the CLI prints and refreshing the viewer when it
-finishes. The categorization choice - the method (the Claude model, or Jev), the model provider,
+finishes. The categorization choice - the method (Claude Code, or Jev), the model provider,
 the per-pass models and the reasoning effort - is saved in the local database and reused by every
 later sync; change it any time in the Settings panel (the gear).
 

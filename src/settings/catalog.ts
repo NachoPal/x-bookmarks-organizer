@@ -60,7 +60,7 @@ export interface SettingsCatalog {
 
 const METHOD_COPY: Record<CategorizerId, Omit<CatalogMethod, 'id'>> = {
   'claude-cli': {
-    label: 'Claude model',
+    label: 'Claude Code',
     description:
       'The model reads each bookmark and files it into the tree. Runs on your Claude ' +
       'subscription - no per-call charge.',

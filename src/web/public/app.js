@@ -2446,23 +2446,43 @@
     return match && match.hint ? match.hint : "";
   }
 
+  function buildPhase(idPrefix, name, title, helper, fields) {
+    const section = el("section", "phase");
+    section.setAttribute("role", "group");
+    const heading = el("h4", "phase-title", title);
+    heading.id = `${idPrefix}-${name}-title`;
+    section.setAttribute("aria-labelledby", heading.id);
+    section.append(heading, el("p", "phase-helper", helper), ...fields);
+    return section;
+  }
+
   /**
    * A provider / model / effort selector over the server's catalog. Returns
    * the mounted root plus the small API `app.js` drives it with.
    */
   function createCategorizationForm(container, idPrefix, onChange) {
-    const method = buildField(idPrefix, "categorizer", "Categorization method");
+    const method = buildField(idPrefix, "categorizer", "Method");
     const provider = buildField(idPrefix, "provider", "Model provider");
-    const taxonomy = buildField(idPrefix, "taxonomyModel", "Taxonomy model (designs the tree)");
-    const assignment = buildField(idPrefix, "assignmentModel", "Filing model (sorts each bookmark)");
-    const effort = buildField(idPrefix, "effort", "Reasoning effort (taxonomy pass)");
-    container.replaceChildren(
-      method.field,
-      provider.field,
-      taxonomy.field,
-      assignment.field,
-      effort.field,
+    const taxonomy = buildField(idPrefix, "taxonomyModel", "Taxonomy model");
+    const assignment = buildField(idPrefix, "assignmentModel", "Filing model");
+    const effort = buildField(idPrefix, "effort", "Reasoning effort");
+    // Two phases, in the order the app runs them: design the tree, then file
+    // each bookmark into it.
+    const phase1 = buildPhase(
+      idPrefix,
+      "phase1",
+      "Phase 1 - Taxonomy",
+      "Designs the category tree from all your bookmarks at once. This pass always runs on Claude.",
+      [provider.field, taxonomy.field, effort.field],
     );
+    const phase2 = buildPhase(
+      idPrefix,
+      "phase2",
+      "Phase 2 - Categorization method",
+      "Files each bookmark into a category of that tree. Choose Claude Code or Jev.",
+      [method.field, assignment.field],
+    );
+    container.replaceChildren(phase1, phase2);
 
     let catalog = null;
 
@@ -2497,7 +2517,7 @@
       );
       effort.hint.textContent = hintFor(categorization().effortOptions(p), effort.select.value);
       // Jev files bookmarks without a prompt, so it has no filing model; the
-      // taxonomy pass is always the model, so that field never goes away.
+      // taxonomy pass is always Claude, so Phase 1 never goes away.
       assignment.field.hidden = !categorization().fieldsFor(method.select.value).assignmentModel;
     }
 

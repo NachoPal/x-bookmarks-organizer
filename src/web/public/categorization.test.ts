@@ -6,7 +6,7 @@ const XBO = require('./categorization.js');
 /** The shape `GET /api/setup` ships, trimmed to what these helpers read. */
 const catalog = {
   methods: [
-    { id: 'claude-cli', label: 'Claude model', description: 'Runs on your subscription.', billing: 'subscription' },
+    { id: 'claude-cli', label: 'Claude Code', description: 'Runs on your subscription.', billing: 'subscription' },
     {
       id: 'typesafe',
       label: 'Jev (TypeSafe)',
