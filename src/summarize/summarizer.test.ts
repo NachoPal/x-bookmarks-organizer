@@ -158,6 +158,8 @@ describe('buildSummaryPrompt', () => {
     });
     expect(prompt).toContain('Markdown');
     expect(prompt).toContain('bullet list');
+    expect(prompt).toContain('LEARN');
+    expect(prompt).toContain('Key insights / takeaways');
     expect(prompt).toContain('**bold**');
     expect(prompt).not.toContain('Write plain prose');
     expect(prompt).not.toContain('no headings or bullet points');
