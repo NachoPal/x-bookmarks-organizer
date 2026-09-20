@@ -201,7 +201,7 @@ The viewer now does the whole job itself - no terminal. An empty library opens a
 three-step guided setup (authorize X → choose how categorization runs → first sync); a
 **Sync** button sits in the toolbar under the top bar and runs the same work as
 `node dist/index.js run` server-side, streaming the ingest's own progress lines back to a
-strip under the toolbar; and the categorization method (Claude model / Jev) plus the
+strip under the toolbar; and the categorization method (Claude Code / Jev) plus the
 provider, per-pass models and reasoning effort are fixowl-style dropdowns whose values are
 saved **server-side** and reused by every later sync. Captured against a throwaway demo
 server with a fake X client and a fake categorizer - never real bookmarks, never a real
