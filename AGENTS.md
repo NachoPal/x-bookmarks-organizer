@@ -90,10 +90,39 @@ Before editing anything under `src/web/public/`, follow the `building-frontends`
 checker pass:
 `python3 ~/.claude/skills/building-frontends/scripts/check_frontend.py src/web/public/*` must be PASS.
 All colors/spacing are CSS custom properties in `styles.css`; consume `var(--token)`, never raw
-literals in component rules. The viewer is an app shell: a fixed header, a **collapsible** category
-sidebar (grid-collapse on desktop, `transform` overlay drawer under 820px; state in `localStorage`),
-and an independently scrolling content pane; keep tree labels wrapping inside the sidebar (flex
-children need `min-width: 0`) so counts never overflow.
+literals in component rules. The viewer is an app shell: a sticky top bar, an overlay category
+drawer, and an independently scrolling content pane; keep tree labels wrapping inside the sidebar
+(flex children need `min-width: 0`) so counts never overflow.
+
+The **top bar** (issues #53/#37/#42) is one sticky row in three flex regions: the animated
+categories-menu toggle (left), the selected category's title + counts on ONE line (center), and
+`read-filter | search | colors | theme | settings gear` (right). There is no explanatory blurb and
+no second header inside the content pane - `#content-title`/`#content-count` live in the bar. Equal
+`flex: 1 1 0` flanks are what centers the middle region; the center is `flex: 0 1 auto` with
+`min-width: 0`, and `.topbar-right` carries a `min-width: min-content` floor so the controls are
+never squeezed. The title's ancestor crumb is a separate span capped at `max-width: 40%` (and
+hidden under 560px) so a deep path ellipsizes the CRUMB, never the leaf - weighting `flex-shrink`
+instead was tried and still clipped the leaf while the crumb had room left to give. Under 820px the
+bar drops the `quick-only` theme/colors icons (they are duplicates of the settings panel's
+switches, which is their canonical home - one `applyTheme`/`setColorEnabled` updates both controls);
+under 1100px it drops last-sync; under 560px the counts and the crumb.
+
+The **category sidebar is an overlay drawer at every width** (issue #42): it is `position: fixed`,
+out of the content flow entirely, so `.content-inner` is a single centered column that does **not**
+move when the drawer opens or closes - never reintroduce a grid/flex sibling that reserves its
+width. A closed drawer gets `inert` from JS (not just an off-screen transform) so it leaves the tab
+order; its `box-shadow` belongs to the OPEN state only, or it bleeds a grey band down the viewport
+edge. The scrim is narrow-only (`max-width: 820px`); wide screens get none, so posts stay clickable
+beside the open drawer. `--header-offset` (the bar's real outer height, safe-area included) is what
+the fixed drawer and scrim hang off - keep them on that token. `--z-header` sits ABOVE `--z-sidebar`
+so the settings popover, which is a child of the bar, is not painted over by the drawer.
+
+The **settings popover** (gear, issue #37) holds the text-size control plus the theme and
+category-color switches. Text size is one `--text-scale` multiplier on `:root` that every `--text-*`
+token multiplies into (`calc(clamp(...) * var(--text-scale))`), so type scales without any layout
+measure moving; steps and their guarded persistence live in `text-size.js` (`XBOTextSize`), the
+drawer's own state in `sidebar-state.js` (`XBOSidebarState`), both pure/testable like `theme.js`.
+Escape closes the popover and the drawer and returns focus to their triggers.
 
 A category's posts load lazily in batches (`XBOOKMARKS_PAGE_SIZE`, default 20) via infinite
 scroll: `GET /api/categories/:id/bookmarks` takes `filter`/`offset`/`limit` and pages the

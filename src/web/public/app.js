@@ -241,7 +241,11 @@
     await fetchAndRenderFirstPage();
   }
 
-  // ---- sidebar (collapsible) --------------------------------------------
+  // ---- sidebar (overlay drawer) -----------------------------------------
+  // The drawer overlays the content at every width (issue #42): the content
+  // column is centered and never reflows, so opening/closing is purely a
+  // visibility change. Only the *auto-dismiss on pick* still depends on
+  // width, where the drawer covers nearly the whole viewport.
 
   const bodyEl = document.body;
   const contentEl = document.getElementById("bookmarks"); // the scrolling pane
@@ -249,21 +253,17 @@
   const toggleBtn = document.getElementById("sidebar-toggle");
   const closeBtn = document.getElementById("sidebar-close");
   const backdropEl = document.getElementById("sidebar-backdrop");
+  const searchOpenBtn = document.getElementById("search-open");
   const drawerQuery = window.matchMedia("(max-width: 820px)");
-  const SIDEBAR_KEY = "xbo:sidebar-collapsed";
 
   function readStoredCollapsed() {
-    try {
-      return window.localStorage.getItem(SIDEBAR_KEY) === "1";
-    } catch (_) {
-      return false;
-    }
+    return window.XBOSidebarState
+      ? window.XBOSidebarState.readCollapsed(window.localStorage)
+      : true;
   }
   function storeCollapsed(collapsed) {
-    try {
-      window.localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0");
-    } catch (_) {
-      /* private mode / blocked storage: ignore */
+    if (window.XBOSidebarState) {
+      window.XBOSidebarState.writeCollapsed(window.localStorage, collapsed);
     }
   }
 
@@ -279,53 +279,130 @@
     const visible = !collapsed;
     toggleBtn.setAttribute("aria-expanded", String(visible));
     toggleBtn.setAttribute("aria-label", visible ? "Hide categories" : "Show categories");
-    // The backdrop only participates in drawer (narrow) mode.
-    backdropEl.hidden = !(drawerQuery.matches && visible);
+    // A closed drawer is off-screen but still in the DOM; `inert` keeps it
+    // out of the tab order so keyboard focus never disappears into it.
+    // (The scrim's visibility is pure CSS, so it can fade both ways.)
+    sidebarEl.inert = collapsed;
 
-    // Desktop preference persists; drawer open/close is transient per session.
-    if (!drawerQuery.matches) storeCollapsed(collapsed);
+    if (!options.silent) storeCollapsed(collapsed);
+    if (options.silent || options.moveFocus === false) return;
 
-    // In drawer mode, move focus with the overlay for a keyboard-friendly flow.
-    if (drawerQuery.matches && !options.silent) {
-      if (visible) {
-        const firstNode = treeEl.querySelector(".tree-node");
-        if (firstNode) firstNode.focus();
-      } else if (options.returnFocus !== false) {
-        toggleBtn.focus();
-      }
+    if (visible) {
+      const firstNode = treeEl.querySelector(".tree-node") || searchInput;
+      if (firstNode) firstNode.focus();
+    } else if (options.returnFocus !== false) {
+      toggleBtn.focus();
     }
   }
 
   function initSidebar() {
-    // Narrow viewports start with the drawer closed; wide ones honor the
-    // remembered preference (open by default).
-    const start = drawerQuery.matches ? true : readStoredCollapsed();
-    setCollapsed(start, { silent: true });
+    setCollapsed(readStoredCollapsed(), { silent: true });
 
     toggleBtn.addEventListener("click", () => setCollapsed(!isCollapsed()));
     closeBtn.addEventListener("click", () => setCollapsed(true));
     backdropEl.addEventListener("click", () => setCollapsed(true));
 
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && drawerQuery.matches && !isCollapsed()) {
-        setCollapsed(true);
-      }
-    });
+    // The bar's search control is an entry point to the drawer's own filter
+    // field - one search, reachable from the top bar.
+    if (searchOpenBtn && searchInput) {
+      searchOpenBtn.addEventListener("click", () => {
+        setCollapsed(false, { moveFocus: false });
+        searchInput.focus();
+        searchInput.select();
+      });
+    }
 
-    // When crossing the drawer/desktop boundary, re-apply the correct default
-    // so the layout never gets stuck in an odd hybrid state.
-    const onModeChange = () => setCollapsed(drawerQuery.matches ? true : readStoredCollapsed(), {
-      silent: true,
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || isCollapsed()) return;
+      // The settings popover owns Escape while it is open.
+      if (isSettingsOpen()) return;
+      setCollapsed(true);
     });
-    if (drawerQuery.addEventListener) drawerQuery.addEventListener("change", onModeChange);
-    else if (drawerQuery.addListener) drawerQuery.addListener(onModeChange);
+  }
+
+  // ---- settings popover (issue #37) --------------------------------------
+  // The gear in the bar's right region. Canonical home of the text-size,
+  // theme and category-color settings; the bar's theme/colors icon buttons
+  // are wide-screen quick access to exactly the same state.
+  const settingsToggleBtn = document.getElementById("settings-toggle");
+  const settingsPanelEl = document.getElementById("settings-panel");
+
+  function isSettingsOpen() {
+    return !!settingsPanelEl && !settingsPanelEl.hidden;
+  }
+
+  function setSettingsOpen(open, opts) {
+    const options = opts || {};
+    if (!settingsPanelEl || !settingsToggleBtn) return;
+    settingsPanelEl.hidden = !open;
+    settingsToggleBtn.setAttribute("aria-expanded", String(open));
+    settingsToggleBtn.setAttribute("aria-label", open ? "Close settings" : "Open settings");
+
+    if (open) {
+      const first =
+        settingsPanelEl.querySelector(".seg-input:checked") ||
+        settingsPanelEl.querySelector("button, input");
+      if (first) first.focus();
+    } else if (options.returnFocus !== false) {
+      settingsToggleBtn.focus();
+    }
+  }
+
+  function initSettingsPanel() {
+    if (!settingsToggleBtn || !settingsPanelEl) return;
+    settingsToggleBtn.addEventListener("click", () => setSettingsOpen(!isSettingsOpen()));
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && isSettingsOpen()) setSettingsOpen(false);
+    });
+    // A click anywhere outside dismisses it; inside it (or on the gear,
+    // which toggles) does not.
+    document.addEventListener("pointerdown", (e) => {
+      if (!isSettingsOpen()) return;
+      if (settingsPanelEl.contains(e.target) || settingsToggleBtn.contains(e.target)) return;
+      setSettingsOpen(false, { returnFocus: false });
+    });
+  }
+
+  // ---- text size (issue #37) ---------------------------------------------
+  // One --text-scale multiplier on :root that every --text-* token derives
+  // from, so the whole viewer's type resizes without any layout measure
+  // moving. Persisted through XBOTextSize's guarded storage.
+  const textSizeEl = document.getElementById("text-size");
+
+  function applyTextSize(id) {
+    if (!window.XBOTextSize) return;
+    document.documentElement.style.setProperty(
+      "--text-scale",
+      String(window.XBOTextSize.scaleFor(id)),
+    );
+    if (!textSizeEl) return;
+    textSizeEl.querySelectorAll(".seg-input").forEach((input) => {
+      input.checked = input.value === id;
+    });
+  }
+
+  function initTextSize() {
+    if (!window.XBOTextSize) return;
+    applyTextSize(window.XBOTextSize.readTextSize(window.localStorage));
+    if (!textSizeEl) return;
+    textSizeEl.querySelectorAll(".seg-input").forEach((input) => {
+      input.addEventListener("change", () => {
+        if (!input.checked) return;
+        window.XBOTextSize.writeTextSize(window.localStorage, input.value);
+        applyTextSize(input.value);
+      });
+    });
   }
 
   // ---- category-color toggle ---------------------------------------------
   // Lets the owner compare a plain (indentation + guide lines only) tree
   // against the per-root-hue colored one and persists the choice, so a
   // reload keeps whichever they picked. Defaults to off (the plain tree).
-  const colorToggleBtn = document.getElementById("category-color-toggle");
+  // Two controls drive the one state: the settings panel's switch (always
+  // present) and the bar's quick icon button (wide screens only).
+  const colorSwitchEl = document.getElementById("category-color-toggle");
+  const colorQuickBtn = document.getElementById("color-toggle");
 
   function isColorEnabled() {
     return bodyEl.getAttribute("data-tree-colors") === "on";
@@ -334,20 +411,30 @@
   function setColorEnabled(enabled, opts) {
     if (enabled) bodyEl.setAttribute("data-tree-colors", "on");
     else bodyEl.removeAttribute("data-tree-colors");
-    // The visible label stays "Colors"; aria-checked alone communicates
-    // on/off to assistive tech (the standard switch pattern), so the
-    // accessible name keeps matching the visible text.
-    if (colorToggleBtn) colorToggleBtn.setAttribute("aria-checked", String(enabled));
+    // The switch's visible label stays "Category colors"; aria-checked alone
+    // communicates on/off (the standard switch pattern), so the accessible
+    // name keeps matching the visible text.
+    if (colorSwitchEl) colorSwitchEl.setAttribute("aria-checked", String(enabled));
+    if (colorQuickBtn) {
+      colorQuickBtn.setAttribute("aria-pressed", String(enabled));
+      colorQuickBtn.setAttribute(
+        "aria-label",
+        enabled ? "Turn category colors off" : "Turn category colors on",
+      );
+    }
     if (!(opts && opts.silent) && window.XBOTreeColor) {
       window.XBOTreeColor.writeColorEnabled(window.localStorage, enabled);
     }
   }
 
   function initColorToggle() {
-    if (!colorToggleBtn) return;
-    const stored = window.XBOTreeColor ? window.XBOTreeColor.readColorEnabled(window.localStorage) : false;
+    const stored = window.XBOTreeColor
+      ? window.XBOTreeColor.readColorEnabled(window.localStorage)
+      : false;
     setColorEnabled(stored, { silent: true });
-    colorToggleBtn.addEventListener("click", () => setColorEnabled(!isColorEnabled()));
+    const onToggle = () => setColorEnabled(!isColorEnabled());
+    if (colorSwitchEl) colorSwitchEl.addEventListener("click", onToggle);
+    if (colorQuickBtn) colorQuickBtn.addEventListener("click", onToggle);
   }
 
   // ---- helpers -----------------------------------------------------------
@@ -402,27 +489,34 @@
   // Explicit light/dark preference in the top menu bar, overriding the system
   // default. Defaults to following the system theme until the owner picks.
   const themeToggleBtn = document.getElementById("theme-toggle");
+  const themeSwitchEl = document.getElementById("theme-switch");
 
   function applyTheme(theme) {
     // The icon shown is driven by CSS off this same attribute (see
     // styles.css), so setting it here is the single source of truth for
     // both the active theme and the toggle's icon/label.
     document.documentElement.setAttribute("data-theme", theme);
-    if (!themeToggleBtn) return;
     const isDark = theme === "dark";
-    themeToggleBtn.setAttribute("aria-pressed", String(isDark));
-    themeToggleBtn.setAttribute("aria-label", isDark ? "Switch to light theme" : "Switch to dark theme");
+    if (themeToggleBtn) {
+      themeToggleBtn.setAttribute("aria-pressed", String(isDark));
+      themeToggleBtn.setAttribute("aria-label", isDark ? "Switch to light theme" : "Switch to dark theme");
+    }
+    if (themeSwitchEl) themeSwitchEl.setAttribute("aria-checked", String(isDark));
   }
 
   function initThemeToggle() {
-    if (!themeToggleBtn || !window.XBOTheme) return;
+    if (!window.XBOTheme) return;
     applyTheme(window.XBOTheme.effectiveTheme(window.localStorage, systemPrefersDark()));
 
-    themeToggleBtn.addEventListener("click", () => {
+    // Same state from two places: the bar's quick icon (wide screens) and
+    // the settings panel's switch (every width).
+    const onToggle = () => {
       const next = isDarkTheme() ? "light" : "dark";
       window.XBOTheme.writeTheme(window.localStorage, next);
       applyTheme(next);
-    });
+    };
+    if (themeToggleBtn) themeToggleBtn.addEventListener("click", onToggle);
+    if (themeSwitchEl) themeSwitchEl.addEventListener("click", onToggle);
 
     // Keep the toggle in sync if the system theme changes while following it
     // (no explicit preference stored yet).
@@ -692,13 +786,28 @@
     if (selectedCategoryId !== node.id) saveCurrentViewToCache();
     selectedCategoryId = node.id;
 
-    titleEl.textContent = node.path.join(" › ");
+    renderTitle(node.path);
 
     // On narrow screens the sidebar is an overlay; picking a category should
     // reveal the content it covers.
     if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
 
     await showCategoryView();
+  }
+
+  /**
+   * The bar's centered title. The ancestor crumb and the leaf are separate
+   * spans so a long path ellipsizes the crumb (flex-shrink is weighted
+   * toward it in styles.css) and keeps the leaf - the part that actually
+   * names the open category - readable on the one line it gets.
+   */
+  function renderTitle(path) {
+    titleEl.replaceChildren();
+    if (path.length > 1) {
+      titleEl.appendChild(el("span", "topbar-crumb", `${path.slice(0, -1).join(" › ")} › `));
+    }
+    titleEl.appendChild(el("span", "topbar-leaf", path[path.length - 1]));
+    titleEl.title = path.join(" › ");
   }
 
   /** How many bookmarks match the active read-state filter in this category. */
@@ -1679,6 +1788,8 @@
 
   // ---- init --------------------------------------------------------------
   initSidebar();
+  initSettingsPanel();
+  initTextSize();
   initThemeToggle();
   initColorToggle();
   initSearch();
