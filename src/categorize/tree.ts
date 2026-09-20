@@ -30,13 +30,57 @@ export function materializeTaxonomy(
 
 /**
  * Build the full category tree with counts rolled up so that each node's
- * `total`/`unread` include all of its descendants. Roots are returned sorted
- * by name; children likewise.
+ * `total`/`unread` include all of its descendants. Roots follow the owner's
+ * saved order (issue #82), then any unsaved root by name; children are
+ * always sorted by name.
  */
 export function buildCategoryTree(db: Database): CategoryTreeNode[] {
   const categories = db.getAllCategories();
   const membership = db.getDirectMembership();
-  return assembleTree(categories, membership);
+  return assembleTree(categories, membership, readRootOrder(db));
+}
+
+/** `run_state` key holding the owner's root order, as a JSON array of names. */
+export const ROOT_ORDER_KEY = 'root_order';
+
+/**
+ * The saved root order, as names. Identity is the NAME, not the id: a
+ * `recategorize` clears and re-creates every `categories` row, so ids do not
+ * survive it but a root's name does (a renamed root is a new root and simply
+ * falls to the end). Tolerant of a missing or unreadable blob.
+ */
+export function readRootOrder(db: Database): string[] {
+  const raw = db.getState(ROOT_ORDER_KEY);
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeRootOrder(db: Database, names: string[]): void {
+  db.setState(ROOT_ORDER_KEY, JSON.stringify(names));
+}
+
+/**
+ * Order roots by a saved name list (case-insensitive, matching how sibling
+ * names merge); roots absent from it follow, alphabetically. Never drops or
+ * duplicates a root, and names in the list that no longer exist are ignored.
+ */
+export function orderRoots(roots: CategoryTreeNode[], savedNames: string[]): CategoryTreeNode[] {
+  const position = new Map<string, number>();
+  savedNames.forEach((n, i) => {
+    const key = n.toLowerCase();
+    if (!position.has(key)) position.set(key, i);
+  });
+  const byName = (a: CategoryTreeNode, b: CategoryTreeNode) => a.name.localeCompare(b.name);
+  const saved = roots
+    .filter((r) => position.has(r.name.toLowerCase()))
+    .sort((a, b) => position.get(a.name.toLowerCase())! - position.get(b.name.toLowerCase())!);
+  const rest = roots.filter((r) => !position.has(r.name.toLowerCase())).sort(byName);
+  return [...saved, ...rest];
 }
 
 /**
@@ -50,6 +94,7 @@ export function buildCategoryTree(db: Database): CategoryTreeNode[] {
 export function assembleTree(
   categories: CategoryNode[],
   directMembership: Map<number, { id: number; read: boolean }[]>,
+  rootOrder: string[] = [],
 ): CategoryTreeNode[] {
   const nodes = new Map<number, CategoryTreeNode>();
   for (const c of categories) {
@@ -100,9 +145,9 @@ export function assembleTree(
     return { total, unread };
   };
 
-  roots.sort(byName);
-  for (const root of roots) visit(root, []);
-  return roots;
+  const ordered = orderRoots(roots, rootOrder);
+  for (const root of ordered) visit(root, []);
+  return ordered;
 }
 
 /** Text budget for a node's description in the rendered prompt tree. */

@@ -2,7 +2,7 @@ import path from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import type { BookmarkFilter, BookmarkSortOrder, Database } from '../db/database';
-import { buildCategoryTree } from '../categorize/tree';
+import { buildCategoryTree, writeRootOrder } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
 import { articleRecordFromResult, HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
 import {
@@ -427,6 +427,37 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   app.register(fastifyStatic, { root: PUBLIC_DIR });
 
   // The category tree with rolled-up total/unread counts per node.
+  // Save the owner's order of the ROOT categories (issue #82). The body is the
+  // complete list of root ids in the wanted order; a child id, an unknown id, a
+  // duplicate or an incomplete list is refused, so a stale client can never
+  // silently drop or bury a root. Stored by NAME (see `readRootOrder`).
+  app.put<{ Body?: unknown }>('/api/categories/root-order', async (req, reply) => {
+    const ids = (req.body as { ids?: unknown } | undefined)?.ids;
+    if (!Array.isArray(ids) || !ids.every((i) => Number.isInteger(i))) {
+      return reply.code(400).send({ error: 'Body must be { "ids": [root category ids] }.' });
+    }
+    const all = db.getAllCategories();
+    const byId = new Map(all.map((c) => [c.id, c]));
+    const roots = all.filter((c) => c.parentId === null);
+    const seen = new Set<number>();
+    for (const id of ids as number[]) {
+      const c = byId.get(id);
+      if (!c) return reply.code(400).send({ error: `Unknown category id ${id}.` });
+      if (c.parentId !== null) {
+        return reply.code(400).send({ error: `Category ${id} is not a root category; only roots can be reordered.` });
+      }
+      if (seen.has(id)) return reply.code(400).send({ error: `Category id ${id} appears twice.` });
+      seen.add(id);
+    }
+    if (seen.size !== roots.length) {
+      return reply.code(409).send({
+        error: 'The category list changed (a sync may have run). Reload and try again.',
+      });
+    }
+    writeRootOrder(db, (ids as number[]).map((id) => byId.get(id)!.name));
+    return { tree: buildCategoryTree(db) };
+  });
+
   app.get('/api/tree', async () => ({ tree: buildCategoryTree(db) }));
 
   // When bookmarks were last successfully synced with X, or null if never.

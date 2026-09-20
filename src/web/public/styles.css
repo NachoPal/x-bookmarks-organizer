@@ -1096,6 +1096,77 @@ body:not([data-sidebar="collapsed"]) .sidebar {
 .tree-toggle[aria-expanded="true"] .chev {
   transform: rotate(90deg);
 }
+/* Root reorder handle (issue #82). Roots only. 1.75rem wide, full row height,
+   so it is a comfortable target; touch-action none lets a finger drag it. */
+.tree-grip {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+  cursor: grab;
+  touch-action: none;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.tree-grip svg {
+  width: 1rem;
+  height: 1rem;
+}
+.tree-grip:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+.tree-grip:active {
+  cursor: grabbing;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.tree-grip:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+.tree > ul > li {
+  position: relative;
+}
+.tree > ul > li.is-dragging {
+  z-index: 2;
+  opacity: 0.92;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+.tree.is-reordering {
+  user-select: none;
+  cursor: grabbing;
+}
+/* The drop line is a pseudo-element so it never moves a row. */
+.tree > ul > li.drop-before::before,
+.tree > ul > li.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--color-accent);
+  border-radius: 1px;
+  pointer-events: none;
+}
+.tree > ul > li.drop-before::before {
+  top: -1px;
+}
+.tree > ul > li.drop-after::after {
+  bottom: -1px;
+}
+.tree-order-error {
+  margin: 0 0 var(--space-2);
+}
 .tree-toggle.is-leaf {
   visibility: hidden;
 }
