@@ -41,11 +41,13 @@ Runs occasionally and incrementally: each run only processes bookmarks added sin
 - **Viewer** - a small local web app: the category tree with counts, drill into a node to list its
   bookmarks, each shown as an embedded X post (link fallback where the post is not embeddable).
   Opening a bookmark marks it read and records the date, reflected live in the UI. Filter the tree
-  by category name from the sidebar search box, and filter a node's bookmarks by read state
-  (Unread / Read / All). A category's posts load lazily in batches of 20 as you scroll (infinite
-  scroll), so a large category never renders every post - or every X embed - at once; paging
-  follows the active read-state filter and resets to the top when you change it
-  (`XBOOKMARKS_PAGE_SIZE`, default 20).
+  by category name from the sidebar search box, and switch a node's bookmarks with the tab bar
+  under the top bar: Unread / Read / All / Favorites. Star any post from its action row to keep it
+  in Favorites; the star is stored in SQLite like read state, so it survives a later sync or
+  `recategorize`. Opening the categories drawer pushes the posts aside rather than covering them.
+  A category's posts load lazily in batches of 20 as you scroll (infinite scroll), so a large
+  category never renders every post - or every X embed - at once; paging follows the active tab
+  and resets to the top when you change it (`XBOOKMARKS_PAGE_SIZE`, default 20).
 - **Summaries** - click "Summarize" on a bookmark for an on-demand LLM summary of its content (the
   post, plus its extracted article when the reader view can read it) in a large modal. Generated on
   the same LLM provider as categorization, and cached in SQLite so re-opening is instant and free.

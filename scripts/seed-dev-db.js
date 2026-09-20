@@ -387,10 +387,12 @@ db.storeCategorizedBatch(
   () => [xArticleParent],
 );
 
-// Mark a spread of bookmarks read so read/unread states both render.
+// Mark a spread of bookmarks read so read/unread states both render, and
+// star another spread so the Favorites tab has something to show.
 const all = db.getAllBookmarks();
 all.forEach((bm, i) => {
   if (i % 3 === 0) db.markRead(bm.id, new Date(Date.now() - (i % 30) * 864e5).toISOString());
+  if (i % 4 === 0) db.setFavorite(bm.id, true);
 });
 
 console.log(`Seeded ${all.length} bookmarks across ${idByPath.size} categories -> ${dbPath}`);

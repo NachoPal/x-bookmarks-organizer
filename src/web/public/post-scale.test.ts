@@ -46,10 +46,10 @@ function throwingStorage(): Storage {
 }
 
 describe("post scale steps", () => {
-  it("offers steps in ascending scale order around an unscaled default", () => {
+  it("offers steps in ascending scale order, with medium unscaled", () => {
     const scales = POST_SCALES.map((s: { scale: number }) => s.scale);
     expect(scales).toEqual([...scales].sort((a, b) => a - b));
-    expect(scaleFor(DEFAULT_POST_SCALE)).toBe(1);
+    expect(scaleFor("medium")).toBe(1);
   });
 
   it("keeps every step inside the bounds the card layout can absorb", () => {
@@ -74,9 +74,9 @@ describe("post scale steps", () => {
 });
 
 describe("post scale persistence", () => {
-  it("defaults to medium when nothing is stored", () => {
+  it("defaults to small when nothing is stored", () => {
     expect(readPostScale(fakeStorage())).toBe(DEFAULT_POST_SCALE);
-    expect(DEFAULT_POST_SCALE).toBe("medium");
+    expect(DEFAULT_POST_SCALE).toBe("small");
   });
 
   it("round-trips each offered step", () => {

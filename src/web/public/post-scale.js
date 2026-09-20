@@ -12,7 +12,9 @@
  */
 (function (root) {
   const POST_SCALE_KEY = "xbo:post-scale";
-  const DEFAULT_POST_SCALE = "medium";
+  // Small by default (owner's call): the viewer opens with compact cards, so
+  // more posts fit on screen, and the control still steps up from there.
+  const DEFAULT_POST_SCALE = "small";
 
   /**
    * The offered steps, in ascending order. `scale` feeds `--post-scale`.

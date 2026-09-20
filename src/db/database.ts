@@ -13,12 +13,26 @@ import type {
   XArticle,
 } from '../types';
 
-/** Read-state filter for the viewer's paged bookmark list. */
-export type ReadFilter = 'all' | 'unread' | 'read';
+/**
+ * The viewer's tab filter for a paged bookmark list: the three read-state
+ * tabs plus the owner's starred set (issue #63).
+ */
+export type BookmarkFilter = 'all' | 'unread' | 'read' | 'favorite';
+
+/**
+ * Rolled-up counts for a category subtree, one per tab that needs a total
+ * (`all` uses `total`). Returned by
+ * {@link Database.getCategoryBookmarkCounts}.
+ */
+export interface CategoryBookmarkCounts {
+  total: number;
+  unread: number;
+  favorite: number;
+}
 
 /** Paging + filtering options for {@link Database.getBookmarksForCategory}. */
 export interface BookmarkPageOptions {
-  filter?: ReadFilter;
+  filter?: BookmarkFilter;
   offset?: number;
   limit?: number;
 }
@@ -34,6 +48,7 @@ interface BookmarkRow {
   ingested_at: string;
   read: number;
   read_at: string | null;
+  favorite?: number;
   quoted_post_id?: string | null;
 }
 
@@ -68,6 +83,7 @@ function toStoredBookmark(row: BookmarkRow): StoredBookmark {
     ingestedAt: row.ingested_at,
     read: row.read === 1,
     readAt: row.read_at,
+    favorite: row.favorite === 1,
     quotedPostId: row.quoted_post_id ?? null,
   };
 }
@@ -294,6 +310,7 @@ export class Database {
     ];
     if (opts.filter === 'unread') where.push('b.read = 0');
     else if (opts.filter === 'read') where.push('b.read = 1');
+    else if (opts.filter === 'favorite') where.push('b.favorite = 1');
 
     let sql = `WITH RECURSIVE subtree(id) AS (
          SELECT ?
@@ -336,11 +353,11 @@ export class Database {
   }
 
   /**
-   * Rolled-up counts for a category subtree: total bookmarks and how many are
-   * unread. Lets the viewer show accurate totals and page the filtered set
-   * without downloading every row.
+   * Rolled-up counts for a category subtree: total bookmarks, how many are
+   * unread and how many are favorited. Lets the viewer show accurate totals
+   * for every tab and page the filtered set without downloading every row.
    */
-  getCategoryBookmarkCounts(categoryId: number): { total: number; unread: number } {
+  getCategoryBookmarkCounts(categoryId: number): CategoryBookmarkCounts {
     const row = this.db
       .prepare(
         `WITH RECURSIVE subtree(id) AS (
@@ -350,15 +367,16 @@ export class Database {
          )
          SELECT
            COUNT(*) AS total,
-           COALESCE(SUM(CASE WHEN b.read = 0 THEN 1 ELSE 0 END), 0) AS unread
+           COALESCE(SUM(CASE WHEN b.read = 0 THEN 1 ELSE 0 END), 0) AS unread,
+           COALESCE(SUM(CASE WHEN b.favorite = 1 THEN 1 ELSE 0 END), 0) AS favorite
          FROM bookmarks b
          WHERE b.id IN (
            SELECT bc.bookmark_id FROM bookmark_categories bc
            JOIN subtree s ON s.id = bc.category_id
          )`,
       )
-      .get(categoryId) as { total: number; unread: number };
-    return { total: row.total, unread: row.unread };
+      .get(categoryId) as CategoryBookmarkCounts;
+    return { total: row.total, unread: row.unread, favorite: row.favorite };
   }
 
   /**
@@ -380,6 +398,17 @@ export class Database {
   /** Clear read state, so the chip's toggle can flip a bookmark back to unread. */
   markUnread(id: number): StoredBookmark | undefined {
     this.db.prepare(`UPDATE bookmarks SET read = 0, read_at = NULL WHERE id = ?`).run(id);
+    return this.getBookmarkById(id);
+  }
+
+  /**
+   * Star or unstar a bookmark (issue #63). A durable per-bookmark flag like
+   * `read`: ingestion never overwrites an existing row and recategorization
+   * only rewrites category links, so the star survives both. Returns the
+   * updated bookmark, or undefined if the id is unknown.
+   */
+  setFavorite(id: number, favorite: boolean): StoredBookmark | undefined {
+    this.db.prepare(`UPDATE bookmarks SET favorite = ? WHERE id = ?`).run(favorite ? 1 : 0, id);
     return this.getBookmarkById(id);
   }
 

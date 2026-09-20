@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   post_created_at TEXT NOT NULL DEFAULT '',
   ingested_at     TEXT NOT NULL,
   read            INTEGER NOT NULL DEFAULT 0,
-  read_at         TEXT
+  read_at         TEXT,
+  favorite        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS categories (
@@ -172,9 +173,17 @@ export const ARTICLE_LINK_METADATA_ADDED_COLUMNS: { name: string; ddl: string }[
 /**
  * Columns added to `bookmarks` after its original release: `quoted_post_id`
  * links a quote post to the post it quotes, so a quote of an X Article
- * resolves to that Article's `x_articles` row. Same `PRAGMA table_info` guard
- * as {@link ARTICLE_LINK_METADATA_ADDED_COLUMNS}.
+ * resolves to that Article's `x_articles` row; `favorite` is the owner's star
+ * (issue #63), a durable per-bookmark flag exactly like `read`. Because
+ * ingestion never overwrites an existing bookmark row (`ON CONFLICT(post_id)
+ * DO NOTHING` in `storeCategorizedBatch`) and recategorization only rewrites
+ * category links, both flags survive a later sync or `recategorize`. Same
+ * `PRAGMA table_info` guard as {@link ARTICLE_LINK_METADATA_ADDED_COLUMNS}.
  */
 export const BOOKMARKS_ADDED_COLUMNS: { name: string; ddl: string }[] = [
   { name: 'quoted_post_id', ddl: 'ALTER TABLE bookmarks ADD COLUMN quoted_post_id TEXT' },
+  {
+    name: 'favorite',
+    ddl: 'ALTER TABLE bookmarks ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0',
+  },
 ];

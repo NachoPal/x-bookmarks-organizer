@@ -65,6 +65,8 @@ export interface StoredBookmark extends RawBookmark {
   ingestedAt: string;
   read: boolean;
   readAt: string | null;
+  /** Starred by the owner (issue #63). Survives sync and recategorize. */
+  favorite: boolean;
 }
 
 /**

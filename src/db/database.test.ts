@@ -80,6 +80,37 @@ describe('Database', () => {
     });
   });
 
+  describe('setFavorite', () => {
+    function seedBookmark(): number {
+      db.storeCategorizedBatch([bookmark('1')], () => []);
+      return db.getBookmarkByPostId('1')!.id;
+    }
+
+    it('defaults to not favorited and flips both ways', () => {
+      const id = seedBookmark();
+      expect(db.getBookmarkById(id)!.favorite).toBe(false);
+      expect(db.setFavorite(id, true)!.favorite).toBe(true);
+      expect(db.getBookmarkById(id)!.favorite).toBe(true);
+      expect(db.setFavorite(id, false)!.favorite).toBe(false);
+    });
+
+    it('leaves read state untouched, and survives a re-sync of the same post', () => {
+      const id = seedBookmark();
+      db.markRead(id);
+      db.setFavorite(id, true);
+
+      // A later sync re-offers the same post id; the row is never overwritten.
+      db.storeCategorizedBatch([bookmark('1')], () => []);
+      const after = db.getBookmarkById(id)!;
+      expect(after.favorite).toBe(true);
+      expect(after.read).toBe(true);
+    });
+
+    it('returns undefined for an unknown bookmark', () => {
+      expect(db.setFavorite(9999, true)).toBeUndefined();
+    });
+  });
+
   describe('markUnread', () => {
     it('clears read and read_at, so the chip can toggle back', () => {
       db.storeCategorizedBatch([bookmark('1')], () => []);
@@ -259,7 +290,25 @@ describe('Database', () => {
 
     it('reports rolled-up total and unread counts for a subtree', () => {
       const id = seedEvals(25, 10);
-      expect(db.getCategoryBookmarkCounts(id)).toEqual({ total: 25, unread: 15 });
+      expect(db.getCategoryBookmarkCounts(id)).toEqual({ total: 25, unread: 15, favorite: 0 });
+    });
+
+    it('filters a page down to the favorited bookmarks, and counts them', () => {
+      const id = seedEvals(25, 10);
+      // Star one read and one unread bookmark: the Favorites tab spans both.
+      const starred = ['1', '20'].map((postId) => db.getBookmarkByPostId(postId)!.id);
+      for (const bookmarkId of starred) db.setFavorite(bookmarkId, true);
+
+      const favorites = db.getBookmarksForCategory(id, { filter: 'favorite', limit: 100 });
+      expect(favorites.map((b) => b.id).sort()).toEqual([...starred].sort());
+      expect(favorites.every((b) => b.favorite === true)).toBe(true);
+      expect(db.getCategoryBookmarkCounts(id).favorite).toBe(2);
+
+      // Unstarring removes it again, and leaves every other filter alone.
+      db.setFavorite(starred[0], false);
+      expect(db.getBookmarksForCategory(id, { filter: 'favorite', limit: 100 })).toHaveLength(1);
+      expect(db.getBookmarksForCategory(id, { filter: 'read', limit: 100 })).toHaveLength(10);
+      expect(db.getCategoryBookmarkCounts(id)).toEqual({ total: 25, unread: 15, favorite: 1 });
     });
 
     it('with no options still returns the whole subtree (back-compat)', () => {
@@ -614,6 +663,54 @@ describe('Database X-native Articles', () => {
       expect(db.getXArticle('1')).toEqual(article);
     } finally {
       db.close();
+    }
+  });
+
+  it('migrates a pre-existing bookmarks table (adds favorite) idempotently, keeping its rows', () => {
+    const dbPath = path.join(os.tmpdir(), `xbookmarks-favorite-migration-${Date.now()}-${Math.random()}.db`);
+    try {
+      const raw = new BetterSqlite3(dbPath);
+      raw.exec(`
+        CREATE TABLE bookmarks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT NOT NULL UNIQUE,
+          author_username TEXT NOT NULL DEFAULT '', author_name TEXT NOT NULL DEFAULT '',
+          text TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, post_created_at TEXT NOT NULL DEFAULT '',
+          ingested_at TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0, read_at TEXT
+        );
+      `);
+      raw
+        .prepare(`INSERT INTO bookmarks (post_id, url, ingested_at) VALUES ('old', 'https://x.com/a/status/old', '2026-01-01')`)
+        .run();
+      raw.close();
+
+      const first = new Database(dbPath);
+      const old = first.getBookmarkByPostId('old')!;
+      expect(old.favorite).toBe(false); // the added column defaults to not favorited
+      first.setFavorite(old.id, true);
+      first.close();
+
+      // Re-opening re-runs the guarded migration: a no-op that keeps the star.
+      const second = new Database(dbPath);
+      try {
+        expect(second.getBookmarkByPostId('old')!.favorite).toBe(true);
+        const raw2 = new BetterSqlite3(dbPath);
+        try {
+          const columns = (raw2.prepare('PRAGMA table_info(bookmarks)').all() as { name: string }[]);
+          expect(columns.filter((c) => c.name === 'favorite')).toHaveLength(1); // added exactly once
+        } finally {
+          raw2.close();
+        }
+      } finally {
+        second.close();
+      }
+    } finally {
+      for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+        try {
+          fs.rmSync(f);
+        } catch {
+          /* not present */
+        }
+      }
     }
   });
 

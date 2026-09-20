@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 // Plain browser JS, required directly (not compiled by tsc).
-const { MAX_CACHED_CATEGORIES, touchLru, survivesReadChange, isFilterEntryStale } = require("./filter-cache.js");
+const { MAX_CACHED_CATEGORIES, touchLru, survivesFilter, isFilterEntryStale } = require("./filter-cache.js");
+
+/** A bookmark's cacheable state, as the viewer tracks it per card. */
+const state = (read: boolean, favorite = false) => ({ read, favorite });
 
 describe("touchLru", () => {
   it("appends a new id to the recent end", () => {
@@ -37,49 +40,74 @@ describe("touchLru", () => {
   });
 });
 
-describe("survivesReadChange", () => {
-  it("the all filter always keeps a post regardless of read state", () => {
-    expect(survivesReadChange("all", true)).toBe(true);
-    expect(survivesReadChange("all", false)).toBe(true);
+describe("survivesFilter", () => {
+  it("the all filter always keeps a post regardless of its state", () => {
+    expect(survivesFilter("all", state(true))).toBe(true);
+    expect(survivesFilter("all", state(false))).toBe(true);
+    expect(survivesFilter("all", state(false, true))).toBe(true);
   });
 
   it("the unread filter keeps only unread posts", () => {
-    expect(survivesReadChange("unread", false)).toBe(true);
-    expect(survivesReadChange("unread", true)).toBe(false);
+    expect(survivesFilter("unread", state(false))).toBe(true);
+    expect(survivesFilter("unread", state(true))).toBe(false);
   });
 
   it("the read filter keeps only read posts", () => {
-    expect(survivesReadChange("read", true)).toBe(true);
-    expect(survivesReadChange("read", false)).toBe(false);
+    expect(survivesFilter("read", state(true))).toBe(true);
+    expect(survivesFilter("read", state(false))).toBe(false);
+  });
+
+  it("the favorite filter keeps only starred posts, whatever their read state", () => {
+    expect(survivesFilter("favorite", state(false, true))).toBe(true);
+    expect(survivesFilter("favorite", state(true, true))).toBe(true);
+    expect(survivesFilter("favorite", state(true, false))).toBe(false);
   });
 });
 
 describe("isFilterEntryStale", () => {
   it("a bookmark just marked read makes the cached unread list stale (it must disappear)", () => {
-    expect(isFilterEntryStale([1, 2, 3], "unread", 2, true)).toBe(true);
+    expect(isFilterEntryStale([1, 2, 3], "unread", 2, state(true))).toBe(true);
   });
 
   it("a bookmark just marked read makes the cached read list stale (it must appear)", () => {
-    expect(isFilterEntryStale([1, 3], "read", 2, true)).toBe(true);
+    expect(isFilterEntryStale([1, 3], "read", 2, state(true))).toBe(true);
   });
 
   it("a bookmark just marked unread makes the cached read list stale (it must disappear)", () => {
-    expect(isFilterEntryStale([1, 2, 3], "read", 2, false)).toBe(true);
+    expect(isFilterEntryStale([1, 2, 3], "read", 2, state(false))).toBe(true);
   });
 
   it("a bookmark just marked unread makes the cached unread list stale (it must appear)", () => {
-    expect(isFilterEntryStale([1, 3], "unread", 2, false)).toBe(true);
+    expect(isFilterEntryStale([1, 3], "unread", 2, state(false))).toBe(true);
   });
 
-  it("the all filter's cached list is never considered stale by a read-state change", () => {
+  it("a bookmark just starred makes the cached favorites list stale (it must appear)", () => {
+    expect(isFilterEntryStale([1, 3], "favorite", 2, state(false, true))).toBe(true);
+  });
+
+  it("a bookmark just unstarred makes the cached favorites list stale (it must disappear)", () => {
+    expect(isFilterEntryStale([1, 2, 3], "favorite", 2, state(false, false))).toBe(true);
+  });
+
+  it("a read-state change never makes a cached favorites list stale on its own", () => {
+    expect(isFilterEntryStale([1, 2, 3], "favorite", 2, state(true, true))).toBe(false);
+    expect(isFilterEntryStale([1, 3], "favorite", 2, state(true, false))).toBe(false);
+  });
+
+  it("a favorite change never makes a cached unread/read list stale on its own", () => {
+    expect(isFilterEntryStale([1, 2, 3], "unread", 2, state(false, true))).toBe(false);
+    expect(isFilterEntryStale([1, 2, 3], "read", 2, state(true, true))).toBe(false);
+  });
+
+  it("the all filter's cached list is never considered stale by a toggle", () => {
     // "all" always includes a bookmark the cache already knows about,
-    // regardless of its read state.
-    expect(isFilterEntryStale([1, 2, 3], "all", 2, true)).toBe(false);
-    expect(isFilterEntryStale([1, 2, 3], "all", 2, false)).toBe(false);
+    // regardless of its read or favorite state.
+    expect(isFilterEntryStale([1, 2, 3], "all", 2, state(true))).toBe(false);
+    expect(isFilterEntryStale([1, 2, 3], "all", 2, state(false, true))).toBe(false);
   });
 
   it("is not stale when the cached presence already matches the new state", () => {
-    expect(isFilterEntryStale([1, 2, 3], "unread", 2, false)).toBe(false);
-    expect(isFilterEntryStale([1, 3], "unread", 2, true)).toBe(false);
+    expect(isFilterEntryStale([1, 2, 3], "unread", 2, state(false))).toBe(false);
+    expect(isFilterEntryStale([1, 3], "unread", 2, state(true))).toBe(false);
   });
 });
