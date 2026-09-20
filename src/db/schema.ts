@@ -8,6 +8,12 @@
  *   duplicate siblings so get-or-create is deterministic. A NULL parent_id
  *   denotes a root node. SQLite treats NULLs as distinct in UNIQUE indexes, so
  *   root uniqueness is enforced separately by a partial index below.
+ *   `description` is a nullable one-line gloss emitted by the taxonomy-design
+ *   pass (issue #61). It costs no extra LLM call - pass 1 already writes the
+ *   tree - and is what separates ambiguous siblings from each other for both
+ *   the `extend` prompt and the TypeSafe categorizer's `Choice.criteria`.
+ *   NULL for any node designed before this column existed, which every
+ *   consumer must tolerate.
  * - `bookmark_categories` is the many-to-many join (a bookmark may live in
  *   several branches at once).
  * - `run_state` holds the incremental cursor/marker and the persisted X OAuth
@@ -74,10 +80,11 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 );
 
 CREATE TABLE IF NOT EXISTS categories (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  parent_id  INTEGER REFERENCES categories(id) ON DELETE CASCADE,
-  name       TEXT NOT NULL,
-  created_at TEXT NOT NULL,
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_id   INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  description TEXT,
+  created_at  TEXT NOT NULL,
   UNIQUE(parent_id, name)
 );
 
@@ -175,6 +182,17 @@ export const ARTICLE_LINK_METADATA_ADDED_COLUMNS: { name: string; ddl: string }[
  * resolves to that Article's `x_articles` row. Same `PRAGMA table_info` guard
  * as {@link ARTICLE_LINK_METADATA_ADDED_COLUMNS}.
  */
+/**
+ * Columns added to `categories` after its original release: `description`, the
+ * one-line gloss the taxonomy pass now emits per node (issue #61). Same
+ * `PRAGMA table_info` guard as {@link ARTICLE_LINK_METADATA_ADDED_COLUMNS}, so
+ * an existing database gains the column without losing data and re-opening an
+ * already-migrated one is a no-op.
+ */
+export const CATEGORIES_ADDED_COLUMNS: { name: string; ddl: string }[] = [
+  { name: 'description', ddl: 'ALTER TABLE categories ADD COLUMN description TEXT' },
+];
+
 export const BOOKMARKS_ADDED_COLUMNS: { name: string; ddl: string }[] = [
   { name: 'quoted_post_id', ddl: 'ALTER TABLE bookmarks ADD COLUMN quoted_post_id TEXT' },
 ];

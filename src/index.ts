@@ -1,9 +1,16 @@
 #!/usr/bin/env node
-import { loadConfig, requireXCredentials, type Config } from './config';
+import {
+  loadConfig,
+  requireTypeSafeCredentials,
+  requireXCredentials,
+  type Config,
+} from './config';
 import { createCredentialStore, type CredentialStore } from './creds/resolve';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
-import { Categorizer } from './categorize/llm';
+import { Categorizer, type BatchCategorizer } from './categorize/llm';
+import { TypeSafeCategorizer } from './categorize/typesafe/categorizer';
+import { TypeSafeLevelAsker } from './categorize/typesafe/client';
 import { LlmTaxonomyDesigner } from './categorize/taxonomy';
 import { recategorizeAll, runIngest } from './ingest';
 import { startServer } from './web/server';
@@ -58,27 +65,106 @@ vault such as \`av inject\`, a shell export, a systemd unit, CI secrets), a
 Categorization and summaries run through the LLM provider named by
 XBOOKMARKS_LLM_PROVIDER (default: claude-cli, your Claude Code subscription via
 the local claude CLI).
+
+XBOOKMARKS_CATEGORIZER picks which implementation files bookmarks into the tree
+(the assignment pass) - claude-cli (default) or typesafe. \`typesafe\` routes that
+pass through the TypeSafe/Jev API, which is PAID PER TOKEN and needs
+TYPESAFE_API_KEY; it refuses to run without one. The taxonomy-design pass always
+stays on the LLM. Leave it unset and nothing costs money per call.
 `;
 
 /**
  * Build the two categorization passes' collaborators.
  *
- * Both passes are provider-agnostic: each takes a narrow `LlmRunner` bridged
- * from whichever provider the factory resolved for that role, so the Opus-pass-1
- * / Haiku-pass-2 economics stay expressible without either class knowing what
- * is behind it.
+ * Pass 1 (taxonomy design) is ALWAYS the LLM: it invents labels, which the
+ * TypeSafe classifier cannot do at all. It is provider-agnostic - it takes a
+ * narrow `LlmRunner` bridged from whichever provider the factory resolved for
+ * that role, so the Opus-pass-1 / Haiku-pass-2 economics stay expressible
+ * without the class knowing what is behind it.
+ *
+ * Pass 2 (assignment) is whichever implementation `XBOOKMARKS_CATEGORIZER`
+ * selects, behind the shared `BatchCategorizer` interface, so `runIngest` and
+ * `recategorizeAll` are identical either way:
+ *
+ * - `claude-cli` (the DEFAULT): today's prompt-and-parse `Categorizer`, running
+ *   on the flat-rate Claude subscription. Zero marginal cost.
+ * - `typesafe`: the opt-in beam-search walk (issue #61). PAID per token, so it
+ *   is reached only via an explicit opt-in AND a resolved `TYPESAFE_API_KEY`,
+ *   and `db` is required because the walk reads the real tree rather than a
+ *   rendered copy of it. The LLM categorizer is still built and injected as
+ *   its `extend` fallback: only the LLM can propose a NEW node for a bookmark
+ *   that fits nothing.
  */
-function buildCategorizers(config: Config, llm: LlmFactory) {
+function buildCategorizers(
+  config: Config,
+  llm: LlmFactory,
+  db: Database,
+  store: CredentialStore,
+) {
   const assignment = llm.forRole('assignment');
   const taxonomer = new LlmTaxonomyDesigner(toRunner(llm.forRole('taxonomy'), { json: true }), {
     minDepth: config.minCategoryDepth,
     maxDepth: config.maxCategoryDepth,
   });
-  const categorizer = new Categorizer(toRunner(assignment, { json: true }), {
+  const llmCategorizer = new Categorizer(toRunner(assignment, { json: true }), {
     model: assignment.model,
     maxDepth: config.maxCategoryDepth,
   });
+
+  if (config.categorizer !== 'typesafe') {
+    return { taxonomer, categorizer: llmCategorizer as BatchCategorizer };
+  }
+
+  // Refuses before anything can spend money; the key's VALUE is never printed.
+  const apiKey = requireTypeSafeCredentials(store);
+  const ts = config.typesafe;
+  const categorizer: BatchCategorizer = new TypeSafeCategorizer(
+    {
+      db,
+      asker: new TypeSafeLevelAsker({
+        apiKey,
+        model: ts.model,
+        baseURL: ts.baseUrl,
+        logger: (msg) => console.log(msg),
+      }),
+      extendFallback: llmCategorizer,
+      logger: (msg) => console.log(msg),
+    },
+    {
+      beamWidth: ts.beamWidth,
+      maxDepth: config.maxCategoryDepth,
+      confidenceThreshold: ts.confidenceThreshold,
+      multiLabelThreshold: ts.multiLabelThreshold,
+      maxLabels: ts.maxLabels,
+      concurrency: ts.concurrency,
+    },
+  );
   return { taxonomer, categorizer };
+}
+
+/**
+ * Say out loud, before any call is made, how the assignment pass is billed.
+ *
+ * `AGENTS.md`'s hardest constraint is that no code path may silently spend
+ * money. Selecting `typesafe` moves categorization from a flat-rate
+ * subscription to a metered API, so that change is announced every run rather
+ * than inferred from a config file.
+ */
+function reportCategorizerBilling(config: Config, llm: LlmFactory): void {
+  if (config.categorizer === 'typesafe') {
+    const model = config.typesafe.model ?? 'jev-latest';
+    console.log(
+      `Assignment pass: TypeSafe Jev (${model}) - ${billingLabel('per-token')}. ` +
+        'Unset XBOOKMARKS_CATEGORIZER to return to the Claude subscription.',
+    );
+    console.log(
+      `Taxonomy pass: ${llm.describe('taxonomy').providerId} - ` +
+        `${billingLabel(llm.describe('taxonomy').billing)}.`,
+    );
+    return;
+  }
+  const { providerId, model, billing } = llm.describe('assignment');
+  console.log(`Assignment pass: ${providerId} / ${model} - ${billingLabel(billing)}.`);
 }
 
 /**
@@ -105,8 +191,9 @@ async function cmdRun(config: Config, db: Database, store: CredentialStore): Pro
   requireXCredentials(config);
   const llm = createLlmFactory(config, process.env, store);
   await requireLlm(llm, ['taxonomy', 'assignment']);
+  reportCategorizerBilling(config, llm);
   const client = await getAuthenticatedClient(config, db);
-  const { taxonomer, categorizer } = buildCategorizers(config, llm);
+  const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store);
 
   const summary = await runIngest({
     db,
@@ -128,7 +215,8 @@ async function cmdRun(config: Config, db: Database, store: CredentialStore): Pro
 async function cmdRecategorize(config: Config, db: Database, store: CredentialStore): Promise<void> {
   const llm = createLlmFactory(config, process.env, store);
   await requireLlm(llm, ['taxonomy', 'assignment']);
-  const { taxonomer, categorizer } = buildCategorizers(config, llm);
+  reportCategorizerBilling(config, llm);
+  const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store);
 
   const summary = await recategorizeAll({
     db,

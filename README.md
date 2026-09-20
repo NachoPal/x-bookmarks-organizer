@@ -258,9 +258,47 @@ interface BookmarkContent {
 | `XBOOKMARKS_SUMMARY_MODEL` | `claude-sonnet-5`    | Summary model (Sonnet-class, for quality) |
 | `XBOOKMARKS_CLAUDE_BIN`  | `claude`               | Path to the `claude` binary when it is not on `PATH` |
 | `XBOOKMARKS_PAGE_SIZE`   | `20`                   | Viewer lazy-load batch size per scroll   |
+| `XBOOKMARKS_CATEGORIZER` | `claude-cli`           | Which implementation runs the **assignment** pass: `claude-cli` or `typesafe` (**paid**, see below) |
+| `XBOOKMARKS_TYPESAFE_MODEL` | `jev-latest`        | TypeSafe model, when that categorizer is selected |
+| `XBOOKMARKS_TYPESAFE_BEAM_WIDTH` | `3`           | Paths kept alive per tree level (1 = greedy) |
+| `XBOOKMARKS_TYPESAFE_CONFIDENCE` | `0.55`        | Floor to descend a level; below it the walk stops at the confident parent |
+| `XBOOKMARKS_TYPESAFE_MULTILABEL` | `0.6`         | Score floor for keeping an ADDITIONAL category |
+| `XBOOKMARKS_TYPESAFE_MAX_LABELS` | `3`           | Cap on categories per bookmark            |
+| `XBOOKMARKS_TYPESAFE_CONCURRENCY` | `8`          | Bookmarks classified in parallel          |
 
 Model names and effort levels are interpreted by the selected provider, so a provider that has no
 notion of an effort level simply ignores `XBOOKMARKS_TAXONOMY_EFFORT` rather than failing.
+
+## Choosing the assignment categorizer (optional, opt-in, **paid**)
+
+The **assignment** pass - filing each bookmark into the existing tree - can run on either of two
+implementations, selected with `XBOOKMARKS_CATEGORIZER`:
+
+| Value | What runs | Cost |
+| --- | --- | --- |
+| `claude-cli` (**default**) | Today's prompt-and-parse categorizer on your Claude subscription | **No per-call charge** |
+| `typesafe` | A hierarchical beam-search walk on the TypeSafe/Jev API | **Pay per token** (~$0.11 per 1,000 bookmarks) |
+
+**Leave it unset and nothing changes** - categorization stays on the flat-rate subscription and no
+code path can spend money. The **taxonomy-design pass always stays on the LLM** either way: Jev is a
+classifier and invents no labels.
+
+`typesafe` requires BOTH the explicit opt-in and a `TYPESAFE_API_KEY` resolved through the usual
+credential chain; without a key it refuses to run rather than falling back silently. Every run
+prints how the pass is billed before making a call. Note that with it enabled your bookmark text is
+sent to a third-party hosted API, where today it stays on your machine.
+
+What it buys, when enabled:
+
+- **Off-tree categories become structurally impossible.** The path is built in code from real
+  database nodes, so there is nothing to parse and no invented category to repair.
+- **Confidence-gated placement.** When the deepest choice is a coin flip, the bookmark is filed at
+  the last *confident* ancestor ("AI > Harnesses") instead of a guessed leaf or the flat
+  `Uncategorized` bucket.
+- **Hybrid extend.** On incremental runs, only bookmarks that fit nothing anywhere are handed to the
+  LLM to propose a new category, so it invents exactly where invention is needed.
+- **Speed.** Each bookmark is classified independently and in parallel, which is what makes
+  `recategorize` cheap enough to iterate on.
 
 ## Development
 

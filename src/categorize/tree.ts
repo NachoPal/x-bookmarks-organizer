@@ -5,6 +5,10 @@ import type { CategoryNode, CategoryTreeNode, TaxonomyNode } from '../types';
  * Materialize a designed taxonomy into `categories` rows, creating each node
  * (get-or-create, so it merges cleanly with any pre-existing tree). Depth is
  * capped at `maxDepth`; branches deeper than that are truncated. Idempotent.
+ *
+ * Each node's one-line `description` (issue #61) is carried through to the row;
+ * `getOrCreateCategory` only ever fills a missing one in, so re-materializing
+ * never clears a description a previous pass wrote.
  */
 export function materializeTaxonomy(
   db: Database,
@@ -17,7 +21,7 @@ export function materializeTaxonomy(
     for (const node of nodes) {
       const name = node.name.trim();
       if (!name) continue;
-      const created = db.getOrCreateCategory(name, parentId, when);
+      const created = db.getOrCreateCategory(name, parentId, when, node.description);
       walk(node.children ?? [], created.id, depth + 1);
     }
   };
@@ -53,6 +57,7 @@ export function assembleTree(
       id: c.id,
       parentId: c.parentId,
       name: c.name,
+      description: c.description ?? null,
       path: [],
       total: 0,
       unread: 0,
@@ -100,15 +105,25 @@ export function assembleTree(
   return roots;
 }
 
+/** Text budget for a node's description in the rendered prompt tree. */
+const MAX_RENDERED_DESCRIPTION_CHARS = 120;
+
 /**
  * Render the current tree as indented text for the LLM prompt, so the model can
  * reuse existing nodes. Empty tree renders as "(no categories yet)".
+ *
+ * A node's one-line description (issue #61) is appended after an em-free dash
+ * when it has one, which is what tells the `extend` prompt how siblings differ
+ * instead of leaving the model to guess from bare labels. Nodes designed before
+ * descriptions existed simply render as before.
  */
 export function renderTreeForPrompt(roots: CategoryTreeNode[]): string {
   if (roots.length === 0) return '(no categories yet)';
   const lines: string[] = [];
   const walk = (node: CategoryTreeNode, depth: number) => {
-    lines.push(`${'  '.repeat(depth)}- ${node.name}`);
+    const description = node.description?.replace(/\s+/g, ' ').trim();
+    const suffix = description ? ` - ${description.slice(0, MAX_RENDERED_DESCRIPTION_CHARS)}` : '';
+    lines.push(`${'  '.repeat(depth)}- ${node.name}${suffix}`);
     for (const child of node.children) walk(child, depth + 1);
   };
   for (const root of roots) walk(root, 0);

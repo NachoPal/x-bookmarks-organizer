@@ -19,12 +19,14 @@ Setup steps: `docs/setup.md`.
 
 ## Hard constraints (do not regress)
 
-- **Categorization must run on the Claude subscription, never the paid API.** It now routes through
-  the provider abstraction (`src/llm/`, see below), whose ONE adapter - `claude-cli` - shells out to
-  the `claude` CLI in print mode. Never introduce `@anthropic-ai/sdk` or require
+- **Categorization must run on the Claude subscription, never the paid Anthropic API.** It routes
+  through the provider abstraction (`src/llm/`, see below), whose ONE adapter - `claude-cli` -
+  shells out to the `claude` CLI in print mode. Never introduce `@anthropic-ai/sdk` or require
   `ANTHROPIC_API_KEY`; the adapter strips it from the child env as its subscription-only invariant.
-  A hosted, pay-per-token adapter is a future issue and would have to be an explicit, separately
-  approved change - no code path may silently spend money.
+  The ONE approved paid path is the opt-in TypeSafe assignment categorizer (issue #61, below): it
+  is off by default, refuses to run without `TYPESAFE_API_KEY`, and announces its per-token billing
+  before every run. No code path may silently spend money - that invariant is unchanged, and any
+  new paid path needs the same explicit opt-in + key + billing line.
 - **Categorization is two passes** (`src/ingest.ts`): pass 1 designs a taxonomy holistically over
   ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus-class + high effort, configurable) so
   the tree is genuinely deep; pass 2 files each bookmark into that fixed tree in batches
@@ -83,6 +85,45 @@ preflight and the viewer's `/api/summary-status`; a provider that is available b
 fails keeps the button **enabled** and surfaces the adapter's redacted, actionable message in the
 modal. Adapter tests point `XBOOKMARKS_CLAUDE_BIN` at a throwaway stub script, so the whole seam is
 exercised end to end with no network and no subscription usage.
+
+## Assignment-pass categorizers (`XBOOKMARKS_CATEGORIZER`, issue #61)
+
+Pass 2 (filing a bookmark into the existing tree) has TWO implementations behind the one
+`BatchCategorizer` interface (`src/categorize/llm.ts`), selected by `XBOOKMARKS_CATEGORIZER`
+(default `claude-cli`). This is deliberately NOT `XBOOKMARKS_LLM_PROVIDER`: TypeSafe/Jev takes no
+prompt and returns no text, so it cannot implement `LlmClient`, and it must never become selectable
+for the `summary`/`chat` roles. `src/ingest.ts` is untouched by the choice - it already injects the
+seam, which is the whole reason this fit. **Pass 1 (taxonomy design) is always the LLM**; Jev
+invents no labels, so it structurally cannot do that pass.
+
+`typesafe` (`src/categorize/typesafe/`) is PAID per token and opt-in only: `buildCategorizers`
+(`src/index.ts`) calls `requireTypeSafeCredentials` before constructing anything, and
+`reportCategorizerBilling` prints the `Billing='per-token'` line every run. Three files, and the
+split matters: `walk.ts` is a PURE beam search over sibling levels (`(levels, askFn) => scored
+paths`) with zero SDK/DB/network dependency - the path is built in code from real DB node ids, so
+off-tree paths are structurally impossible and `maxDepth` is a loop bound rather than a plea in a
+prompt; `client.ts` wraps `@typesafe-ai/sdk`, mapping one `Choice` per level (siblings as labels,
+node `description` as `criteria`) and batching the whole beam frontier into ONE `systemOne` call;
+`categorizer.ts` reads the real tree from the DB and returns the same `Assignment[]` as the LLM.
+Multi-label falls out of the beam: every path clearing `multiLabelThreshold` is kept (a path that is
+only a PREFIX of a deeper keeper is dropped). Low confidence stops the descent at the last confident
+ancestor instead of the flat `Uncategorized` dump; a bookmark that fits nothing anywhere is
+`unresolved` and, in `extend` mode ONLY, routed alone to the LLM `Categorizer` to invent a node.
+In `strict` mode it is correctly left unassigned so `makeResolver` files it `Uncategorized`.
+
+Tests are entirely offline and must stay that way: `walk.test.ts` drives the algorithm with a fake
+`askFn`, `client.test.ts` drives the REAL SDK through its injectable `Fetch`, and
+`integration.test.ts` runs the REAL `runIngest` against a local `http` server standing in for the
+API. Never let a test reach `api.typesafe.ai`, and never create an account or run a real call to
+validate a change here.
+
+**Category nodes carry a nullable `description`** (same issue). Pass 1's prompt now asks for a
+one-line gloss per node - no extra LLM call, it already writes the tree - parsed by
+`normalizeNodes` and stored via the `PRAGMA table_info`-guarded `CATEGORIES_ADDED_COLUMNS`
+migration. `getOrCreateCategory` only ever FILLS IN a missing description, never overwrites or
+clears one, so an ad-hoc `extend` node gains a description on the next `recategorize` while a real
+one survives. It feeds Jev's `Choice.criteria` AND `renderTreeForPrompt`, so it improves the
+existing `extend` prompt too; every consumer must tolerate `null` (any node predating the column).
 
 ## Frontend
 

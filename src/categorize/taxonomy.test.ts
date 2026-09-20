@@ -3,6 +3,7 @@ import {
   buildTaxonomyPrompt,
   extractDomain,
   LlmTaxonomyDesigner,
+  MAX_NODE_DESCRIPTION_CHARS,
   parseTaxonomy,
   type TaxonomyDesigner,
 } from './taxonomy';
@@ -178,5 +179,58 @@ describe('LlmTaxonomyDesigner', () => {
     ]);
     await designer.designTaxonomy([bm('1', 'https://t.co/abcd')], '(no categories yet)', articleContext);
     expect(seenPrompt).toContain('[article: Sparse Attention Explained]');
+  });
+});
+
+describe('node descriptions (issue #61)', () => {
+  it('asks the designer for a one-line description per node', () => {
+    const prompt = buildTaxonomyPrompt([], '(no categories yet)', 3, 4);
+
+    expect(prompt).toContain('one-sentence "description"');
+    expect(prompt).toContain('SEPARATE that node from its siblings');
+    // The output shape it is shown must carry the field too.
+    expect(prompt).toContain('"description"');
+  });
+
+  it('parses a description onto each node', () => {
+    const taxonomy = parseTaxonomy(
+      JSON.stringify({
+        tree: [
+          {
+            name: 'AI',
+            description: 'Machine learning and tooling.',
+            children: [{ name: 'Harnesses', description: 'Agent harnesses.', children: [] }],
+          },
+        ],
+      }),
+    );
+
+    expect(taxonomy[0]!.description).toBe('Machine learning and tooling.');
+    expect(taxonomy[0]!.children[0]!.description).toBe('Agent harnesses.');
+  });
+
+  it('collapses whitespace and caps an overlong description', () => {
+    const taxonomy = parseTaxonomy(
+      JSON.stringify({ tree: [{ name: 'AI', description: `a  b\n c ${'x'.repeat(400)}`, children: [] }] }),
+    );
+
+    expect(taxonomy[0]!.description!.length).toBe(MAX_NODE_DESCRIPTION_CHARS);
+    expect(taxonomy[0]!.description!.startsWith('a b c ')).toBe(true);
+  });
+
+  it('omits the description entirely when the model did not supply one', () => {
+    const taxonomy = parseTaxonomy(JSON.stringify({ tree: [{ name: 'AI', children: [] }] }));
+
+    expect(taxonomy[0]!.description).toBeUndefined();
+    expect(taxonomy[0]!.name).toBe('AI');
+  });
+
+  it('ignores a non-string description rather than failing the whole parse', () => {
+    const taxonomy = parseTaxonomy(
+      JSON.stringify({ tree: [{ name: 'AI', description: { nope: 1 }, children: [] }] }),
+    );
+
+    expect(taxonomy[0]!.description).toBeUndefined();
+    expect(taxonomy[0]!.name).toBe('AI');
   });
 });

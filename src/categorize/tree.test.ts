@@ -113,6 +113,8 @@ describe('materializeTaxonomy', () => {
 });
 
 describe('renderTreeForPrompt', () => {
+  const when = '2024-01-01T00:00:00.000Z';
+
   it('renders an empty tree with a placeholder', () => {
     expect(renderTreeForPrompt([])).toBe('(no categories yet)');
   });
@@ -124,5 +126,43 @@ describe('renderTreeForPrompt', () => {
     expect(text).toContain('  - Evals');
     expect(text).toContain('  - Harnesses');
     expect(text).toContain('- Game Dev');
+  });
+
+  // Issue #61: descriptions are what tell the extend prompt how siblings
+  // differ, instead of leaving the model to guess from bare labels.
+  it('appends a node description when it has one', () => {
+    const roots = assembleTree(
+      [
+        { id: 1, parentId: null, name: 'AI', description: 'Models and tooling.', createdAt: when },
+        { id: 2, parentId: 1, name: 'Evals', description: 'Benchmarks.', createdAt: when },
+      ],
+      new Map(),
+    );
+
+    const text = renderTreeForPrompt(roots);
+
+    expect(text).toContain('- AI - Models and tooling.');
+    expect(text).toContain('  - Evals - Benchmarks.');
+  });
+
+  it('renders a node with no description exactly as before', () => {
+    const roots = assembleTree(
+      [{ id: 1, parentId: null, name: 'AI', description: null, createdAt: when }],
+      new Map(),
+    );
+
+    expect(renderTreeForPrompt(roots)).toBe('- AI');
+  });
+
+  it('collapses whitespace and caps an overlong description', () => {
+    const roots = assembleTree(
+      [{ id: 1, parentId: null, name: 'AI', description: `a  b ${'x'.repeat(400)}`, createdAt: when }],
+      new Map(),
+    );
+
+    const line = renderTreeForPrompt(roots);
+
+    expect(line.startsWith('- AI - a b ')).toBe(true);
+    expect(line.length).toBeLessThan(140);
   });
 });
