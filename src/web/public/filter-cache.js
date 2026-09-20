@@ -2,13 +2,14 @@
 
 /**
  * Pure, DOM-free bookkeeping for the viewer's client-side category+filter
- * cache (issue #33): switching the Unread/Read/All filter (or switching back
+ * cache (issue #33): switching the filter tab (or switching back
  * to a category already visited) reuses already-fetched pages and
  * already-rendered DOM instead of re-fetching and re-rendering (which used
  * to reload every X embed). app.js owns the actual DOM nodes and bookmark
  * objects; this module only decides LRU eviction order and whether a
- * bookmark id still belongs in a cached read-state-filtered id list after a
- * read-state change, so that decision stays unit-testable without a DOM.
+ * bookmark id still belongs in a cached filtered id list (Unread / Read /
+ * Favorites) after a read-state or favorite toggle, so that decision stays
+ * unit-testable without a DOM.
  */
 (function (root) {
   const MAX_CACHED_CATEGORIES = 3;
@@ -29,35 +30,36 @@
   }
 
   /**
-   * Whether a bookmark whose read state is now `read` still belongs in a
-   * cached id list for `filter` ("all" | "unread" | "read"). "all" never
-   * drops a post on a read-state change - only "unread"/"read" membership
-   * can flip.
+   * Whether a bookmark in state `bm` ({ read, favorite }) belongs in a
+   * cached id list for `filter` ("all" | "unread" | "read" | "favorite").
+   * "all" never drops a post on a toggle - only the three filtered tabs'
+   * membership can flip.
    */
-  function survivesReadChange(filter, read) {
-    if (filter === "unread") return !read;
-    if (filter === "read") return read;
+  function survivesFilter(filter, bm) {
+    if (filter === "unread") return !bm.read;
+    if (filter === "read") return !!bm.read;
+    if (filter === "favorite") return !!bm.favorite;
     return true;
   }
 
   /**
-   * Whether a cached filter's id list (`ids`, `filter` being "unread" or
-   * "read") is now stale for `bookmarkId` after its read state became
-   * `read` - i.e. its cached presence/absence no longer matches
-   * {@link survivesReadChange}. A stale entry can only be fixed by
-   * invalidating it (the correct sort position for a newly-qualifying post
-   * is unknown to the client) - never by only pruning, which would drop a
-   * post from the Unread cache on read but silently omit it from the Read
-   * cache too until the next full fetch.
+   * Whether a cached filtered tab's id list (`ids`, `filter` being "unread",
+   * "read" or "favorite") is now stale for `bookmarkId` after a read-state
+   * or favorite toggle left it in state `bm` - i.e. its cached
+   * presence/absence no longer matches {@link survivesFilter}. A stale entry
+   * can only be fixed by invalidating it (the correct sort position for a
+   * newly-qualifying post is unknown to the client) - never by only pruning,
+   * which would drop a post from the Unread cache on read but silently omit
+   * it from the Read cache too until the next full fetch.
    */
-  function isFilterEntryStale(ids, filter, bookmarkId, read) {
-    return ids.includes(bookmarkId) !== survivesReadChange(filter, read);
+  function isFilterEntryStale(ids, filter, bookmarkId, bm) {
+    return ids.includes(bookmarkId) !== survivesFilter(filter, bm);
   }
 
   const api = {
     MAX_CACHED_CATEGORIES,
     touchLru,
-    survivesReadChange,
+    survivesFilter,
     isFilterEntryStale,
   };
   if (typeof module !== "undefined" && module.exports) {

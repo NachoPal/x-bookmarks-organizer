@@ -37,27 +37,6 @@
       </div>
 
       <div class="topbar-right">
-        <div
-          id="read-filter"
-          class="segmented"
-          role="radiogroup"
-          aria-label="Filter bookmarks by read state"
-          hidden
-        >
-          <label class="seg">
-            <input class="seg-input" type="radio" name="read-filter" value="unread" />
-            <span class="seg-label">Unread</span>
-          </label>
-          <label class="seg">
-            <input class="seg-input" type="radio" name="read-filter" value="read" />
-            <span class="seg-label">Read</span>
-          </label>
-          <label class="seg">
-            <input class="seg-input" type="radio" name="read-filter" value="all" checked />
-            <span class="seg-label">All</span>
-          </label>
-        </div>
-
         <button
           id="search-open"
           class="icon-btn"
@@ -167,11 +146,11 @@
                 aria-labelledby="post-scale-label"
               >
                 <label class="seg">
-                  <input class="seg-input" type="radio" name="post-scale" value="small" />
+                  <input class="seg-input" type="radio" name="post-scale" value="small" checked />
                   <span class="seg-label">Small</span>
                 </label>
                 <label class="seg">
-                  <input class="seg-input" type="radio" name="post-scale" value="medium" checked />
+                  <input class="seg-input" type="radio" name="post-scale" value="medium" />
                   <span class="seg-label">Medium</span>
                 </label>
                 <label class="seg">
@@ -255,17 +234,90 @@
         </div>
       </nav>
 
-      <main id="bookmarks" class="content" aria-label="Bookmarks" tabindex="-1">
-        <div class="content-inner">
-          <div id="bookmark-list" class="bookmark-list" aria-live="polite">
-            <div class="state state-empty state-welcome">
-              <span class="state-icon" aria-hidden="true">🔖</span>
-              <p class="state-title">Nothing selected yet</p>
-              <p class="state-body">Choose a category from the sidebar to see its bookmarks.</p>
+      <div class="main-column">
+        <div
+          id="filter-tabs"
+          class="filter-tabs"
+          role="tablist"
+          aria-label="Filter bookmarks"
+        >
+          <button
+            class="filter-tab"
+            type="button"
+            role="tab"
+            id="filter-tab-unread"
+            data-filter="unread"
+            aria-selected="false"
+            aria-controls="bookmark-list"
+            tabindex="-1"
+          >
+            <span class="filter-tab-label">Unread</span>
+          </button>
+          <button
+            class="filter-tab"
+            type="button"
+            role="tab"
+            id="filter-tab-read"
+            data-filter="read"
+            aria-selected="false"
+            aria-controls="bookmark-list"
+            tabindex="-1"
+          >
+            <span class="filter-tab-label">Read</span>
+          </button>
+          <button
+            class="filter-tab"
+            type="button"
+            role="tab"
+            id="filter-tab-all"
+            data-filter="all"
+            aria-selected="true"
+            aria-controls="bookmark-list"
+            tabindex="0"
+          >
+            <span class="filter-tab-label">All</span>
+          </button>
+          <button
+            class="filter-tab"
+            type="button"
+            role="tab"
+            id="filter-tab-favorite"
+            data-filter="favorite"
+            aria-selected="false"
+            aria-controls="bookmark-list"
+            tabindex="-1"
+          >
+            <svg class="filter-tab-icon icon-star" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path
+                d="M10 2.6l2.3 4.7 5.2.76-3.75 3.66.88 5.18L10 14.45l-4.63 2.45.88-5.18L2.5 8.06l5.2-.76L10 2.6z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span class="filter-tab-label">Favorites</span>
+          </button>
+        </div>
+
+        <main id="bookmarks" class="content" aria-label="Bookmarks" tabindex="-1">
+          <div class="content-inner">
+            <div
+              id="bookmark-list"
+              class="bookmark-list"
+              role="tabpanel"
+              aria-labelledby="filter-tab-all"
+              aria-live="polite"
+            >
+              <div class="state state-empty state-welcome">
+                <span class="state-icon" aria-hidden="true">🔖</span>
+                <p class="state-title">Nothing selected yet</p>
+                <p class="state-body">Choose a category from the sidebar to see its bookmarks.</p>
+              </div>
             </div>
           </div>
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
 
     <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="false"></div>

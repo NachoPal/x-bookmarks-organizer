@@ -111,6 +111,54 @@ describe('web server API', () => {
     expect(tree.tree.find((n) => n.name === 'AI')!.unread).toBe(1);
   });
 
+  it('POST /api/bookmarks/:id/favorite stars, unstars and persists the flag', async () => {
+    const b1 = db.getBookmarkByPostId('1')!;
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/favorite` });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { bookmark: { favorite: boolean } }).bookmark.favorite).toBe(true);
+    expect(db.getBookmarkById(b1.id)!.favorite).toBe(true);
+
+    const off = await app.inject({
+      method: 'POST',
+      url: `/api/bookmarks/${b1.id}/favorite`,
+      payload: { favorite: false },
+    });
+    expect((off.json() as { bookmark: { favorite: boolean } }).bookmark.favorite).toBe(false);
+    expect(db.getBookmarkById(b1.id)!.favorite).toBe(false);
+  });
+
+  it('POST /api/bookmarks/:id/favorite 404s an unknown bookmark and 400s a bad id', async () => {
+    expect((await app.inject({ method: 'POST', url: '/api/bookmarks/9999/favorite' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/api/bookmarks/abc/favorite' })).statusCode).toBe(400);
+  });
+
+  it('the bookmark list carries each favorite flag, and the filter returns only starred posts', async () => {
+    const evals = db.getAllCategories().find((c) => c.name === 'Evals')!;
+    const b1 = db.getBookmarkByPostId('1')!;
+    await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/favorite` });
+
+    type Payload = {
+      bookmarks: { postId: string; favorite: boolean }[];
+      counts: { total: number; unread: number; favorite: number };
+      total: number;
+    };
+    const all = (
+      await app.inject({ method: 'GET', url: `/api/categories/${evals.id}/bookmarks` })
+    ).json() as Payload;
+    expect(all.bookmarks.find((b) => b.postId === '1')!.favorite).toBe(true);
+    expect(all.bookmarks.find((b) => b.postId === '2')!.favorite).toBe(false);
+    expect(all.counts.favorite).toBe(1);
+
+    const favorites = (
+      await app.inject({
+        method: 'GET',
+        url: `/api/categories/${evals.id}/bookmarks?filter=favorite`,
+      })
+    ).json() as Payload;
+    expect(favorites.bookmarks.map((b) => b.postId)).toEqual(['1']);
+    expect(favorites.total).toBe(1); // the filtered total, so paging stops at the right place
+    expect(favorites.bookmarks.every((b) => b.favorite)).toBe(true);
+  });
   it('returns 404 for an unknown bookmark and 400 for a bad id', async () => {
     expect((await app.inject({ method: 'POST', url: '/api/bookmarks/9999/read' })).statusCode).toBe(404);
     expect((await app.inject({ method: 'POST', url: '/api/bookmarks/abc/read' })).statusCode).toBe(400);
@@ -213,14 +261,14 @@ describe('web server bookmark paging & filtering', () => {
     const res = await app.inject({ method: 'GET', url: `/api/categories/${evalsId}/bookmarks` });
     const body = res.json() as {
       bookmarks: unknown[];
-      counts: { total: number; unread: number };
+      counts: { total: number; unread: number; favorite: number };
       total: number;
       hasMore: boolean;
       offset: number;
       limit: number;
     };
     expect(body.bookmarks).toHaveLength(20);
-    expect(body.counts).toEqual({ total: 25, unread: 15 });
+    expect(body.counts).toEqual({ total: 25, unread: 15, favorite: 0 });
     expect(body.total).toBe(25);
     expect(body.hasMore).toBe(true);
     expect(body.offset).toBe(0);

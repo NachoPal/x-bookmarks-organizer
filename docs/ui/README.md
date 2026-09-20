@@ -173,3 +173,24 @@ category that contains a real public post id so a live X embed is in frame.
 | `post-size-small-dark.png` | **Small, dark.** Same behavior on dark surfaces. |
 | `post-size-large-dark.png` | **Large, dark.** |
 | `post-size-large-narrow-400.png` | **Large at ~400px.** The card cannot grow wider than the column, so the post content scales inside the same footprint — no horizontal overflow at any step. |
+
+## Filter tab bar + sidebar push + favorites (issues #65, #63)
+
+The read-state filter left the top bar for a full-width **tab bar** directly under it
+(Unread / Read / All / **Favorites**), and the categories drawer now **pushes** the content
+instead of overlaying it (reversing #42): the tab bar and the posts displace right and
+re-center in the remaining width, so nothing sits underneath the drawer. Below ~820px the
+drawer stays an overlay, where a pushed column would have no room left. Each card gained a
+**star** beside its read toggle; the star is stored in SQLite like read state. The post-size
+setting now defaults to **small**. Captured against the seeded dataset, never real bookmarks.
+
+| File | What it shows |
+| --- | --- |
+| `65-63-desktop-sidebar-open-light.png` | **Desktop, drawer open.** The tab bar starts at the drawer's edge and shrinks with the column; the posts re-center beside it, nothing hidden. Filled amber stars mark favorited posts. |
+| `65-63-desktop-sidebar-closed-light.png` | **Desktop, drawer closed.** The same column, centered full width, tab bar spanning the viewport. |
+| `65-63-favorites-tab-light.png` | **Favorites tab.** Only starred posts (`5 favorited · 20 total`); the active tab wears the star's own amber. |
+| `65-63-desktop-sidebar-open-dark.png` | **Dark mode, drawer open.** |
+| `65-63-favorites-tab-dark.png` | **Dark mode, Favorites tab.** |
+| `65-63-mobile-400-light.png` | **~400px.** All four tabs fit the row with no horizontal overflow. |
+| `65-63-mobile-400-cards-light.png` | **~400px, cards.** Star sits beside the read pill and stays a ≥24px target at the small post size. |
+| `65-63-tab-focus-ring.png` | **Keyboard.** Arrow keys move between tabs (roving tabindex); the focused tab shows its focus ring, and Unread is active. |

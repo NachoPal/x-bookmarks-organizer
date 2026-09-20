@@ -26,6 +26,10 @@
   --color-read-soft: #e6f4ea;
   --color-danger: #b42318;
   --color-danger-soft: #fdeceb;
+  /* The favorite star (issue #63): an amber dark enough to clear 4.5:1 on
+     both card surfaces, with a soft fill for its active state. */
+  --color-favorite: #92620a;
+  --color-favorite-soft: #fdf3dc;
   --color-focus: #1868d6;
   --color-backdrop: rgba(20, 24, 31, 0.44);
   /* Lighter scrim for the sidebar drawer: it dims the content just enough
@@ -128,6 +132,8 @@
     --color-read-soft: #123420;
     --color-danger: #ff7b6f;
     --color-danger-soft: #331a17;
+    --color-favorite: #f5c451;
+    --color-favorite-soft: #3a2c12;
     --color-focus: #77b3ff;
     --color-backdrop: rgba(0, 0, 0, 0.62);
     --color-backdrop-soft: rgba(0, 0, 0, 0.5);
@@ -165,6 +171,8 @@
   --color-read-soft: #123420;
   --color-danger: #ff7b6f;
   --color-danger-soft: #331a17;
+  --color-favorite: #f5c451;
+  --color-favorite-soft: #3a2c12;
   --color-focus: #77b3ff;
   --color-backdrop: rgba(0, 0, 0, 0.62);
   --color-backdrop-soft: rgba(0, 0, 0, 0.5);
@@ -482,16 +490,29 @@ body:not([data-sidebar="collapsed"]) .menu-toggle .menu-bar:nth-child(3) {
 
 
 /* ============================================================
-   App body / sidebar overlay (issue #42)
-   The categories sidebar is an overlay drawer at EVERY width: it is taken
-   out of the content flow entirely, so the content column stays a single
-   centered column and opening or closing the drawer causes zero horizontal
-   shift or reflow of the posts.
+   App body / sidebar (issue #65 - the drawer PUSHES, reversing #42)
+   Wide screens: the sidebar is IN FLOW, so opening it displaces the main
+   column (tab bar + posts) to the right; the column then re-centers itself
+   in the narrower space and the full-width tab bar shrinks with it. Nothing
+   is ever hidden underneath it.
+   Narrow screens (<=820px): a pushed column would have no room left, so the
+   sidebar stays the overlay drawer it has always been there, with its scrim
+   and its auto-dismiss on picking a category.
    ============================================================ */
 .app-body {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+}
+
+/* The pushed column: the tab bar is pinned at its top and only `.content`
+   below it scrolls, so the tabs stay put under the top bar. */
+.main-column {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-backdrop {
@@ -537,6 +558,31 @@ body:not([data-sidebar="collapsed"]) .sidebar-backdrop {
 body:not([data-sidebar="collapsed"]) .sidebar {
   transform: translateX(0);
   box-shadow: var(--shadow-lg);
+}
+
+/* Wide screens: in flow, so it pushes rather than overlays. Collapsing it to
+   width 0 (its panel keeps its own width and is clipped) is a layout change,
+   not an animation - animating the width would relayout the tab bar, the
+   cards and every embedded tweet on each frame. */
+@media (min-width: 821px) {
+  .sidebar {
+    position: relative;
+    top: auto;
+    bottom: auto;
+    flex: 0 0 auto;
+    width: 0;
+    border-right-width: 0;
+    transform: none;
+    transition: none;
+  }
+  body:not([data-sidebar="collapsed"]) .sidebar {
+    width: var(--sidebar-width);
+    border-right-width: 1px;
+    box-shadow: none;
+  }
+  .sidebar-inner {
+    width: var(--sidebar-width);
+  }
 }
 .sidebar-inner {
   height: 100%;
@@ -747,8 +793,10 @@ body:not([data-sidebar="collapsed"]) .sidebar {
 .content:focus {
   outline: none;
 }
-/* Centered in the viewport at every drawer state - the drawer is an overlay,
-   so this column's box never changes when it opens or closes. */
+/* Centered inside the main column - which is the whole viewport with the
+   drawer closed, and the space beside the drawer with it open (issue #65),
+   so the posts re-center in whatever width is left rather than hiding
+   underneath it. */
 .content-inner {
   max-width: var(--content-measure);
   margin: 0 auto;
@@ -809,14 +857,74 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
-/* Compact in the bar so the three regions never crowd the centered title. */
-.topbar .segmented {
-  flex: 0 1 auto;
-  padding: 2px;
+/* --- Filter tab bar (issue #65) ---------------------------------------
+   One full-width row of tabs directly under the top bar, inside the pushed
+   main column - so it spans the whole viewport with the drawer closed and
+   shrinks to the remaining width with it open. Each tab is an equal share
+   of that width; the selected one is marked by an underline AND a color
+   change, never color alone. */
+.filter-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  width: 100%;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
-.topbar .seg-label {
-  min-height: 2rem;
-  padding: var(--space-1) var(--space-3);
+.filter-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-small);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+.filter-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.filter-tab-icon {
+  flex: 0 0 auto;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+.filter-tab:hover {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+.filter-tab:active {
+  background: var(--color-border);
+}
+.filter-tab:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+.filter-tab[aria-selected="true"] {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+/* The Favorites tab wears the star's own color when it is the active one,
+   so the tab and the cards' stars read as the same feature. */
+.filter-tab[data-filter="favorite"][aria-selected="true"] {
+  color: var(--color-favorite);
+  border-bottom-color: var(--color-favorite);
+  background: var(--color-favorite-soft);
+}
+.filter-tab[data-filter="favorite"][aria-selected="true"] .icon-star {
+  fill: currentColor;
 }
 
 /* --- Responsive: the bar sheds its optional regions, widest first ------
@@ -844,9 +952,6 @@ body:not([data-sidebar="collapsed"]) .sidebar {
     width: 2.25rem;
     height: 2.25rem;
   }
-  .topbar .seg-label {
-    padding: var(--space-1) var(--space-2);
-  }
   .content-inner {
     padding: var(--space-4) var(--space-3) var(--space-5);
   }
@@ -858,6 +963,11 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   .topbar-count,
   .topbar-crumb {
     display: none;
+  }
+  /* Four tabs share ~400px: trim their padding rather than their labels. */
+  .filter-tab {
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-1);
   }
 }
 
@@ -1131,6 +1241,57 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   cursor: progress;
   opacity: 0.6;
 }
+/* The favorite star (issue #63), sitting beside the read toggle. An icon
+   button, so it stays a >=24px target at every post-size step; the filled
+   star plus the amber tint (never the tint alone) is what marks the
+   favorited state. */
+.fav-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-2);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease), opacity var(--motion-fast) var(--ease);
+}
+.fav-btn .icon-star {
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: none;
+}
+.fav-btn:hover {
+  color: var(--color-favorite);
+  border-color: var(--color-border-strong);
+  background: var(--color-border);
+}
+.fav-btn:active {
+  border-color: var(--color-favorite);
+}
+.fav-btn[aria-pressed="true"] {
+  color: var(--color-favorite);
+  background: var(--color-favorite-soft);
+  border-color: transparent;
+}
+.fav-btn[aria-pressed="true"] .icon-star {
+  fill: currentColor;
+}
+.fav-btn[aria-pressed="true"]:hover {
+  border-color: var(--color-favorite);
+  background: var(--color-favorite-soft);
+}
+.fav-btn:disabled,
+.fav-btn.is-loading {
+  cursor: progress;
+  opacity: 0.6;
+}
+
 .read-pill .dot {
   flex: 0 0 auto;
   width: 0.5rem;

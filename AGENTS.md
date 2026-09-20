@@ -131,15 +131,17 @@ Before editing anything under `src/web/public/`, follow the `building-frontends`
 checker pass:
 `python3 ~/.claude/skills/building-frontends/scripts/check_frontend.py src/web/public/*` must be PASS.
 All colors/spacing are CSS custom properties in `styles.css`; consume `var(--token)`, never raw
-literals in component rules. The viewer is an app shell: a sticky top bar, an overlay category
-drawer, and an independently scrolling content pane; keep tree labels wrapping inside the sidebar
-(flex children need `min-width: 0`) so counts never overflow.
+literals in component rules. The viewer is an app shell: a sticky top bar, a full-width filter tab
+bar under it, a category drawer that pushes the content aside (overlays it only on narrow screens),
+and an independently scrolling content pane; keep tree labels wrapping inside the sidebar (flex
+children need `min-width: 0`) so counts never overflow.
 
-The **top bar** (issues #53/#37/#42) is one sticky row in three flex regions: the animated
+The **top bar** (issues #53/#37/#42/#65) is one sticky row in three flex regions: the animated
 categories-menu toggle (left), the selected category's title + counts on ONE line (center), and
-`read-filter | search | colors | theme | settings gear` (right). There is no explanatory blurb and
-no second header inside the content pane - `#content-title`/`#content-count` live in the bar. Equal
-`flex: 1 1 0` flanks are what centers the middle region; the center is `flex: 0 1 auto` with
+`search | colors | theme | settings gear` (right). The read-state filter LEFT this bar in #65 - it
+is now the tab bar below (see next paragraph). There is no explanatory blurb and no second header
+inside the content pane - `#content-title`/`#content-count` live in the bar. Equal `flex: 1 1 0`
+flanks are what centers the middle region; the center is `flex: 0 1 auto` with
 `min-width: 0`, and `.topbar-right` carries a `min-width: min-content` floor so the controls are
 never squeezed. The title's ancestor crumb is a separate span capped at `max-width: 40%` (and
 hidden under 560px) so a deep path ellipsizes the CRUMB, never the leaf - weighting `flex-shrink`
@@ -148,15 +150,27 @@ bar drops the `quick-only` theme/colors icons (they are duplicates of the settin
 switches, which is their canonical home - one `applyTheme`/`setColorEnabled` updates both controls);
 under 1100px it drops last-sync; under 560px the counts and the crumb.
 
-The **category sidebar is an overlay drawer at every width** (issue #42): it is `position: fixed`,
-out of the content flow entirely, so `.content-inner` is a single centered column that does **not**
-move when the drawer opens or closes - never reintroduce a grid/flex sibling that reserves its
-width. A closed drawer gets `inert` from JS (not just an off-screen transform) so it leaves the tab
-order; its `box-shadow` belongs to the OPEN state only, or it bleeds a grey band down the viewport
-edge. The scrim is narrow-only (`max-width: 820px`); wide screens get none, so posts stay clickable
-beside the open drawer. `--header-offset` (the bar's real outer height, safe-area included) is what
-the fixed drawer and scrim hang off - keep them on that token. `--z-header` sits ABOVE `--z-sidebar`
-so the settings popover, which is a child of the bar, is not painted over by the drawer.
+The **filter tab bar** (issue #65) is a full-width row of four tabs - Unread / Read / All /
+Favorites - directly under the top bar, inside `.main-column` (a flex column holding the tab bar
+above the scrolling `.content`), so it spans the viewport with the drawer closed and SHRINKS with
+the column when the drawer pushes it. It is a real `role="tablist"`: roving tabindex, arrow keys +
+Home/End, `#bookmark-list` is its one `tabpanel` and its `aria-labelledby` follows the active tab
+(`renderFilterTabs` in `app.js`). It is always visible - hiding it on an empty category would jump
+the layout. The active tab is marked by an underline AND a color, never color alone.
+
+The **category sidebar PUSHES the content on wide screens** (issue #65, reversing #42's overlay):
+at `min-width: 821px` it is in flow (`position: relative`, `flex: 0 0 auto`), `width: 0` when
+collapsed and `--sidebar-width` when open, with `.sidebar-inner` holding its own width so the panel
+is clipped rather than squeezed. `.content-inner` stays `margin: 0 auto`, so the posts re-center in
+whatever width is left and nothing hides under the drawer. That width change is deliberately NOT
+animated: animating it would relayout the tab bar, every card and every embedded tweet per frame
+(and the floor allows only transform/opacity). At `<=820px` it remains the overlay drawer with its
+scrim and auto-dismiss-on-pick - a pushed column would have no room left there. A closed drawer
+gets `inert` from JS (not just an off-screen transform) so it leaves the tab order; its `box-shadow`
+belongs to the OPEN overlay state only, or it bleeds a grey band down the viewport edge.
+`--header-offset` (the bar's real outer height, safe-area included) is what the narrow fixed drawer
+and its scrim hang off - keep them on that token. `--z-header` sits ABOVE `--z-sidebar` so the
+settings popover, which is a child of the bar, is not painted over by the drawer.
 
 The **settings popover** (gear, issue #37) holds the post-size control plus the theme and
 category-color switches. Post size resizes the POST, not the app's chrome - scaling the viewer's own
@@ -170,36 +184,48 @@ since its iframe's font cannot be restyled from here. The step range is bounded 
 target, large must keep the 36rem card inside the 44rem content column. Percentages resolve in the
 zoomed coordinate space, so `width: 100%` needs no compensation - a narrow card fills its column at
 every step and only its content scales. Steps and their guarded persistence live in `post-scale.js`
-(`XBOPostScale`), the drawer's own state in `sidebar-state.js` (`XBOSidebarState`), both
-pure/testable like `theme.js`. Escape closes the popover and the drawer and returns focus to their
-triggers; the bar's menu toggle is the ONLY close control for the drawer (the in-drawer close button
-was a duplicate and is gone).
+(`XBOPostScale`, default **small** since the tab-bar change - the owner's call), the drawer's own
+state in `sidebar-state.js` (`XBOSidebarState`), both pure/testable like `theme.js`. Escape closes
+the popover and the drawer and returns focus to their triggers; the bar's menu toggle is the ONLY
+close control for the drawer (the in-drawer close button was a duplicate and is gone).
 
 A category's posts load lazily in batches (`XBOOKMARKS_PAGE_SIZE`, default 20) via infinite
-scroll: `GET /api/categories/:id/bookmarks` takes `filter`/`offset`/`limit` and pages the
-read-state-filtered set server-side (`db.getBookmarksForCategory` + `getCategoryBookmarkCounts`),
-so a large category is never shipped or embedded all at once. The client (`app.js`) drives it with
-an IntersectionObserver sentinel against the content pane; changing the filter re-pages from the
-top. The dense-category seed leaf exists to exercise this.
+scroll: `GET /api/categories/:id/bookmarks` takes `filter`/`offset`/`limit` (`filter` is the tab:
+`all | unread | read | favorite`) and pages the filtered set server-side
+(`db.getBookmarksForCategory` + `getCategoryBookmarkCounts`, which rolls up `total`/`unread`/
+`favorite`), so a large category is never shipped or embedded all at once. The client (`app.js`)
+drives it with an IntersectionObserver sentinel against the content pane; changing the tab re-pages
+from the top. The dense-category seed leaf exists to exercise this.
 
-Switching the Unread/Read/All filter (or back to a category already visited) does NOT re-fetch or
-re-render from scratch (issue #33): `app.js`'s `viewCaches` snapshots a settled view's DOM
-pane + bookmark objects, keyed by category id -> filter, when the owner navigates away from it
+Switching tabs (or going back to a category already visited) does NOT re-fetch or re-render from
+scratch (issue #33): `app.js`'s `viewCaches` snapshots a settled view's DOM pane + bookmark
+objects, keyed by category id -> filter, when the owner navigates away from it
 (`saveCurrentViewToCache`). Each view renders into its own `.view-pane` that stays MOUNTED (just
-`hidden`) - never `replaceChildren()`/re-append cards: detaching an iframe and re-attaching it reloads
-it, which is what blanked the X embeds (issue #33 follow-up). `activatePane` shows one pane;
-`releaseOrphanPanes` removes any pane no cache entry retains. A real load shows the spinner
-placeholder (`.state-loading`) in a fresh pane. Bounded to `XBOFilterCache.MAX_CACHED_CATEGORIES` (3)
-categories via LRU eviction (`src/web/public/filter-cache.js`, the pure/testable half of this - LRU
-touch/evict and `isFilterEntryStale`). A view mid-fetch is never cached (`viewReady` guard) - caching
-one would poison that category+filter with a false "0 results" snapshot if the owner switches
-categories again before the fetch settles. A read-state toggle patches the cached "all" entry for
-every affected category in place (membership there never changes) but fully INVALIDATES (deletes,
-never just prunes) a stale cached Unread/Read entry - across the bookmark's direct categories AND
-every ancestor via `XBOTreeCounts.affectedCategoryIds`, since a cached view can be a parent
-category's rolled-up list that never appears in the bookmark's own `categoryIds` - so the next visit
-fetches fresh rather than silently missing the bookmark in the cache it now belongs to (pruning
-alone only makes it disappear from the one it left).
+`hidden`) - never `replaceChildren()`/re-append cards: detaching an iframe and re-attaching it
+reloads it, which is what blanked the X embeds (issue #33 follow-up). `activatePane` shows one
+pane; `releaseOrphanPanes` removes any pane no cache entry retains. A real load shows the spinner
+placeholder (`.state-loading`) in a fresh pane. Bounded to `XBOFilterCache.MAX_CACHED_CATEGORIES`
+(3) categories via LRU eviction (`src/web/public/filter-cache.js`, the pure/testable half of this -
+LRU touch/evict and `isFilterEntryStale`). A view mid-fetch is never cached (`viewReady` guard) -
+caching one would poison that category+filter with a false "0 results" snapshot if the owner
+switches categories again before the fetch settles. A read-state or favorite toggle
+(`syncCachedViewsOnChange` in `app.js`) fully INVALIDATES (deletes, never just prunes) any cached
+Unread/Read/Favorites entry whose membership for that bookmark is now stale - across the bookmark's
+direct categories AND every ancestor via `XBOTreeCounts.affectedCategoryIds`, since a cached view
+can be a parent category's rolled-up list that never appears in the bookmark's own `categoryIds` -
+so the next visit fetches fresh rather than silently missing the bookmark in the cache it now
+belongs to (pruning alone only makes it disappear from the one it left). Every SURVIVING entry
+(including "all", whose membership never changes) is patched in place instead: its cached bookmark
+copy and its card's pill + star, since e.g. a favorite toggle leaves a cached Unread view's
+membership intact but its star stale. `survivesFilter` / `isFilterEntryStale` in `filter-cache.js`
+own that membership decision, DOM-free and unit-tested.
+
+**Favorites** (issue #63) mirror read state end to end: a `favorite` column on `bookmarks` added
+through the same `PRAGMA table_info`-guarded migration (`BOOKMARKS_ADDED_COLUMNS`),
+`Database.setFavorite`, `POST /api/bookmarks/:id/favorite` next to the read POST, the flag on
+every listed bookmark, and the `favorite` tab filter. It survives sync (`storeCategorizedBatch` is
+`ON CONFLICT(post_id) DO NOTHING`) and `recategorize` (which only rewrites category links). The
+sidebar tree counts stay read-state only, so a star never touches them.
 
 A read-state toggle or delete must NEVER reload/re-render the whole sidebar tree (that flickers
 and loses scroll + expand-collapse state) - it patches only the affected counters in place. Each

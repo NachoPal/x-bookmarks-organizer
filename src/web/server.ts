@@ -1,7 +1,7 @@
 import path from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
-import type { Database, ReadFilter } from '../db/database';
+import type { BookmarkFilter, Database } from '../db/database';
 import { buildCategoryTree } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
 import { articleRecordFromResult, HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
@@ -129,8 +129,8 @@ function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryId
   }));
 }
 
-function parseReadFilter(raw: unknown): ReadFilter {
-  return raw === 'unread' || raw === 'read' ? raw : 'all';
+function parseBookmarkFilter(raw: unknown): BookmarkFilter {
+  return raw === 'unread' || raw === 'read' || raw === 'favorite' ? raw : 'all';
 }
 
 /** Parse a non-negative integer query param, falling back to {@link fallback}. */
@@ -208,7 +208,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       const id = Number.parseInt(req.params.id, 10);
       if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid category id' });
 
-      const filter = parseReadFilter(req.query.filter);
+      const filter = parseBookmarkFilter(req.query.filter);
       const offset = parseNonNegInt(req.query.offset, 0);
       // Clamp the client-supplied limit to the configured page size so no
       // request can pull the whole category down in one shot.
@@ -221,7 +221,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
           ? counts.unread
           : filter === 'read'
             ? counts.total - counts.unread
-            : counts.total;
+            : filter === 'favorite'
+              ? counts.favorite
+              : counts.total;
       const bookmarks = db.getBookmarksForCategory(id, { filter, offset, limit });
       const categoryIdsByBookmark = db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id));
 
@@ -246,6 +248,21 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
       const read = req.body?.read !== false;
       const updated = read ? db.markRead(id) : db.markUnread(id);
+      if (!updated) return reply.code(404).send({ error: 'bookmark not found' });
+      return { bookmark: updated };
+    },
+  );
+
+  // Star or unstar a bookmark (issue #63). Mirrors the read-state toggle
+  // above: body { favorite: false } clears the star, anything else sets it.
+  // The flag lives on the bookmark row, so it survives a later sync or
+  // recategorize exactly like read state does.
+  app.post<{ Params: { id: string }; Body?: { favorite?: boolean } }>(
+    '/api/bookmarks/:id/favorite',
+    async (req, reply) => {
+      const id = Number.parseInt(req.params.id, 10);
+      if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
+      const updated = db.setFavorite(id, req.body?.favorite !== false);
       if (!updated) return reply.code(404).send({ error: 'bookmark not found' });
       return { bookmark: updated };
     },

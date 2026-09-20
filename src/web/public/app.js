@@ -17,7 +17,7 @@
   const countEl = document.getElementById("content-count");
   const searchInput = document.getElementById("category-search");
   const searchClear = document.getElementById("category-search-clear");
-  const readFilterEl = document.getElementById("read-filter");
+  const filterTabsEl = document.getElementById("filter-tabs");
 
   // ---- summary modal ------------------------------------------------------
   const summaryBackdropEl = document.getElementById("summary-backdrop");
@@ -49,13 +49,18 @@
   // read-state toggle or delete can walk straight to a category's ancestors
   // and patch counts in place, without touching the rest of the sidebar DOM.
   let categoryIndex = new Map();
-  let readFilter = "all"; // "all" | "unread" | "read"
+  // The selected tab in the bar under the top bar: the three read-state
+  // views plus the owner's starred set (issues #65/#63).
+  let activeFilter = "all"; // "all" | "unread" | "read" | "favorite"
+  // Filters whose MEMBERSHIP a per-bookmark toggle can flip, so a cached
+  // view of one can go stale ("all" never loses or gains a post this way).
+  const MEMBERSHIP_FILTERS = ["unread", "read", "favorite"];
 
   // ---- lazy loading (paged, filtered, infinite scroll) ------------------
   // The selected category is loaded one batch at a time as the owner scrolls,
   // so a large category never renders (or embeds) every post up front. Counts
   // come from the server so totals stay accurate without downloading each row.
-  let categoryCounts = { total: 0, unread: 0 };
+  let categoryCounts = { total: 0, unread: 0, favorite: 0 };
   let pageOffset = 0; // rows fetched so far for the current category+filter
   let pageHasMore = false;
   let pageLoading = false;
@@ -74,10 +79,10 @@
   let viewReady = false;
 
   // ---- client-side filter cache (issue #33) -------------------------------
-  // Switching the read-state filter (or switching back to a category already
-  // visited) reuses already-fetched pages and already-rendered DOM instead of
-  // re-fetching and re-rendering - no reload flash and no reloading the X
-  // embeds that were already loaded. Keyed by category id -> { counts,
+  // Switching tabs (or switching back to a category already visited) reuses
+  // already-fetched pages and already-rendered DOM instead of re-fetching
+  // and re-rendering - no reload flash and no reloading the X embeds that
+  // were already loaded. Keyed by category id -> { counts,
   // filters: Map(filter -> { ids, pane, cardEls, bmById, offset, hasMore }) }.
   // Each view renders into its own `.view-pane` that STAYS MOUNTED in the
   // document (just `hidden` while inactive): detaching an iframe and
@@ -126,7 +131,7 @@
     touchCategoryCache(categoryId);
     let entry = viewCaches.get(categoryId);
     if (!entry) {
-      entry = { counts: { total: 0, unread: 0 }, filters: new Map() };
+      entry = { counts: emptyCounts(), filters: new Map() };
       viewCaches.set(categoryId, entry);
     }
     return entry;
@@ -147,7 +152,7 @@
       ids.push(bm.id);
       bmById.set(bm.id, bm);
     }
-    catCache.filters.set(readFilter, {
+    catCache.filters.set(activeFilter, {
       ids,
       pane: listEl,
       cardEls: Array.from(listEl.querySelectorAll(":scope > .bookmark-card")),
@@ -157,11 +162,22 @@
     });
   }
 
-  /** Sync cached category counts (rollup total/unread) from tree-count updates. */
+  /** Zeroed counts, one per tab that needs a total (see the server's payload). */
+  function emptyCounts() {
+    return { total: 0, unread: 0, favorite: 0 };
+  }
+
+  /**
+   * Sync cached category counts (rollup total/unread) from tree-count
+   * updates. The sidebar tree only tracks total/unread, so the cached
+   * favorites total is carried over rather than dropped.
+   */
   function syncCacheCounts(updatedNodes) {
     for (const node of updatedNodes) {
       const catCache = viewCaches.get(node.id);
-      if (catCache) catCache.counts = { total: node.total, unread: node.unread };
+      if (catCache) {
+        catCache.counts = { ...catCache.counts, total: node.total, unread: node.unread };
+      }
     }
   }
 
@@ -179,7 +195,6 @@
     currentViewBookmarks = entry.ids.map((id) => entry.bmById.get(id)).filter(Boolean);
 
     activatePane(entry.pane);
-    readFilterEl.hidden = categoryCounts.total === 0;
     if (categoryCounts.total === 0) {
       countEl.textContent = "";
       stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
@@ -196,18 +211,21 @@
   }
 
   /**
-   * After a read-state change, keep every cached view (other than the one
-   * currently on screen, which the live DOM/bm patch already handles)
-   * consistent, across every category the bookmark is filed under. A cached
-   * Unread/Read entry whose membership for this bookmark is now stale is
-   * fully invalidated (deleted, so the next visit fetches fresh) rather than
-   * patched: dropping the id alone would correctly make it disappear from
-   * the cache it left, but silently leave it missing from the cache it now
-   * belongs to (the correct sort position for a newly-qualifying post isn't
-   * knowable client-side). `all` membership never changes on a read-state
-   * change, so that entry is patched in place instead of invalidated.
+   * After a read-state or favorite change, keep every cached view (other
+   * than the one currently on screen, which the live DOM/bm patch already
+   * handles) consistent, across every category the bookmark is filed under.
+   *
+   * A cached Unread/Read/Favorites entry whose membership for this bookmark
+   * is now stale is fully invalidated (deleted, so the next visit fetches
+   * fresh) rather than patched: dropping the id alone would correctly make
+   * it disappear from the cache it left, but silently leave it missing from
+   * the cache it now belongs to (the correct sort position for a
+   * newly-qualifying post isn't knowable client-side). Every entry that
+   * SURVIVES still holds a stale copy of the bookmark and a stale card
+   * (e.g. a favorite toggled while the Unread view is open), so each one is
+   * patched in place - membership there never changed.
    */
-  function invalidateCachedViewsOnReadChange(bm) {
+  function syncCachedViewsOnChange(bm) {
     // A cached view can be a PARENT category showing a rolled-up list of
     // descendant bookmarks, so a cached entry can exist for an ancestor id
     // that never appears in `bm.categoryIds` (its direct categories) -
@@ -219,33 +237,45 @@
     for (const categoryId of affected) {
       const catCache = viewCaches.get(categoryId);
       if (!catCache) continue;
+      const isLive = (filterName) =>
+        categoryId === selectedCategoryId && filterName === activeFilter;
 
-      for (const filterName of ["unread", "read"]) {
-        if (categoryId === selectedCategoryId && filterName === readFilter) continue; // live view, already patched
+      for (const filterName of MEMBERSHIP_FILTERS) {
+        if (isLive(filterName)) continue; // live view, already patched
         const entry = catCache.filters.get(filterName);
         if (!entry) continue;
-        if (window.XBOFilterCache.isFilterEntryStale(entry.ids, filterName, bm.id, bm.read)) {
+        if (window.XBOFilterCache.isFilterEntryStale(entry.ids, filterName, bm.id, bm)) {
           catCache.filters.delete(filterName);
         }
       }
 
-      const allEntry = catCache.filters.get("all");
-      if (allEntry && allEntry.bmById.has(bm.id)) {
-        const cachedBm = allEntry.bmById.get(bm.id);
-        cachedBm.read = bm.read;
-        cachedBm.readAt = bm.readAt;
-        const idx = allEntry.ids.indexOf(bm.id);
-        const cardEl = idx !== -1 ? allEntry.cardEls[idx] : null;
-        // When this cached "all" card IS the one on screen it was already
-        // patched by the caller; only touch the detached copy.
-        if (cardEl && !(categoryId === selectedCategoryId && readFilter === "all")) {
-          cardEl.classList.toggle("is-unread", !cachedBm.read);
-          const oldPill = cardEl.querySelector(".read-pill");
-          if (oldPill) oldPill.replaceWith(renderPill(cachedBm, cardEl));
-        }
+      for (const [filterName, entry] of catCache.filters) {
+        if (isLive(filterName)) continue; // the on-screen card is patched by the caller
+        patchCachedCard(entry, bm);
       }
     }
     releaseOrphanPanes(); // panes of invalidated entries leave the document
+  }
+
+  /**
+   * Copy a bookmark's current read/favorite state into one cached entry's
+   * own copy of it, and re-render that entry's (detached-from-view but still
+   * mounted) card controls to match.
+   */
+  function patchCachedCard(entry, bm) {
+    const cachedBm = entry.bmById.get(bm.id);
+    if (!cachedBm) return;
+    cachedBm.read = bm.read;
+    cachedBm.readAt = bm.readAt;
+    cachedBm.favorite = bm.favorite;
+    const idx = entry.ids.indexOf(bm.id);
+    const cardEl = idx !== -1 ? entry.cardEls[idx] : null;
+    if (!cardEl) return;
+    cardEl.classList.toggle("is-unread", !cachedBm.read);
+    const oldPill = cardEl.querySelector(".read-pill");
+    if (oldPill) oldPill.replaceWith(renderPill(cachedBm, cardEl));
+    const oldStar = cardEl.querySelector(".fav-btn");
+    if (oldStar) oldStar.replaceWith(renderFavoriteButton(cachedBm, cardEl));
   }
 
   /** Permanently remove a deleted bookmark from every cached filter entry. */
@@ -271,7 +301,7 @@
   async function showCategoryView() {
     const catCache = viewCaches.get(selectedCategoryId);
     if (catCache) categoryCounts = catCache.counts;
-    const cached = catCache && catCache.filters.get(readFilter);
+    const cached = catCache && catCache.filters.get(activeFilter);
     if (cached) {
       touchCategoryCache(selectedCategoryId);
       restoreViewFromCache(cached);
@@ -280,11 +310,13 @@
     await fetchAndRenderFirstPage();
   }
 
-  // ---- sidebar (overlay drawer) -----------------------------------------
-  // The drawer overlays the content at every width (issue #42): the content
-  // column is centered and never reflows, so opening/closing is purely a
-  // visibility change. Only the *auto-dismiss on pick* still depends on
-  // width, where the drawer covers nearly the whole viewport.
+  // ---- sidebar (pushes the content, issue #65) ---------------------------
+  // On wide screens the drawer is in flow: opening it displaces the main
+  // column (tab bar + posts) to the right, where it re-centers in the
+  // narrower space - nothing is hidden underneath it. That is all CSS; the
+  // state here is just the body attribute. On narrow screens it stays the
+  // overlay drawer with its scrim (a pushed column would have no room
+  // left), which is also where the *auto-dismiss on pick* applies.
 
   const bodyEl = document.body;
   const contentEl = document.getElementById("bookmarks"); // the scrolling pane
@@ -836,8 +868,8 @@
 
     renderTitle(node.path);
 
-    // On narrow screens the sidebar is an overlay; picking a category should
-    // reveal the content it covers.
+    // On narrow screens the sidebar still overlays the content; picking a
+    // category should reveal what it covers.
     if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
 
     await showCategoryView();
@@ -858,27 +890,32 @@
     titleEl.title = path.join(" › ");
   }
 
-  /** How many bookmarks match the active read-state filter in this category. */
+  /** How many bookmarks match the active tab in this category. */
   function filteredTotal() {
-    if (readFilter === "unread") return categoryCounts.unread;
-    if (readFilter === "read") return categoryCounts.total - categoryCounts.unread;
+    if (activeFilter === "unread") return categoryCounts.unread;
+    if (activeFilter === "read") return categoryCounts.total - categoryCounts.unread;
+    if (activeFilter === "favorite") return categoryCounts.favorite || 0;
     return categoryCounts.total;
   }
 
-  /** Count line reflecting the active filter: total when All, filtered vs total otherwise. */
+  /** Count line reflecting the active tab: total when All, filtered vs total otherwise. */
   function renderCountLine() {
     const total = categoryCounts.total;
-    if (readFilter === "all") {
+    if (activeFilter === "all") {
       countEl.textContent = `${total} bookmark${total === 1 ? "" : "s"} · ${categoryCounts.unread} unread`;
     } else {
-      const noun = readFilter === "unread" ? "unread" : "read";
+      const noun =
+        activeFilter === "unread" ? "unread" : activeFilter === "read" ? "read" : "favorited";
       countEl.textContent = `${filteredTotal()} ${noun} · ${total} total`;
     }
   }
 
   function emptyFilterMessage() {
-    if (readFilter === "unread") return "No unread bookmarks in this category.";
-    if (readFilter === "read") return "No read bookmarks in this category yet.";
+    if (activeFilter === "unread") return "No unread bookmarks in this category.";
+    if (activeFilter === "read") return "No read bookmarks in this category yet.";
+    if (activeFilter === "favorite") {
+      return "No favorites in this category yet. Star a post to keep it here.";
+    }
     return "No bookmarks are filed under this category.";
   }
 
@@ -886,7 +923,7 @@
   function fetchPage(offset) {
     const url =
       `/api/categories/${selectedCategoryId}/bookmarks` +
-      `?filter=${encodeURIComponent(readFilter)}&offset=${offset}`;
+      `?filter=${encodeURIComponent(activeFilter)}&offset=${offset}`;
     return getJSON(url);
   }
 
@@ -905,7 +942,6 @@
     pageHasMore = false;
     currentViewBookmarks = [];
     countEl.textContent = "";
-    readFilterEl.hidden = true;
     mountNewPane();
     stateMessage(listEl, "loading", "Loading bookmarks…");
 
@@ -914,22 +950,18 @@
       data = await fetchPage(0);
     } catch (err) {
       if (seq !== requestSeq) return; // a newer view took over
-      readFilterEl.hidden = true;
       stateMessage(listEl, "error", "Could not load bookmarks for this category.");
       return;
     }
     if (seq !== requestSeq) return; // superseded while awaiting
 
     viewReady = true;
-    categoryCounts = data.counts || { total: 0, unread: 0 };
+    categoryCounts = data.counts || emptyCounts();
     // Keep the category's rollup counts fresh in the cache even before this
     // view itself is saved there (e.g. a sibling filter is cached already).
     ensureCategoryCache(selectedCategoryId).counts = categoryCounts;
     pageOffset = data.offset + data.bookmarks.length;
     pageHasMore = Boolean(data.hasMore);
-
-    // The filter bar only makes sense once a category has bookmarks at all.
-    readFilterEl.hidden = categoryCounts.total === 0;
 
     listEl.replaceChildren();
     if (categoryCounts.total === 0) {
@@ -1073,10 +1105,10 @@
 
   /**
    * A single action row above the post: a left-aligned group (read/unread
-   * toggle, then Summarize/Summary) and a right-aligned group (delete only -
-   * opening the post on X is already reachable by clicking the card/embed,
-   * see #54). No author line - the embed (or the fallback's own byline)
-   * already carries who posted it.
+   * toggle, the favorite star, then Summarize/Summary) and a right-aligned
+   * group (delete only - opening the post on X is already reachable by
+   * clicking the card/embed, see #54). No author line - the embed (or the
+   * fallback's own byline) already carries who posted it.
    */
   function renderCard(bm) {
     const card = el("article", "bookmark-card");
@@ -1087,6 +1119,7 @@
 
     const left = el("div", "bookmark-actions-group bookmark-actions-left");
     left.appendChild(renderPill(bm, card));
+    left.appendChild(renderFavoriteButton(bm, card));
 
     const summarizeBtn = el("button", "link-external summarize-link");
     summarizeBtn.type = "button";
@@ -1200,6 +1233,40 @@
     path.setAttribute("stroke-linecap", "round");
     svg.appendChild(path);
     return svg;
+  }
+
+  function starIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-star");
+    svg.innerHTML =
+      '<path d="M10 2.6l2.3 4.7 5.2.76-3.75 3.66.88 5.18L10 14.45l-4.63 2.45.88-5.18L2.5 8.06l5.2-.76L10 2.6z" ' +
+      'stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />';
+    return svg;
+  }
+
+  /**
+   * The favorite star (issue #63), beside the read toggle. `aria-pressed`
+   * carries the state and the star fills in when it is on, so the state
+   * never rests on color alone. A click persists immediately; the button
+   * shows its loading state and reverts if the request fails.
+   */
+  function renderFavoriteButton(bm, card) {
+    const btn = el("button", "icon-btn fav-btn");
+    btn.type = "button";
+    btn.appendChild(starIcon());
+    applyFavoriteButtonState(btn, bm.favorite);
+    btn.addEventListener("click", () => setFavorite(bm, card, !bm.favorite));
+    return btn;
+  }
+
+  function applyFavoriteButtonState(btn, favorite) {
+    btn.setAttribute("aria-pressed", String(Boolean(favorite)));
+    const label = favorite ? "Remove from favorites" : "Add to favorites";
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
   }
 
   function trashIcon() {
@@ -1396,13 +1463,13 @@
       // their ancestors) in place - NOT a full tree reload, which used to
       // flicker the whole sidebar and lose scroll/expand-collapse state.
       updateSidebarCounts(bm, 0, read ? -1 : 1);
-      // A read-state change can flip which cached Unread/Read filter a post
+      // A read-state change can flip which cached Unread/Read view a post
       // belongs to for every category it's filed under; keep every OTHER
       // cached view (not the one on screen, patched below) consistent.
-      invalidateCachedViewsOnReadChange(bm);
+      syncCachedViewsOnChange(bm);
 
       const dropsOut =
-        (readFilter === "unread" && bm.read) || (readFilter === "read" && !bm.read);
+        (activeFilter === "unread" && bm.read) || (activeFilter === "read" && !bm.read);
       if (dropsOut) {
         // The card no longer belongs in the filtered view: drop it out. That
         // row also leaves the server-side filtered set, so shift the offset
@@ -1433,6 +1500,62 @@
       if (pillBtn) {
         pillBtn.classList.remove("is-loading");
         pillBtn.disabled = false;
+      }
+    }
+  }
+
+  /**
+   * Star or unstar a bookmark (issue #63) and reflect it immediately: the
+   * star fills in, the count line follows, every cached view is kept
+   * consistent, and a card that no longer belongs in the Favorites tab
+   * drops out of it. Persisted server-side, exactly like read state - the
+   * sidebar's badges are read-state only, so they are untouched here.
+   */
+  async function setFavorite(bm, card, favorite) {
+    if (Boolean(bm.favorite) === favorite) return;
+    const starBtn = card.querySelector(".fav-btn");
+    if (starBtn) {
+      starBtn.classList.add("is-loading");
+      starBtn.disabled = true;
+    }
+    try {
+      const data = await postJSON(`/api/bookmarks/${bm.id}/favorite`, { favorite });
+      bm.favorite = data.bookmark.favorite;
+      categoryCounts.favorite = Math.max(0, (categoryCounts.favorite || 0) + (bm.favorite ? 1 : -1));
+      syncCachedViewsOnChange(bm);
+
+      if (activeFilter === "favorite" && !bm.favorite) {
+        // Unstarred while the Favorites tab is open: the row also leaves the
+        // server-side filtered set, so shift the offset back by one to keep
+        // the next batch aligned (same bookkeeping as a read-state drop-out).
+        card.remove();
+        const idx = currentViewBookmarks.indexOf(bm);
+        if (idx !== -1) currentViewBookmarks.splice(idx, 1);
+        pageOffset = Math.max(0, pageOffset - 1);
+        if (listEl.querySelector(".bookmark-card")) {
+          renderCountLine();
+          updateTail();
+        } else if (pageHasMore) {
+          renderCountLine();
+          loadMore();
+        } else {
+          removeTail();
+          renderCountLine();
+          stateMessage(listEl, "empty", emptyFilterMessage());
+        }
+        return;
+      }
+
+      if (starBtn) {
+        starBtn.classList.remove("is-loading");
+        starBtn.disabled = false;
+        applyFavoriteButtonState(starBtn, bm.favorite);
+      }
+      renderCountLine();
+    } catch (err) {
+      if (starBtn) {
+        starBtn.classList.remove("is-loading");
+        starBtn.disabled = false;
       }
     }
   }
@@ -1478,12 +1601,14 @@
     const parent = card.parentNode;
     const nextSibling = card.nextSibling;
     const wasUnread = !bm.read;
+    const wasFavorite = Boolean(bm.favorite);
     const bmIndex = currentViewBookmarks.indexOf(bm);
 
     card.remove();
     if (bmIndex !== -1) currentViewBookmarks.splice(bmIndex, 1);
     categoryCounts.total = Math.max(0, categoryCounts.total - 1);
     if (wasUnread && categoryCounts.unread > 0) categoryCounts.unread -= 1;
+    if (wasFavorite && categoryCounts.favorite > 0) categoryCounts.favorite -= 1;
     pageOffset = Math.max(0, pageOffset - 1);
     renderCountLine();
     if (!listEl.querySelector(".bookmark-card")) {
@@ -1517,6 +1642,7 @@
       }
       categoryCounts.total += 1;
       if (wasUnread) categoryCounts.unread += 1;
+      if (wasFavorite) categoryCounts.favorite = (categoryCounts.favorite || 0) + 1;
       pageOffset += 1;
       renderCountLine();
       updateTail();
@@ -1770,17 +1896,60 @@
     });
   }
 
-  function initReadFilter() {
-    if (!readFilterEl) return;
-    readFilterEl.querySelectorAll(".seg-input").forEach((input) => {
-      input.addEventListener("change", () => {
-        if (!input.checked) return;
-        if (selectedCategoryId != null) saveCurrentViewToCache();
-        readFilter = input.value;
-        // Changing the filter re-pages the category from the top, unless
-        // this exact category+filter is already cached from a prior visit.
-        if (selectedCategoryId != null) showCategoryView();
-      });
+  // ---- filter tab bar (issue #65) ----------------------------------------
+  // The full-width bar under the top bar: Unread / Read / All / Favorites.
+  // A real ARIA tablist, so it owns the keyboard contract that promises -
+  // arrow keys move between tabs (roving tabindex), Home/End jump to the
+  // ends, and the list of cards is its one panel.
+
+  function filterTabButtons() {
+    return filterTabsEl ? Array.from(filterTabsEl.querySelectorAll(".filter-tab")) : [];
+  }
+
+  /** Paint the selected tab and move the roving tabindex onto it. */
+  function renderFilterTabs() {
+    for (const tab of filterTabButtons()) {
+      const selected = tab.dataset.filter === activeFilter;
+      tab.setAttribute("aria-selected", String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      // The panel is labelled by whichever tab is showing it.
+      if (selected && listRoot) listRoot.setAttribute("aria-labelledby", tab.id);
+    }
+  }
+
+  /** Switch tabs: cache the view being left, then show the new one. */
+  function selectFilter(filter) {
+    if (filter === activeFilter) return;
+    if (selectedCategoryId != null) saveCurrentViewToCache();
+    activeFilter = filter;
+    renderFilterTabs();
+    // Changing the tab re-pages the category from the top, unless this exact
+    // category+filter is already cached from a prior visit.
+    if (selectedCategoryId != null) showCategoryView();
+  }
+
+  function initFilterTabs() {
+    if (!filterTabsEl) return;
+    renderFilterTabs();
+    for (const tab of filterTabButtons()) {
+      tab.addEventListener("click", () => selectFilter(tab.dataset.filter));
+    }
+    filterTabsEl.addEventListener("keydown", (e) => {
+      const tabs = filterTabButtons();
+      const from = tabs.indexOf(document.activeElement);
+      if (from === -1) return;
+      let to = -1;
+      if (e.key === "ArrowRight") to = (from + 1) % tabs.length;
+      else if (e.key === "ArrowLeft") to = (from - 1 + tabs.length) % tabs.length;
+      else if (e.key === "Home") to = 0;
+      else if (e.key === "End") to = tabs.length - 1;
+      if (to === -1) return;
+      e.preventDefault();
+      // Follow the focus, the standard automatic-activation tab pattern:
+      // every panel is one already-paged list, so there is nothing costly
+      // about arrowing across them.
+      tabs[to].focus();
+      selectFilter(tabs[to].dataset.filter);
     });
   }
 
@@ -1842,7 +2011,7 @@
   initThemeToggle();
   initColorToggle();
   initSearch();
-  initReadFilter();
+  initFilterTabs();
   initSummary();
   loadTree();
   loadSyncStatus();
