@@ -63,6 +63,17 @@ export class SyncRunner {
     };
   }
 
+  /** Forget a finished run (after a library reset); a running one is left alone. */
+  clear(): void {
+    if (this.state === 'running') return;
+    this.state = 'idle';
+    this.startedAt = null;
+    this.finishedAt = null;
+    this.messages = [];
+    this.summary = null;
+    this.error = null;
+  }
+
   isRunning(): boolean {
     return this.state === 'running';
   }

@@ -8,6 +8,10 @@ Personal tool: fetch the owner's X bookmarks, LLM-categorize them into a nested 
 SQLite, browse in a local web viewer. Acceptance spec: `docs/prds/0001-x-bookmarks-organizer.md`.
 Setup steps: `docs/setup.md`.
 
+**Web app first.** All user-facing functionality (sync, categorization, ranking, reset, settings, etc.)
+must be triggerable from the app UI - never require the CLI. CLI commands may remain as an
+implementation detail / power-user fallback, but every capability needs an in-app path.
+
 ## Stack & layout
 
 - TypeScript on Node (CommonJS, compiled with `tsc` to `dist/`). Entry `src/index.ts` (commands:

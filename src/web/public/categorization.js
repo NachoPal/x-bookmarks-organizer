@@ -195,7 +195,20 @@
     return "";
   }
 
+  /**
+   * Which empty state the content pane shows. A library with NO bookmarks is
+   * the guided first run (regardless of selection); one with bookmarks but no
+   * category picked keeps the plain "select a category" prompt; otherwise the
+   * pane belongs to the selected category's posts.
+   */
+  function emptyStateKind(bookmarkCount, selectedCategoryId) {
+    if (bookmarkCount === 0) return "first-run";
+    if (bookmarkCount > 0 && selectedCategoryId == null) return "select-category";
+    return "none";
+  }
+
   var api = {
+    emptyStateKind: emptyStateKind,
     fieldsFor: fieldsFor,
     findProvider: findProvider,
     findMethod: findMethod,

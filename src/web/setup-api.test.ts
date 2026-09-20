@@ -334,3 +334,98 @@ describe('POST /api/x-login', () => {
     expect(res.json().error).toBe(X_LOGIN_UNAVAILABLE_MESSAGE);
   });
 });
+
+describe('POST /api/reset', () => {
+  let db: Database;
+  let app: FastifyInstance;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+  });
+  afterEach(async () => {
+    await app?.close();
+    db.close();
+  });
+
+  function populate(): void {
+    db.storeCategorizedBatch([bm('1'), bm('2')], () => [db.getOrCreateCategory('AI', null, 'now').id]);
+    const stored = db.getAllBookmarks();
+    db.saveSummary({ bookmarkId: stored[0].id, summary: 's', generatedAt: 'now' });
+    db.saveBookmarkScore({
+      bookmarkId: stored[0].id,
+      score: 0.5,
+      confidence: 0.5,
+      dimensions: {},
+      model: 'm',
+      rubricVersion: 'v1',
+      scoredAt: 'now',
+    });
+    db.saveArticleLinkMetadata({
+      url: 'https://t.co/x',
+      status: 'card',
+      title: 't',
+      description: null,
+      image: null,
+      siteName: null,
+      resolvedUrl: null,
+      fetchedAt: 'now',
+    });
+    db.setNewestSeenPostId('2');
+    db.setLastSyncedAt('now');
+    db.setRefreshToken('keep-me');
+    db.setState('app_settings', '{"keep":true}');
+  }
+
+  it('refuses without an explicit confirm and leaves the library alone', async () => {
+    populate();
+    app = buildServer(db);
+    await app.ready();
+    const res = await app.inject({ method: 'POST', url: '/api/reset', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(db.getBookmarkCount()).toBe(2);
+  });
+
+  it('clears the library and cursor but keeps the X token and saved settings; idempotent', async () => {
+    populate();
+    app = buildServer(db);
+    await app.ready();
+
+    for (let i = 0; i < 2; i++) {
+      const res = await app.inject({ method: 'POST', url: '/api/reset', payload: { confirm: true } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true, bookmarkCount: 0 });
+    }
+    expect(db.getBookmarkCount()).toBe(0);
+    expect(db.countScoredBookmarks()).toBe(0);
+    expect(db.getSummarizedBookmarkIds([1, 2]).size).toBe(0);
+    expect(db.getNewestSeenPostId()).toBeUndefined();
+    expect(db.getLastSyncedAt()).toBeUndefined();
+    expect(db.getRefreshToken()).toBe('keep-me');
+    expect(db.getState('app_settings')).toBe('{"keep":true}');
+
+    const tree = (await app.inject({ method: 'GET', url: '/api/tree' })).json();
+    expect(tree.tree).toEqual([]);
+    const setup = (await app.inject({ method: 'GET', url: '/api/setup' })).json();
+    expect(setup.bookmarkCount).toBe(0);
+    expect(setup.x.connected).toBe(true);
+    expect(setup.sync.lastSyncedAt).toBeNull();
+  });
+
+  it('is refused while a sync is running, and forgets a finished sync afterwards', async () => {
+    populate();
+    let release: () => void = () => {};
+    const job: SyncJob = () => new Promise((resolve) => (release = () => resolve(summary)));
+    app = buildServer(db, { syncJob: job });
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/api/sync' });
+    const busy = await app.inject({ method: 'POST', url: '/api/reset', payload: { confirm: true } });
+    expect(busy.statusCode).toBe(409);
+    expect(db.getBookmarkCount()).toBe(2);
+
+    release();
+    await settle();
+    await app.inject({ method: 'POST', url: '/api/reset', payload: { confirm: true } });
+    const status = (await app.inject({ method: 'GET', url: '/api/sync' })).json().status;
+    expect(status.state).toBe('idle');
+  });
+});

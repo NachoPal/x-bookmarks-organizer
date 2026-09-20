@@ -408,6 +408,22 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     return reply.code(202).send({ status: xLoginStatus });
   });
 
+  // Wipe the LOCAL library back to the never-synced state (the next sync
+  // re-pulls everything). Destructive, so the body must carry an explicit
+  // `confirm: true`, and it is refused mid-sync. Keeps the X token and the
+  // saved categorization choice; never touches anything on X.
+  app.post<{ Body?: { confirm?: unknown } }>('/api/reset', async (req, reply) => {
+    if ((req.body ?? {}).confirm !== true) {
+      return reply.code(400).send({ error: 'Send { "confirm": true } to reset the local library.' });
+    }
+    if (syncRunner?.isRunning()) {
+      return reply.code(409).send({ error: 'A sync is running. Wait for it to finish, then reset.' });
+    }
+    db.resetLibrary();
+    syncRunner?.clear();
+    return { ok: true, bookmarkCount: db.getBookmarkCount() };
+  });
+
   app.register(fastifyStatic, { root: PUBLIC_DIR });
 
   // The category tree with rolled-up total/unread counts per node.

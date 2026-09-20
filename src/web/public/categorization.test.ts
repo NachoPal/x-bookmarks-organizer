@@ -239,3 +239,19 @@ describe('needsAuthorizationOnly', () => {
     ).toBe(false);
   });
 });
+
+describe('emptyStateKind', () => {
+  it('shows the guided first run when the library has no bookmarks', () => {
+    expect(XBO.emptyStateKind(0, null)).toBe('first-run');
+    expect(XBO.emptyStateKind(0, 5)).toBe('first-run');
+  });
+  it('keeps the plain prompt when there are bookmarks but no selection', () => {
+    expect(XBO.emptyStateKind(12, null)).toBe('select-category');
+  });
+  it('leaves the pane to the category when one is selected', () => {
+    expect(XBO.emptyStateKind(12, 3)).toBe('none');
+  });
+  it('does not guess before the setup payload has arrived', () => {
+    expect(XBO.emptyStateKind(undefined, null)).toBe('none');
+  });
+});

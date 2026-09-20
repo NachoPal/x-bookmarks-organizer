@@ -2497,3 +2497,89 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
     animation: none;
   }
 }
+
+/* ---- Reset library (destructive, local only) + guided first run ---------- */
+.btn-danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+.btn-danger:hover {
+  background: var(--color-surface-2);
+}
+.btn-danger:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.sync-reset {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.sync-reset-note {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.reset-panel {
+  width: min(28rem, 100%);
+}
+.reset-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0 var(--space-5);
+}
+.reset-text {
+  margin: 0;
+}
+.reset-text-muted {
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+
+.first-run {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-2);
+  counter-reset: first-run-step;
+}
+.first-run-intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  text-align: center;
+}
+.first-run-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.first-run .phase {
+  counter-increment: first-run-step;
+  background: var(--color-surface);
+}
+.first-run .phase-title::before {
+  content: "Step " counter(first-run-step) " - ";
+  color: var(--color-accent);
+}
+.first-run-sync {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+.first-run-sync .btn {
+  align-self: flex-start;
+}

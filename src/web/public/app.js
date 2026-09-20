@@ -2201,6 +2201,7 @@
     methodBlocker: () => null,
     syncBlockers: () => [],
     needsAuthorizationOnly: () => false,
+    emptyStateKind: () => "none",
     progressLine: () => "",
   };
 
@@ -2911,35 +2912,204 @@
     });
   }
 
-  /**
-   * An empty library gets the guided flow, not a blank viewer. Once the owner
-   * dismisses it the content pane keeps a way back in, so the flow is never
-   * lost behind a reload.
-   */
-  function updateEmptyLibraryState() {
-    if (!setupState) return;
-    const empty = setupState.bookmarkCount === 0;
-    if (empty && !setupDismissed && !isSetupOpen() && selectedCategoryId == null) {
-      openSetup();
-      return;
-    }
-    if (!empty || selectedCategoryId != null || isSetupOpen()) return;
+  // ---- empty states ------------------------------------------------------
+  // Two distinct ones (XBOCategorization.emptyStateKind): a library with no
+  // bookmarks at all gets the guided first run right in the landing; one with
+  // bookmarks and no category picked keeps the plain prompt.
 
+  let firstRunEl = null;
+  let firstRunForm = null;
+  let firstRunDirty = false;
+  let firstRunNoteEl = null;
+  let firstRunStatusEl = null;
+  let firstRunSyncBtn = null;
+
+  function renderSelectPrompt() {
     const box = el("div", "state state-empty state-welcome");
     box.append(
       el("span", "state-icon", "🔖"),
-      el("p", "state-title", "No bookmarks yet"),
-      el(
-        "p",
-        "state-body",
-        "Sync to fetch your X bookmarks and sort them into a category tree.",
-      ),
+      el("p", "state-title", "Nothing selected yet"),
+      el("p", "state-body", "Choose a category from the sidebar to see its bookmarks."),
     );
-    const btn = el("button", "btn btn-primary", "Set up sync");
-    btn.type = "button";
-    btn.addEventListener("click", () => openSetup());
-    box.appendChild(btn);
+    box.firstChild.setAttribute("aria-hidden", "true");
     listEl.replaceChildren(box);
+  }
+
+  function buildFirstRun() {
+    const root = el("section", "first-run");
+    root.setAttribute("aria-labelledby", "first-run-title");
+    const intro = el("div", "first-run-intro");
+    const icon = el("span", "state-icon", "🔖");
+    icon.setAttribute("aria-hidden", "true");
+    const title = el("h2", "state-title", "No bookmarks yet - get started");
+    title.id = "first-run-title";
+    intro.append(
+      icon,
+      title,
+      el("p", "state-body", "Pick how your X bookmarks get sorted, then sync. You can change this later in Settings."),
+    );
+
+    const formHost = el("div", "first-run-steps");
+    firstRunForm = createCategorizationForm(formHost, "firstrun", () => {
+      firstRunDirty = true;
+      updateFirstRun();
+    });
+    firstRunNoteEl = el("p", "settings-note");
+    firstRunNoteEl.hidden = true;
+    firstRunStatusEl = el("p", "phase-helper");
+    firstRunStatusEl.setAttribute("aria-live", "polite");
+    firstRunSyncBtn = el("button", "btn btn-primary", "Sync my bookmarks");
+    firstRunSyncBtn.type = "button";
+    firstRunSyncBtn.addEventListener("click", () => void onFirstRunSync());
+    const syncPhase = buildPhase(
+      "firstrun",
+      "sync",
+      "Sync",
+      "Fetches your bookmarks from X and files them into a category tree.",
+      [firstRunNoteEl, firstRunStatusEl, firstRunSyncBtn],
+    );
+    formHost.appendChild(syncPhase);
+    root.append(intro, formHost);
+    return root;
+  }
+
+  async function onFirstRunSync() {
+    firstRunSyncBtn.disabled = true;
+    try {
+      const saved = await saveCategorization(firstRunForm);
+      firstRunDirty = false;
+      if (settingsForm && !settingsDirty) settingsForm.setValues(saved);
+    } catch (err) {
+      firstRunNoteEl.textContent = err.message;
+      firstRunNoteEl.hidden = false;
+      updateFirstRun();
+      return;
+    }
+    await startSync();
+    updateFirstRun();
+  }
+
+  function updateFirstRun() {
+    if (!firstRunEl || !setupState) return;
+    updateFormNote(firstRunForm, firstRunNoteEl);
+    const running = syncIsRunning();
+    firstRunSyncBtn.disabled = running || !syncAvailable();
+    firstRunSyncBtn.textContent = running ? "Syncing…" : "Sync my bookmarks";
+    const status = setupState.sync && setupState.sync.status;
+    firstRunStatusEl.textContent =
+      status && status.state !== "idle"
+        ? categorization().progressLine(status)
+        : !syncAvailable() && setupState.sync.reason
+          ? setupState.sync.reason
+          : "";
+  }
+
+  function updateEmptyLibraryState() {
+    if (!setupState) return;
+    const kind = categorization().emptyStateKind(setupState.bookmarkCount, selectedCategoryId);
+    if (kind === "first-run" && selectedCategoryId == null) {
+      if (!firstRunEl) firstRunEl = buildFirstRun();
+      if (firstRunEl.parentNode !== listEl) {
+        listEl.replaceChildren(firstRunEl);
+        firstRunDirty = false;
+      }
+      firstRunForm.setCatalog(setupState.catalog);
+      if (!firstRunDirty) firstRunForm.setValues(setupState.settings);
+      updateFirstRun();
+      return;
+    }
+    // The first sync landed (or a category is open): the landing has done its job.
+    if (firstRunEl && firstRunEl.parentNode === listEl) {
+      if (kind === "select-category") renderSelectPrompt();
+      else firstRunEl.remove();
+    }
+  }
+
+  // ---- reset library -----------------------------------------------------
+
+  const resetOpenBtn = document.getElementById("reset-open");
+  const resetModalEl = document.getElementById("reset-modal");
+  const resetBackdropEl = document.getElementById("reset-backdrop");
+  const resetCancelBtn = document.getElementById("reset-cancel");
+  const resetConfirmBtn = document.getElementById("reset-confirm");
+  const resetErrorEl = document.getElementById("reset-error");
+
+  function isResetOpen() {
+    return !!resetModalEl && !resetModalEl.hidden;
+  }
+
+  function openReset() {
+    const syncPopover = popovers.find((p) => p.name === "sync");
+    if (syncPopover && isPopoverOpen(syncPopover)) setPopoverOpen(syncPopover, false, { returnFocus: false });
+    resetErrorEl.hidden = true;
+    resetModalEl.hidden = false;
+    resetBackdropEl.hidden = false;
+    // Cancel first: the destructive button is never the default target.
+    resetCancelBtn.focus();
+  }
+
+  function closeReset() {
+    resetModalEl.hidden = true;
+    resetBackdropEl.hidden = true;
+    const toggle = document.getElementById("sync-toggle");
+    if (toggle) toggle.focus();
+  }
+
+  async function confirmReset() {
+    resetConfirmBtn.disabled = true;
+    resetConfirmBtn.classList.add("is-loading");
+    resetErrorEl.hidden = true;
+    try {
+      const res = await fetch("/api/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Could not reset the library.");
+      }
+    } catch (err) {
+      resetErrorEl.textContent = err.message;
+      resetErrorEl.hidden = false;
+      return;
+    } finally {
+      resetConfirmBtn.disabled = false;
+      resetConfirmBtn.classList.remove("is-loading");
+    }
+    // Back to the never-synced state everywhere the viewer remembers the old library.
+    viewCaches = new Map();
+    cacheOrder = [];
+    resetPool();
+    selectedCategoryId = null;
+    titleEl.replaceChildren(document.createTextNode("Select a category"));
+    titleEl.removeAttribute("title");
+    lastSyncedAt = null;
+    renderSyncStatus();
+    if (syncProgressEl) syncProgressEl.hidden = true;
+    resetModalEl.hidden = true;
+    resetBackdropEl.hidden = true;
+    await loadTree();
+    await fetchSetup();
+    const target = firstRunSyncBtn && firstRunSyncBtn.isConnected ? firstRunSyncBtn : document.getElementById("sync-toggle");
+    if (target) target.focus();
+  }
+
+  function initReset() {
+    if (!resetOpenBtn || !resetModalEl) return;
+    resetOpenBtn.addEventListener("click", openReset);
+    resetCancelBtn.addEventListener("click", closeReset);
+    resetBackdropEl.addEventListener("click", closeReset);
+    resetConfirmBtn.addEventListener("click", () => void confirmReset());
+    document.addEventListener("keydown", (e) => {
+      if (!isResetOpen()) return;
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeReset();
+        return;
+      }
+      trapModalFocus(resetModalEl, e);
+    });
   }
 
   // ---- init --------------------------------------------------------------
@@ -2955,6 +3125,7 @@
   initSync();
   initCategorizationSettings();
   initSetup();
+  initReset();
   loadTree();
   loadSyncStatus();
   loadSummaryStatus();
