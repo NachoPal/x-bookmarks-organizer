@@ -383,8 +383,8 @@
 
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape" || isCollapsed()) return;
-      // The settings popover owns Escape while it is open.
-      if (isSettingsOpen()) return;
+      // The settings popover and the setup dialog each own Escape while open.
+      if (isSettingsOpen() || isSetupOpen()) return;
       setCollapsed(true);
     });
   }
@@ -422,7 +422,7 @@
     settingsToggleBtn.addEventListener("click", () => setSettingsOpen(!isSettingsOpen()));
 
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && isSettingsOpen()) setSettingsOpen(false);
+      if (e.key === "Escape" && isSettingsOpen() && !isSetupOpen()) setSettingsOpen(false);
     });
     // A click anywhere outside dismisses it; inside it (or on the gear,
     // which toggles) does not.
@@ -689,7 +689,7 @@
       stateMessage(
         treeEl,
         "empty",
-        "No categories yet. Run the ingest command to fetch and sort your bookmarks.",
+        "No categories yet. Press Sync to fetch your bookmarks and sort them.",
       );
       return;
     }
@@ -2004,6 +2004,765 @@
     }
   }
 
+
+  // ======================================================================
+  // In-app sync, first-run setup, and the categorization selector (#71)
+  // ======================================================================
+  // The viewer can now do the whole job itself: authorize X, choose how
+  // categorization runs, and fetch + categorize - no terminal. The server
+  // owns every durable part of that (`/api/setup`, `/api/settings`,
+  // `/api/sync`); this section is the UI over it.
+
+  const syncBtn = document.getElementById("sync-btn");
+  const syncProgressEl = document.getElementById("sync-progress");
+  const syncProgressTextEl = document.getElementById("sync-progress-text");
+  const syncProgressDetailsEl = document.getElementById("sync-progress-details");
+  const syncProgressLogEl = document.getElementById("sync-progress-log");
+  const syncProgressRetryBtn = document.getElementById("sync-progress-retry");
+  const syncProgressDismissBtn = document.getElementById("sync-progress-dismiss");
+
+  // The last /api/setup payload: what is configured, what can be chosen, and
+  // which prerequisites are in place. Everything below renders from it.
+  let setupState = null;
+  let syncPollTimer = null;
+  // Set once the owner dismisses the guided flow, so a poll does not reopen it.
+  let setupDismissed = false;
+
+  const SYNC_POLL_MS = 1200;
+  const SYNC_DONE_DISMISS_MS = 8000;
+
+  // Every window.XBO* helper in this viewer is optional by construction (a
+  // missing script must degrade, not throw); this one answers with inert
+  // defaults so the sync controls simply stay disabled.
+  const NO_CATEGORIZATION = {
+    fieldsFor: () => ({ provider: false, taxonomyModel: false, effort: false, assignmentModel: false }),
+    findProvider: () => null,
+    findMethod: () => null,
+    modelOptions: () => [],
+    effortOptions: () => [],
+    toPayload: (v) => v,
+    methodBlocker: () => null,
+    syncBlockers: () => [],
+    needsAuthorizationOnly: () => false,
+    progressLine: () => "",
+  };
+
+  function categorization() {
+    return window.XBOCategorization || NO_CATEGORIZATION;
+  }
+
+  async function fetchSetup() {
+    try {
+      setupState = await getJSON("/api/setup");
+    } catch (_) {
+      // A viewer that cannot reach its own server has bigger problems; leave
+      // the sync control disabled rather than showing a half-truth.
+      setupState = null;
+    }
+    applySetupState();
+    return setupState;
+  }
+
+  /** Push the current setup payload into every control that reflects it. */
+  function applySetupState() {
+    updateSyncButton();
+    updateEmptyLibraryState();
+    if (settingsForm && setupState && !settingsDirty) {
+      settingsForm.setCatalog(setupState.catalog);
+      settingsForm.setValues(setupState.settings);
+      updateFormNote(settingsForm, settingsNoteEl);
+    }
+    if (setupForm && setupState) setupForm.setCatalog(setupState.catalog);
+    if (isSetupOpen()) renderSetupStep();
+  }
+
+  // ---- the Sync button ---------------------------------------------------
+
+  function syncAvailable() {
+    return !!(setupState && setupState.sync && setupState.sync.available);
+  }
+
+  function syncIsRunning() {
+    const status = setupState && setupState.sync && setupState.sync.status;
+    return !!status && status.state === "running";
+  }
+
+  function updateSyncButton() {
+    if (!syncBtn) return;
+    const running = syncIsRunning();
+    const blockers = setupState ? categorization().syncBlockers(setupState) : [];
+    const blocked = !setupState || !syncAvailable();
+
+    syncBtn.classList.toggle("is-syncing", running);
+    syncBtn.disabled = running || blocked;
+    const label = syncBtn.querySelector(".sync-btn-label");
+    if (label) label.textContent = running ? "Syncing…" : "Sync";
+    syncBtn.setAttribute("aria-label", running ? "Syncing your bookmarks" : "Sync bookmarks from X");
+    // The tooltip carries the first thing to fix, so a disabled control is
+    // never a dead end.
+    if (blocked && setupState && setupState.sync && setupState.sync.reason) {
+      syncBtn.title = setupState.sync.reason;
+    } else if (!running && blockers.length > 0) {
+      syncBtn.title = blockers[0];
+    } else {
+      syncBtn.removeAttribute("title");
+    }
+  }
+
+  /** Start a sync, unless something the owner must fix comes first. */
+  async function startSync(opts) {
+    const options = opts || {};
+    if (!setupState) await fetchSetup();
+    const blockers = setupState ? categorization().syncBlockers(setupState) : [];
+    if (blockers.length > 0 && !options.force) {
+      renderSyncProgress({ state: "error", error: blockers[0], messages: [] });
+      // The guided flow is the fix for exactly one of these - an app that was
+      // never authorized - so that is the only one it opens for. A missing
+      // credential is fixed outside the app; saying so is all it can do.
+      if (!options.fromSetup && categorization().needsAuthorizationOnly(setupState)) openSetup(1);
+      return false;
+    }
+
+    renderSyncProgress({ state: "running", messages: ["Starting sync…"] });
+    try {
+      const res = await fetch("/api/sync", { method: "POST" });
+      if (!res.ok && res.status !== 409) {
+        const body = await res.json().catch(() => ({}));
+        renderSyncProgress({ state: "error", error: body.error || "Could not start the sync.", messages: [] });
+        return false;
+      }
+    } catch (_) {
+      renderSyncProgress({ state: "error", error: "Could not reach the server.", messages: [] });
+      return false;
+    }
+    pollSync();
+    return true;
+  }
+
+  function pollSync() {
+    if (syncPollTimer) return;
+    const tick = async () => {
+      let data;
+      try {
+        data = await getJSON("/api/sync");
+      } catch (_) {
+        return; // transient; the next tick tries again
+      }
+      if (setupState && setupState.sync) setupState.sync.status = data.status;
+      if (data.lastSyncedAt) {
+        lastSyncedAt = data.lastSyncedAt;
+        renderSyncStatus();
+      }
+      renderSyncProgress(data.status);
+      updateSyncButton();
+      if (isSetupOpen()) renderSetupStep();
+
+      if (data.status && (data.status.state === "done" || data.status.state === "error")) {
+        stopSyncPolling();
+        if (data.status.state === "done") await refreshAfterSync();
+      }
+    };
+    syncPollTimer = setInterval(tick, SYNC_POLL_MS);
+    void tick();
+  }
+
+  function stopSyncPolling() {
+    if (!syncPollTimer) return;
+    clearInterval(syncPollTimer);
+    syncPollTimer = null;
+  }
+
+  /**
+   * Bring the viewer up to date with what the sync stored: the tree (new
+   * categories and counts) and the open category. Cached views are dropped
+   * wholesale - their pages predate the sync, so any of them could now be
+   * missing a post.
+   */
+  async function refreshAfterSync() {
+    viewCaches = new Map();
+    cacheOrder = [];
+    const keepId = selectedCategoryId;
+    await loadTree();
+    await fetchSetup();
+    if (keepId == null) return;
+    const node = categoryIndex.get(keepId);
+    const button = treeEl.querySelector(`[data-category-id="${keepId}"]`);
+    if (node && button) {
+      selectedCategoryId = null; // force a real re-select, not a cache hit
+      await selectCategory(node, button);
+    }
+  }
+
+  // ---- the progress strip ------------------------------------------------
+
+  function renderSyncProgress(status) {
+    if (!syncProgressEl) return;
+    if (!status || status.state === "idle") {
+      syncProgressEl.hidden = true;
+      return;
+    }
+    const state = status.state;
+    syncProgressEl.hidden = false;
+    syncProgressEl.setAttribute("data-state", state);
+    syncProgressTextEl.textContent = categorization().progressLine(status);
+
+    const messages = status.messages || [];
+    syncProgressDetailsEl.hidden = messages.length === 0;
+    if (messages.length > 0) {
+      syncProgressLogEl.replaceChildren(...messages.map((m) => el("li", "", m)));
+    }
+    syncProgressRetryBtn.hidden = state !== "error";
+    syncProgressDismissBtn.hidden = state === "running";
+
+    if (state === "done") {
+      // A good-news strip clears itself; an error stays until acknowledged.
+      window.setTimeout(() => {
+        if (syncProgressEl.getAttribute("data-state") === "done") syncProgressEl.hidden = true;
+      }, SYNC_DONE_DISMISS_MS);
+    }
+  }
+
+  function initSync() {
+    if (syncBtn) syncBtn.addEventListener("click", () => startSync());
+    if (syncProgressRetryBtn) syncProgressRetryBtn.addEventListener("click", () => startSync());
+    if (syncProgressDismissBtn) {
+      syncProgressDismissBtn.addEventListener("click", () => {
+        syncProgressEl.hidden = true;
+        syncBtn.focus();
+      });
+    }
+  }
+
+  // ---- the categorization selector (fixowl-style dropdowns) --------------
+  // One builder, two mounts: the first-run flow and the Settings panel. Both
+  // render from the server's catalog, so a provider added later (issue #70)
+  // appears in both with no change here.
+
+  /** How each billing model reads to the owner, in one line. */
+  const BILLING_HINTS = {
+    subscription: "Runs on your Claude subscription - no per-call charge.",
+    "per-token": "Billed per token.",
+    local: "Runs locally.",
+  };
+
+  function buildField(idPrefix, name, labelText) {
+    const field = el("div", "field");
+    const select = document.createElement("select");
+    select.className = "field-select";
+    select.id = `${idPrefix}-${name}`;
+    select.name = name;
+    const label = el("label", "field-label", labelText);
+    label.htmlFor = select.id;
+    const hint = el("p", "field-hint");
+    hint.id = `${select.id}-hint`;
+    select.setAttribute("aria-describedby", hint.id);
+    field.append(label, select, hint);
+    return { field, select, hint };
+  }
+
+  function fillOptions(select, options, value) {
+    select.replaceChildren(
+      ...options.map((opt) => {
+        const node = document.createElement("option");
+        node.value = opt.value;
+        node.textContent = opt.label;
+        return node;
+      }),
+    );
+    select.value = options.some((o) => o.value === value) ? value : "";
+  }
+
+  function hintFor(options, value) {
+    const match = options.find((o) => o.value === value);
+    return match && match.hint ? match.hint : "";
+  }
+
+  /**
+   * A provider / model / effort selector over the server's catalog. Returns
+   * the mounted root plus the small API `app.js` drives it with.
+   */
+  function createCategorizationForm(container, idPrefix, onChange) {
+    const method = buildField(idPrefix, "categorizer", "Categorization method");
+    const provider = buildField(idPrefix, "provider", "Model provider");
+    const taxonomy = buildField(idPrefix, "taxonomyModel", "Taxonomy model (designs the tree)");
+    const assignment = buildField(idPrefix, "assignmentModel", "Filing model (sorts each bookmark)");
+    const effort = buildField(idPrefix, "effort", "Reasoning effort (taxonomy pass)");
+    container.replaceChildren(
+      method.field,
+      provider.field,
+      taxonomy.field,
+      assignment.field,
+      effort.field,
+    );
+
+    let catalog = null;
+
+    function currentProvider() {
+      return categorization().findProvider(catalog, provider.select.value);
+    }
+
+    function renderModelFields(values) {
+      const p = currentProvider();
+      const taxonomyOptions = categorization().modelOptions(p, "taxonomy");
+      const assignmentOptions = categorization().modelOptions(p, "assignment");
+      const effortOptions = categorization().effortOptions(p);
+      fillOptions(taxonomy.select, taxonomyOptions, (values && values.taxonomyModel) || "");
+      fillOptions(assignment.select, assignmentOptions, (values && values.assignmentModel) || "");
+      fillOptions(effort.select, effortOptions, (values && values.effort) || "");
+      effort.field.hidden = effortOptions.length <= 1;
+      renderHints();
+    }
+
+    function renderHints() {
+      const p = currentProvider();
+      const chosenMethod = categorization().findMethod(catalog, method.select.value);
+      method.hint.textContent = chosenMethod ? chosenMethod.description : "";
+      method.hint.classList.toggle("field-billing", !!chosenMethod && chosenMethod.billing === "per-token");
+      // The label is already in the select; the hint says the thing the
+      // owner cannot see there - how this provider is billed.
+      provider.hint.textContent = p ? BILLING_HINTS[p.billing] || "" : "";
+      taxonomy.hint.textContent = hintFor(categorization().modelOptions(p, "taxonomy"), taxonomy.select.value);
+      assignment.hint.textContent = hintFor(
+        categorization().modelOptions(p, "assignment"),
+        assignment.select.value,
+      );
+      effort.hint.textContent = hintFor(categorization().effortOptions(p), effort.select.value);
+      // Jev files bookmarks without a prompt, so it has no filing model; the
+      // taxonomy pass is always the model, so that field never goes away.
+      assignment.field.hidden = !categorization().fieldsFor(method.select.value).assignmentModel;
+    }
+
+    const notify = () => {
+      renderHints();
+      if (onChange) onChange();
+    };
+    method.select.addEventListener("change", notify);
+    provider.select.addEventListener("change", () => {
+      renderModelFields(null);
+      if (onChange) onChange();
+    });
+    for (const f of [taxonomy, assignment, effort]) f.select.addEventListener("change", notify);
+
+    return {
+      setCatalog(next) {
+        catalog = next;
+        fillOptions(
+          method.select,
+          (next.methods || []).map((m) => ({ value: m.id, label: m.label, hint: m.description })),
+          method.select.value,
+        );
+        fillOptions(
+          provider.select,
+          (next.providers || []).map((p) => ({
+            value: p.id,
+            label: p.label,
+            hint: BILLING_HINTS[p.billing] || "",
+          })),
+          provider.select.value,
+        );
+        renderModelFields(null);
+      },
+      setValues(values) {
+        if (!values) return;
+        method.select.value = values.categorizer || "";
+        provider.select.value = values.provider || "";
+        renderModelFields(values);
+      },
+      getValues() {
+        return {
+          categorizer: method.select.value,
+          provider: provider.select.value,
+          taxonomyModel: taxonomy.select.value,
+          assignmentModel: assignment.select.value,
+          effort: effort.select.value,
+        };
+      },
+    };
+  }
+
+  /** Show why the currently selected method cannot run, or hide the note. */
+  function updateFormNote(form, noteEl) {
+    if (!form || !noteEl || !setupState) return;
+    const blocker = categorization().methodBlocker(
+      setupState.catalog,
+      form.getValues().categorizer,
+      setupState.credentials,
+    );
+    noteEl.textContent = blocker || "";
+    noteEl.hidden = !blocker;
+  }
+
+  async function saveCategorization(form) {
+    const payload = categorization().toPayload(form.getValues());
+    const res = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "Could not save these settings.");
+    if (setupState) {
+      setupState.settings = body.settings;
+      setupState.configured = true;
+    }
+    return body.settings;
+  }
+
+  // ---- Settings panel: the categorization group --------------------------
+
+  const settingsFormEl = document.getElementById("settings-categorization");
+  const settingsNoteEl = document.getElementById("settings-categorization-note");
+  const settingsSaveBtn = document.getElementById("settings-save");
+  const settingsSaveStatusEl = document.getElementById("settings-save-status");
+  let settingsForm = null;
+  // True between an edit and its save: a background poll must not overwrite
+  // a choice the owner is still making.
+  let settingsDirty = false;
+
+  function setSaveStatus(message, state) {
+    if (!settingsSaveStatusEl) return;
+    settingsSaveStatusEl.textContent = message;
+    if (state) settingsSaveStatusEl.setAttribute("data-state", state);
+    else settingsSaveStatusEl.removeAttribute("data-state");
+  }
+
+  function initCategorizationSettings() {
+    if (!settingsFormEl || !window.XBOCategorization) return;
+    settingsForm = createCategorizationForm(settingsFormEl, "settings", () => {
+      settingsDirty = true;
+      setSaveStatus("");
+      updateFormNote(settingsForm, settingsNoteEl);
+    });
+    if (!settingsSaveBtn) return;
+    settingsSaveBtn.addEventListener("click", async () => {
+      settingsSaveBtn.classList.add("is-loading");
+      settingsSaveBtn.disabled = true;
+      setSaveStatus("");
+      try {
+        await saveCategorization(settingsForm);
+        settingsDirty = false;
+        setSaveStatus("Saved. The next sync uses it.");
+        updateSyncButton();
+      } catch (err) {
+        setSaveStatus(err.message, "error");
+      } finally {
+        settingsSaveBtn.classList.remove("is-loading");
+        settingsSaveBtn.disabled = false;
+      }
+    });
+  }
+
+  // ---- first-run setup ---------------------------------------------------
+
+  const setupBackdropEl = document.getElementById("setup-backdrop");
+  const setupModalEl = document.getElementById("setup-modal");
+  const setupCloseBtn = document.getElementById("setup-close");
+  const setupStepsEl = document.getElementById("setup-steps");
+  const setupStepHintEl = document.getElementById("setup-step-hint");
+  const setupXStateEl = document.getElementById("setup-x-state");
+  const setupXErrorEl = document.getElementById("setup-x-error");
+  const setupFormEl = document.getElementById("setup-categorization");
+  const setupNoteEl = document.getElementById("setup-categorization-note");
+  const setupSummaryEl = document.getElementById("setup-summary");
+  const setupSyncStateEl = document.getElementById("setup-sync-state");
+  const setupBlockersEl = document.getElementById("setup-blockers");
+  const setupBackBtn = document.getElementById("setup-back");
+  const setupNextBtn = document.getElementById("setup-next");
+  let setupForm = null;
+  let setupStep = 1;
+  let setupReturnFocusEl = null;
+  let setupPollTimer = null;
+
+  const SETUP_STEP_HINTS = {
+    1: "Step 1 of 3 - authorize this app to read your bookmarks.",
+    2: "Step 2 of 3 - pick how new bookmarks are sorted.",
+    3: "Step 3 of 3 - fetch and categorize your bookmarks.",
+  };
+
+  function isSetupOpen() {
+    return !!setupModalEl && !setupModalEl.hidden;
+  }
+
+  function openSetup(step) {
+    if (!setupModalEl) return;
+    // On first load nothing is focused, and `document.body` is not somewhere
+    // focus can usefully return to - the fallback below handles that case.
+    const active = document.activeElement;
+    setupReturnFocusEl = active && active !== document.body ? active : null;
+    setupModalEl.hidden = false;
+    setupBackdropEl.hidden = false;
+    setupStep = step || (setupState && setupState.x && setupState.x.connected ? 2 : 1);
+    if (setupForm && setupState) {
+      setupForm.setCatalog(setupState.catalog);
+      setupForm.setValues(setupState.settings);
+    }
+    renderSetupStep();
+    setupNextBtn.focus();
+    startSetupPolling();
+  }
+
+  function closeSetup() {
+    if (!isSetupOpen()) return;
+    setupDismissed = true;
+    setupModalEl.hidden = true;
+    setupBackdropEl.hidden = true;
+    stopSetupPolling();
+    // Re-render the pane BEFORE restoring focus: closing an empty library
+    // replaces the content with its own call to action, which would destroy
+    // the element focus was about to return to and drop focus onto <body>.
+    updateEmptyLibraryState();
+    const fallback = listRoot.querySelector(".state-welcome .btn") || syncBtn;
+    const target =
+      setupReturnFocusEl && document.contains(setupReturnFocusEl) ? setupReturnFocusEl : fallback;
+    if (target) target.focus();
+  }
+
+  /**
+   * While the flow is open, the X authorization it started completes in
+   * ANOTHER tab - nothing in this one would otherwise tell us. Polling is how
+   * step 1 notices, and it stops as soon as the flow closes.
+   */
+  function startSetupPolling() {
+    if (setupPollTimer) return;
+    setupPollTimer = setInterval(() => void fetchSetup(), 2000);
+  }
+
+  function stopSetupPolling() {
+    if (!setupPollTimer) return;
+    clearInterval(setupPollTimer);
+    setupPollTimer = null;
+  }
+
+  /** The first sync has succeeded - the flow's only real exit condition. */
+  function setupFinished() {
+    const status = setupState && setupState.sync ? setupState.sync.status : null;
+    return !!status && status.state === "done";
+  }
+
+  function renderSetupStep() {
+    if (!setupModalEl) return;
+    for (const item of setupStepsEl.querySelectorAll(".setup-step")) {
+      const step = Number(item.getAttribute("data-step"));
+      if (step === setupStep) item.setAttribute("aria-current", "step");
+      else item.removeAttribute("aria-current");
+      item.setAttribute("data-done", String(step < setupStep));
+    }
+    setupStepHintEl.textContent = SETUP_STEP_HINTS[setupStep] || "";
+    for (const step of [1, 2, 3]) {
+      document.getElementById(`setup-pane-${step}`).hidden = step !== setupStep;
+    }
+
+    if (setupStep === 1) renderSetupConnect();
+    if (setupStep === 3) renderSetupSync();
+    if (setupStep === 2) updateFormNote(setupForm, setupNoteEl);
+
+    setupBackBtn.disabled = setupStep === 1 || setupFinished();
+    const running = syncIsRunning();
+    // Disabled with a label that says what is happening, rather than the
+    // `is-loading` spinner - which hides the text, and this run is minutes
+    // long with its own progress right below the button.
+    setupNextBtn.textContent =
+      setupStep !== 3
+        ? "Continue"
+        : setupFinished()
+          ? "Browse my bookmarks"
+          : running
+            ? "Syncing…"
+            : "Start first sync";
+    setupNextBtn.disabled = setupStep === 3 && running;
+  }
+
+  /** Step 1: the X credentials and the one-time consent. */
+  function renderSetupConnect() {
+    const creds = (setupState && setupState.credentials) || {};
+    const x = (setupState && setupState.x) || {};
+    const haveCreds =
+      creds.xClientId && creds.xClientId.present && creds.xClientSecret && creds.xClientSecret.present;
+
+    const badge = el("span", "setup-status-badge");
+    const text = el("p", "setup-status-text");
+    const children = [badge, text];
+
+    if (!haveCreds) {
+      badge.setAttribute("data-state", "todo");
+      badge.textContent = "Not ready";
+      text.textContent = categorization().syncBlockers(setupState || {})[0] || "";
+    } else if (x.connected) {
+      badge.setAttribute("data-state", "ok");
+      badge.textContent = "Connected";
+      text.textContent = "This app can read your bookmarks. Nothing else to do here.";
+    } else {
+      badge.setAttribute("data-state", "todo");
+      badge.textContent = "Not connected";
+      const running = x.login && x.login.state === "running";
+      text.textContent = running
+        ? "Waiting for you to approve the request on X, in the tab that just opened…"
+        : "Authorize this app once. X opens a consent page in your browser.";
+      if (x.canConnect) {
+        const btn = el("button", "btn btn-primary setup-status-btn", running ? "Waiting…" : "Connect X");
+        btn.type = "button";
+        btn.disabled = running;
+        btn.classList.toggle("is-loading", !!running);
+        btn.addEventListener("click", connectX);
+        children.push(btn);
+      } else {
+        text.textContent += " Run `node dist/index.js login` once instead.";
+      }
+    }
+    setupXStateEl.replaceChildren(...children);
+
+    const loginError = x.login && x.login.state === "error" ? x.login.error : "";
+    setupXErrorEl.textContent = loginError || "";
+    setupXErrorEl.hidden = !loginError;
+  }
+
+  async function connectX() {
+    try {
+      const res = await fetch("/api/x-login", { method: "POST" });
+      if (!res.ok && res.status !== 409) {
+        const body = await res.json().catch(() => ({}));
+        setupXErrorEl.textContent = body.error || "Could not start the X authorization.";
+        setupXErrorEl.hidden = false;
+        return;
+      }
+    } catch (_) {
+      setupXErrorEl.textContent = "Could not reach the server.";
+      setupXErrorEl.hidden = false;
+      return;
+    }
+    await fetchSetup();
+  }
+
+  /** Step 3: what was chosen, what is missing, and how the run is going. */
+  function renderSetupSync() {
+    const settings = (setupState && setupState.settings) || {};
+    const catalog = (setupState && setupState.catalog) || {};
+    const provider = categorization().findProvider(catalog, settings.provider);
+    const method = categorization().findMethod(catalog, settings.categorizer);
+    const suggested = provider && provider.suggested ? provider.suggested : {};
+    // Show what the dropdowns showed - the model's label, not its raw id.
+    const modelLabel = (id) => {
+      const models = (provider && provider.models) || [];
+      const match = models.find((m) => m.id === id);
+      return match ? match.label : id || "-";
+    };
+    const rows = [
+      ["Method", method ? method.label : "-"],
+      ["Provider", provider ? provider.label : "-"],
+      ["Taxonomy model", modelLabel(settings.taxonomyModel || suggested.taxonomy)],
+      ["Filing model", categorization().fieldsFor(settings.categorizer).assignmentModel
+        ? modelLabel(settings.assignmentModel || suggested.assignment)
+        : "Not used - Jev walks the tree itself"],
+      ["Effort", settings.effort || "high"],
+    ];
+    setupSummaryEl.replaceChildren(
+      ...rows.flatMap(([term, value]) => [el("dt", "", term), el("dd", "", String(value))]),
+    );
+
+    const blockers = setupState ? categorization().syncBlockers(setupState) : [];
+    setupBlockersEl.textContent = blockers.join(" ");
+    setupBlockersEl.hidden = blockers.length === 0;
+
+    const status = setupState && setupState.sync ? setupState.sync.status : null;
+    if (!status || status.state === "idle") {
+      setupSyncStateEl.hidden = true;
+      return;
+    }
+    setupSyncStateEl.hidden = false;
+    const badge = el("span", "setup-status-badge");
+    badge.setAttribute("data-state", status.state === "done" ? "ok" : "todo");
+    badge.textContent =
+      status.state === "running" ? "Running" : status.state === "done" ? "Done" : "Failed";
+    const text = el("p", "setup-status-text", categorization().progressLine(status));
+    setupSyncStateEl.replaceChildren(badge, text);
+  }
+
+  async function onSetupNext() {
+    if (setupStep === 1) {
+      setupStep = 2;
+      renderSetupStep();
+      return;
+    }
+    if (setupStep === 2) {
+      setupNextBtn.classList.add("is-loading");
+      setupNextBtn.disabled = true;
+      try {
+        await saveCategorization(setupForm);
+        setupStep = 3;
+      } catch (err) {
+        setupNoteEl.textContent = err.message;
+        setupNoteEl.hidden = false;
+      } finally {
+        setupNextBtn.classList.remove("is-loading");
+        setupNextBtn.disabled = false;
+        renderSetupStep();
+      }
+      return;
+    }
+    // Step 3's button is the flow's exit once the sync has succeeded.
+    if (setupFinished()) {
+      closeSetup();
+      return;
+    }
+    const started = await startSync({ fromSetup: true });
+    if (started) renderSetupStep();
+    else await fetchSetup();
+  }
+
+  function initSetup() {
+    if (!setupModalEl || !window.XBOCategorization) return;
+    setupForm = createCategorizationForm(setupFormEl, "setup", () =>
+      updateFormNote(setupForm, setupNoteEl),
+    );
+    setupCloseBtn.addEventListener("click", closeSetup);
+    setupBackdropEl.addEventListener("click", closeSetup);
+    setupBackBtn.addEventListener("click", () => {
+      setupStep = Math.max(1, setupStep - 1);
+      renderSetupStep();
+    });
+    setupNextBtn.addEventListener("click", () => void onSetupNext());
+    document.addEventListener("keydown", (e) => {
+      if (!isSetupOpen()) return;
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeSetup();
+        return;
+      }
+      trapModalFocus(setupModalEl, e);
+    });
+  }
+
+  /**
+   * An empty library gets the guided flow, not a blank viewer. Once the owner
+   * dismisses it the content pane keeps a way back in, so the flow is never
+   * lost behind a reload.
+   */
+  function updateEmptyLibraryState() {
+    if (!setupState) return;
+    const empty = setupState.bookmarkCount === 0;
+    if (empty && !setupDismissed && !isSetupOpen() && selectedCategoryId == null) {
+      openSetup();
+      return;
+    }
+    if (!empty || selectedCategoryId != null || isSetupOpen()) return;
+
+    const box = el("div", "state state-empty state-welcome");
+    box.append(
+      el("span", "state-icon", "🔖"),
+      el("p", "state-title", "No bookmarks yet"),
+      el(
+        "p",
+        "state-body",
+        "Sync to fetch your X bookmarks and sort them into a category tree.",
+      ),
+    );
+    const btn = el("button", "btn btn-primary", "Set up sync");
+    btn.type = "button";
+    btn.addEventListener("click", () => openSetup());
+    box.appendChild(btn);
+    listEl.replaceChildren(box);
+  }
+
   // ---- init --------------------------------------------------------------
   initSidebar();
   initSettingsPanel();
@@ -2013,7 +2772,15 @@
   initSearch();
   initFilterTabs();
   initSummary();
+  initSync();
+  initCategorizationSettings();
+  initSetup();
   loadTree();
   loadSyncStatus();
   loadSummaryStatus();
+  // Last: it decides whether the guided flow opens, which needs the tree's
+  // state (an already-selected category suppresses it).
+  void fetchSetup().then(() => {
+    if (syncIsRunning()) pollSync();
+  });
 })();

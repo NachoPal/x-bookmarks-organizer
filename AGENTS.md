@@ -14,6 +14,8 @@ Setup steps: `docs/setup.md`.
   default `run`, `login`, `serve`).
 - Ingestion+categorization CLI and the Fastify web viewer both live under `src/`; tests are
   colocated `*.test.ts` (Vitest). `npm test` runs offline with no credentials and no network.
+- The viewer can run a sync itself (issue #71, below); CLI and viewer build categorization through
+  ONE shared path, `src/categorize/build.ts`.
 - Web viewer static assets live in `src/web/public/` and are copied to `dist/` by
   `scripts/copy-assets.js` during `npm run build` (tsc alone does not copy them).
 
@@ -125,6 +127,51 @@ clears one, so an ad-hoc `extend` node gains a description on the next `recatego
 one survives. It feeds Jev's `Choice.criteria` AND `renderTreeForPrompt`, so it improves the
 existing `extend` prompt too; every consumer must tolerate `null` (any node predating the column).
 
+## In-app sync + durable categorization settings (issue #71)
+
+The viewer does the whole job now - no terminal. Three pieces, none of which duplicate the CLI:
+
+- **`src/settings/`** - `catalog.ts` builds the choosable methods/providers/models/efforts FROM
+  the provider registry (`listProviders()`), so registering a provider (#70) puts it in the
+  dropdowns with no change here; its shape mirrors fixowl's `AGENT_MODEL_CATALOG`
+  (models with a one-line hint + ascending `efforts`), which is why `ProviderDefinition` gained
+  `efforts` and `ProviderModel` gained `description`. `settings.ts` validates a choice against
+  that catalog (fixowl's `validateModelEffort` analog: one actionable sentence per problem,
+  naming what IS available), persists it in `run_state` under `app_settings` - durable,
+  server-side, readable by the process that does the spending, which `localStorage` is none of -
+  and maps it onto `Config` with `applySettingsToConfig`. A model left undefined means
+  "the provider's suggestion", which is what keeps the Opus-pass-1 / Haiku-pass-2 split alive for
+  an owner who never opens a dropdown.
+- **`src/web/sync.ts` + `sync-job.ts`** - `SyncRunner` holds ONE run at a time (a second start is
+  409, never queued: two ingests would race on the same "already seen" set) and records the
+  ingest's own logger lines verbatim as progress. `createSyncJob` is `cmdRun` reassembled from the
+  same pieces, with `connect`/`buildCategorizers`/`ingest` as the offline test seams; it re-reads
+  the settings on EVERY run, so a change in the panel needs no restart.
+- **Server surface** - `GET /api/setup` (the one round trip the setup flow and the Settings panel
+  need: `bookmarkCount`, `configured`, `settings`, `catalog`, credential PRESENCE + source but
+  never a value, X connection, sync availability + status), `PUT /api/settings`, `POST /api/sync`
+  (202, returns at once) / `GET /api/sync` (polled), and `POST /api/x-login` - the one-time OAuth
+  consent, started in the background because it blocks on a human approving a page in another tab.
+  Every one of these degrades (503 + an actionable reason) on a viewer built without the wiring,
+  which is what keeps `buildServer(db)` usable in tests.
+
+**Precedence is deliberately asymmetric** (`applySettingsToConfig`'s `env` argument): the viewer
+passes no env, so the SAVED choice wins - a stray `XBOOKMARKS_CATEGORIZER=typesafe` in the shell
+that launched `serve` must never bill per token while the panel reads "Claude model". The CLI
+passes `process.env`, so an explicitly exported variable still wins there. `reportCategorizerBilling`
+now writes into the sync's progress stream too, so the paid path still announces itself every run.
+
+Frontend: `src/web/public/categorization.js` (`XBOCategorization`) is the pure, unit-tested half -
+which fields a method uses, what "Recommended" resolves to, the blocker sentences, the progress
+line - in the same DOM-free style as `tree-counts.js`. `app.js` owns only the markup: one
+`createCategorizationForm` builder mounted twice (the setup dialog and the Settings panel), the
+`.toolbar` row (the `role="tablist"` filter bar plus the Sync control, which never shrinks and goes
+icon-only under 560px), the `.sync-progress` strip under it (running/done/error, carried by an icon
+AND the text, with the full log behind a `<details>`), and the three-step setup dialog an empty
+library opens into. The guided flow reopens on a blocked Sync ONLY when the blocker is the missing
+authorization (`needsAuthorizationOnly`) - a missing credential is fixed outside the app, so
+repeating its message inside the dialog would be noise.
+
 ## Frontend
 
 Before editing anything under `src/web/public/`, follow the `building-frontends` skill and make its
@@ -150,13 +197,16 @@ bar drops the `quick-only` theme/colors icons (they are duplicates of the settin
 switches, which is their canonical home - one `applyTheme`/`setColorEnabled` updates both controls);
 under 1100px it drops last-sync; under 560px the counts and the crumb.
 
-The **filter tab bar** (issue #65) is a full-width row of four tabs - Unread / Read / All /
-Favorites - directly under the top bar, inside `.main-column` (a flex column holding the tab bar
-above the scrolling `.content`), so it spans the viewport with the drawer closed and SHRINKS with
-the column when the drawer pushes it. It is a real `role="tablist"`: roving tabindex, arrow keys +
-Home/End, `#bookmark-list` is its one `tabpanel` and its `aria-labelledby` follows the active tab
-(`renderFilterTabs` in `app.js`). It is always visible - hiding it on an empty category would jump
-the layout. The active tab is marked by an underline AND a color, never color alone.
+The **filter tab bar** (issue #65) is a row of four tabs - Unread / Read / All / Favorites -
+directly under the top bar, inside `.main-column` (a flex column holding the toolbar above the
+scrolling `.content`), so it spans the viewport with the drawer closed and SHRINKS with the column
+when the drawer pushes it. Since issue #71 it shares that row with the Sync control inside a
+`.toolbar` flex parent: the button sits OUTSIDE the `role="tablist"`, which may contain only tabs,
+and is `flex: 0 0 auto` so the tabs give up the width, not the view's primary action. The tablist
+is a real one: roving tabindex, arrow keys + Home/End, `#bookmark-list` is its one `tabpanel` and
+its `aria-labelledby` follows the active tab (`renderFilterTabs` in `app.js`). It is always
+visible - hiding it on an empty category would jump the layout. The active tab is marked by an
+underline AND a color, never color alone.
 
 The **category sidebar PUSHES the content on wide screens** (issue #65, reversing #42's overlay):
 at `min-width: 821px` it is in flow (`position: relative`, `flex: 0 0 auto`), `width: 0` when

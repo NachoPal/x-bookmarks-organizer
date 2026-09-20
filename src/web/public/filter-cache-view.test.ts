@@ -48,6 +48,22 @@ async function boot() {
         tree: [{ id: 1, parentId: null, name: "Cat", path: ["Cat"], total: 3, unread: 2, directTotal: 3, children: [] }],
       });
     }
+    if (url.startsWith("/api/setup")) {
+      // A configured, already-populated library: the guided flow stays shut.
+      return json({
+        bookmarkCount: 3,
+        configured: true,
+        settings: { categorizer: "claude-cli", provider: "claude-cli" },
+        catalog: { methods: [], providers: [] },
+        credentials: {
+          xClientId: { present: true },
+          xClientSecret: { present: true },
+          typesafeApiKey: { present: false },
+        },
+        x: { connected: true, canConnect: true, login: { state: "idle", error: null } },
+        sync: { available: true, lastSyncedAt: null, status: null },
+      });
+    }
     if (/\/read$/.test(url)) return json({ bookmark: { read: true, readAt: "2024-01-02T00:00:00Z" } });
     if (/\/favorite$/.test(url)) {
       const id = Number(url.match(/bookmarks\/(\d+)\//)![1]);
@@ -74,7 +90,7 @@ async function boot() {
     }
     return json({});
   };
-  for (const f of ["tree-counts.js", "read-toggle.js", "filter-cache.js", "theme.js", "post-scale.js", "sidebar-state.js", "tree-color.js", "app.js"]) {
+  for (const f of ["tree-counts.js", "read-toggle.js", "filter-cache.js", "theme.js", "post-scale.js", "sidebar-state.js", "tree-color.js", "categorization.js", "app.js"]) {
     w.eval(read(f));
   }
   await new Promise((r) => setTimeout(r, 50));

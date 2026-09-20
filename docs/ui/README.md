@@ -194,3 +194,32 @@ setting now defaults to **small**. Captured against the seeded dataset, never re
 | `65-63-mobile-400-light.png` | **~400px.** All four tabs fit the row with no horizontal overflow. |
 | `65-63-mobile-400-cards-light.png` | **~400px, cards.** Star sits beside the read pill and stays a ≥24px target at the small post size. |
 | `65-63-tab-focus-ring.png` | **Keyboard.** Arrow keys move between tabs (roving tabindex); the focused tab shows its focus ring, and Unread is active. |
+
+## In-app sync, first-run setup, and the categorization selector (issue #71)
+
+The viewer now does the whole job itself - no terminal. An empty library opens a
+three-step guided setup (authorize X → choose how categorization runs → first sync); a
+**Sync** button sits in the toolbar under the top bar and runs the same work as
+`node dist/index.js run` server-side, streaming the ingest's own progress lines back to a
+strip under the toolbar; and the categorization method (Claude model / Jev) plus the
+provider, per-pass models and reasoning effort are fixowl-style dropdowns whose values are
+saved **server-side** and reused by every later sync. Captured against a throwaway demo
+server with a fake X client and a fake categorizer - never real bookmarks, never a real
+model call.
+
+| File | What it shows |
+| --- | --- |
+| `71-setup-step1-light.png` | **Step 1, light.** An empty library opens the guided flow at "Connect X": a status row saying whether this app has been authorized, with an in-app **Connect X** button when it has not. |
+| `71-setup-step2-light.png` | **Step 2, light.** The selector: categorization method, model provider, taxonomy model, filing model and reasoning effort, each with the catalog's own one-line hint. "Recommended" spells out what it resolves to. |
+| `71-setup-step2-jev-light.png` | **Step 2, Jev selected.** The method hint turns amber and says PAID per token, the filing model disappears (Jev takes no prompt), and a note names the missing `TYPESAFE_API_KEY` and where the server can find it. |
+| `71-setup-step3-syncing-light.png` | **Step 3, running.** The chosen configuration, a Running badge with the latest progress line, and the same progress strip live behind the dialog. The Sync button reads "Syncing…" with a spinning icon. |
+| `71-setup-step3-done-light.png` | **Step 3, done.** The primary action becomes "Browse my bookmarks". |
+| `71-sync-done-light.png` | **Sync finished, light.** The strip turns green with a check and "Synced 6 new bookmarks into 4 new categories."; Details lists every ingest line, including the billing line printed before any work. |
+| `71-sync-progress-dark.png` | **Running, dark, drawer open.** The toolbar and the strip shrink with the pushed column, exactly like the tab bar does. |
+| `71-settings-categorization-light.png` | **Settings panel, light.** The same selector as a persistent Categorization group, above Appearance; the panel now scrolls inside itself. |
+| `71-settings-categorization-dark.png` | **Settings panel, dark.** |
+| `71-settings-jev-blocked-light.png` | **Settings, Jev selected.** Save plus the same missing-key note; the saved choice is what the next sync uses. |
+| `71-settings-focus-ring.png` | **Keyboard.** Tab moves through the selector in reading order; each select shows its focus ring. |
+| `71-sync-blocked-light.png` | **Blocked sync + empty library.** Pressing Sync with no X credentials reachable shows one actionable sentence naming both variables and every place the server looks, with Try again; behind it, the empty library's own "Set up sync" call to action. |
+| `71-sync-narrow-400-dark.png` | **~400px, dark.** The Sync button keeps its icon and its ≥24px target and sheds only its label; the strip and its Details list wrap with no horizontal overflow. |
+| `71-setup-narrow-400-dark.png` | **~400px, dark.** The step rail collapses to numbers, the footer stacks with the primary action on top, and a missing credential is reported in full. |

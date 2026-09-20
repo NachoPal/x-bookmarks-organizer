@@ -15,6 +15,17 @@ import {
 import { xArticleUrl } from '../x/article';
 import type { BookmarkXArticle } from '../db/database';
 import { buildBookmarkContent, buildBookmarkContents } from '../content/bookmark-content';
+import { buildSettingsCatalog, type SettingsCatalog } from '../settings/catalog';
+import {
+  effectiveSettings,
+  readSettings,
+  validateSettings,
+  writeSettings,
+  type AppSettings,
+} from '../settings/settings';
+import { TYPESAFE_API_KEY } from '../config';
+import type { CredentialStore } from '../creds/resolve';
+import { SyncRunner, type SyncJob } from './sync';
 import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
@@ -53,6 +64,44 @@ export interface ServerOptions {
    * text so the viewer never has to guess at a fix.
    */
   summaryUnavailableReason?: string;
+  /**
+   * The work one in-app sync performs (issue #71). Undefined leaves the Sync
+   * button disabled with {@link SYNC_UNAVAILABLE_MESSAGE} - which is what a
+   * test-built server, and any viewer started without the ingest wiring, gets.
+   */
+  syncJob?: SyncJob;
+  /**
+   * The credential chain, so the setup flow can say WHICH credential is
+   * missing before a sync fails on it. Only a key's PRESENCE and `source` are
+   * ever read out of it - never a value (`AGENTS.md`).
+   */
+  credentials?: CredentialStore;
+  /**
+   * Runs the one-time X OAuth consent (the same `login()` the CLI calls).
+   * Undefined hides the in-app "Connect X" button and tells the owner to run
+   * the CLI login instead.
+   */
+  xLogin?: () => Promise<void>;
+}
+
+/** Shown when the Sync button is pressed on a viewer with no ingest wiring. */
+export const SYNC_UNAVAILABLE_MESSAGE =
+  'Syncing is not available in this viewer. Start it with `node dist/index.js serve`.';
+
+/** Shown when "Connect X" is pressed on a viewer with no login wiring. */
+export const X_LOGIN_UNAVAILABLE_MESSAGE =
+  'Connecting to X is not available in this viewer. Run `node dist/index.js login` once instead.';
+
+/** How a one-time X authorization is progressing, polled by the setup flow. */
+interface XLoginStatus {
+  state: 'idle' | 'running' | 'done' | 'error';
+  error: string | null;
+}
+
+/** Whether a credential resolved, and from where. Never its value. */
+interface CredentialStatus {
+  present: boolean;
+  source?: string;
 }
 
 /**
@@ -191,6 +240,127 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     db.saveSummary(record);
     return { summary: record };
   }
+
+  // ---- in-app sync + setup (issue #71) ----------------------------------
+  // One runner per server, so "is a sync running" is a fact about the process
+  // rather than about whichever browser tab asked. A viewer with no `syncJob`
+  // still answers every route below - it just reports sync as unavailable.
+  const syncRunner = opts.syncJob ? new SyncRunner(opts.syncJob) : undefined;
+  const catalog: SettingsCatalog = buildSettingsCatalog();
+  const xLoginStatus: XLoginStatus = { state: 'idle', error: null };
+
+  /** A credential's presence and source - never its value (`AGENTS.md`). */
+  function credentialStatus(key: string): CredentialStatus {
+    if (!opts.credentials) return { present: false };
+    const resolved = opts.credentials.get(key);
+    return resolved.value
+      ? { present: true, source: resolved.source }
+      : { present: false };
+  }
+
+  /**
+   * Everything the first-run setup and the Settings panel need, in one round
+   * trip: whether the library is empty (the empty-state gate), what has been
+   * chosen, what CAN be chosen, and which prerequisites are actually in place.
+   */
+  app.get('/api/setup', async () => {
+    const stored = readSettings(db, catalog);
+    return {
+      bookmarkCount: db.getBookmarkCount(),
+      // "Configured" is the owner having FINISHED setup, not merely having a
+      // settings row - a row written by an abandoned half-run would otherwise
+      // suppress the guided flow for good.
+      configured: !!stored?.configuredAt,
+      settings: effectiveSettings(db, catalog),
+      catalog,
+      credentials: {
+        xClientId: credentialStatus('XBOOKMARKS_CLIENT_ID'),
+        xClientSecret: credentialStatus('XBOOKMARKS_CLIENT_SECRET'),
+        typesafeApiKey: credentialStatus(TYPESAFE_API_KEY),
+      },
+      x: {
+        connected: !!db.getRefreshToken(),
+        canConnect: !!opts.xLogin,
+        login: xLoginStatus,
+      },
+      sync: {
+        available: !!syncRunner,
+        reason: syncRunner ? undefined : SYNC_UNAVAILABLE_MESSAGE,
+        lastSyncedAt: db.getLastSyncedAt() ?? null,
+        status: syncRunner ? syncRunner.status() : null,
+      },
+    };
+  });
+
+  // Save the categorization choice. Validated against the same catalog the
+  // dropdowns were built from, so an unknown provider/model/effort is refused
+  // with the list of what exists rather than silently stored and then
+  // surprising the owner mid-sync.
+  app.put<{ Body?: unknown }>('/api/settings', async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const { settings, errors } = validateSettings(body, catalog);
+    if (errors.length > 0) return reply.code(400).send({ error: errors.join(' '), errors });
+
+    // The first save is what marks setup finished - which is what stops the
+    // guided flow reopening on the next load. A later edit in the Settings
+    // panel keeps that original timestamp rather than resetting it.
+    const previous = readSettings(db, catalog);
+    const saved: AppSettings = {
+      ...settings,
+      configuredAt: previous?.configuredAt ?? new Date().toISOString(),
+    };
+    writeSettings(db, saved);
+    return { settings: saved };
+  });
+
+  // Start a sync. Returns immediately with the status; the client polls
+  // GET /api/sync for progress, so a run that takes minutes never blocks a
+  // request or the UI. 409 when one is already running, with that run's
+  // progress so the client can simply attach to it.
+  app.post('/api/sync', async (_req, reply) => {
+    if (!syncRunner) return reply.code(503).send({ error: SYNC_UNAVAILABLE_MESSAGE });
+    const { started, status } = syncRunner.start();
+    if (!started) {
+      return reply.code(409).send({ error: 'A sync is already running.', status });
+    }
+    return reply.code(202).send({ status });
+  });
+
+  // The current (or last) sync's progress. `lastSyncedAt` rides along so the
+  // header's indicator refreshes from the same poll.
+  app.get('/api/sync', async () => ({
+    available: !!syncRunner,
+    reason: syncRunner ? undefined : SYNC_UNAVAILABLE_MESSAGE,
+    status: syncRunner ? syncRunner.status() : null,
+    lastSyncedAt: db.getLastSyncedAt() ?? null,
+  }));
+
+  // Run the one-time X OAuth consent. Like a sync it is started, not awaited:
+  // it blocks on the owner approving a consent page in another tab, which no
+  // HTTP request should sit and wait for. The setup flow polls /api/setup for
+  // `x.connected` and `x.login`.
+  app.post('/api/x-login', async (_req, reply) => {
+    const xLogin = opts.xLogin;
+    if (!xLogin) return reply.code(503).send({ error: X_LOGIN_UNAVAILABLE_MESSAGE });
+    if (xLoginStatus.state === 'running') {
+      return reply.code(409).send({ error: 'An X authorization is already in progress.' });
+    }
+    xLoginStatus.state = 'running';
+    xLoginStatus.error = null;
+    void xLogin().then(
+      () => {
+        xLoginStatus.state = 'done';
+      },
+      (err: unknown) => {
+        xLoginStatus.state = 'error';
+        xLoginStatus.error =
+          err instanceof Error && err.message
+            ? err.message.slice(0, MAX_ERROR_CHARS)
+            : 'X authorization failed.';
+      },
+    );
+    return reply.code(202).send({ status: xLoginStatus });
+  });
 
   app.register(fastifyStatic, { root: PUBLIC_DIR });
 

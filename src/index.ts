@@ -1,23 +1,17 @@
 #!/usr/bin/env node
-import {
-  loadConfig,
-  requireTypeSafeCredentials,
-  requireXCredentials,
-  type Config,
-} from './config';
+import { loadConfig, requireXCredentials, type Config } from './config';
 import { createCredentialStore, type CredentialStore } from './creds/resolve';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
-import { Categorizer, type BatchCategorizer } from './categorize/llm';
-import { TypeSafeCategorizer } from './categorize/typesafe/categorizer';
-import { TypeSafeLevelAsker } from './categorize/typesafe/client';
-import { LlmTaxonomyDesigner } from './categorize/taxonomy';
+import { buildCategorizers, reportCategorizerBilling, requireLlm } from './categorize/build';
 import { recategorizeAll, runIngest } from './ingest';
 import { startServer } from './web/server';
 import { LlmSummaryGenerator } from './summarize/summarizer';
-import { billingLabel, createLlmFactory, type LlmFactory } from './llm/factory';
+import { billingLabel, createLlmFactory } from './llm/factory';
 import { toRunner } from './llm/runner';
-import type { LlmRole } from './llm/types';
+import { buildSettingsCatalog } from './settings/catalog';
+import { applySettingsToConfig, effectiveSettings } from './settings/settings';
+import { createSyncJob } from './web/sync-job';
 import { backfillArticlePreviews } from './articles/backfill';
 import { HttpArticleFetcher } from './articles/fetch-article';
 import { backfillXArticles } from './x/backfill-articles';
@@ -30,7 +24,10 @@ Usage:
   node dist/index.js login       One-time X OAuth login (opens a browser once)
   node dist/index.js recategorize  Rebuild the taxonomy and reassign ALL stored
                                    bookmarks from scratch (no re-fetch from X)
-  node dist/index.js serve       Start the local web viewer
+  node dist/index.js serve       Start the local web viewer. It can fetch and
+                                 categorize on its own: the Sync button runs
+                                 the same work as \`run\`, using the
+                                 categorization settings saved in the app.
   node dist/index.js backfill-previews [--retry-failed]
                                   Fetch + cache article link metadata for
                                   already-stored bookmarks that predate the
@@ -71,114 +68,21 @@ XBOOKMARKS_CATEGORIZER picks which implementation files bookmarks into the tree
 pass through the TypeSafe/Jev API, which is PAID PER TOKEN and needs
 TYPESAFE_API_KEY; it refuses to run without one. The taxonomy-design pass always
 stays on the LLM. Leave it unset and nothing costs money per call.
+
+The same choice - plus the provider, models and effort - can be made in the
+viewer's Settings panel instead, where it is saved in the database and reused by
+every later sync. On the CLI an explicitly exported XBOOKMARKS_* variable still
+overrides the saved choice; in the viewer the saved choice wins.
 `;
 
 /**
- * Build the two categorization passes' collaborators.
- *
- * Pass 1 (taxonomy design) is ALWAYS the LLM: it invents labels, which the
- * TypeSafe classifier cannot do at all. It is provider-agnostic - it takes a
- * narrow `LlmRunner` bridged from whichever provider the factory resolved for
- * that role, so the Opus-pass-1 / Haiku-pass-2 economics stay expressible
- * without the class knowing what is behind it.
- *
- * Pass 2 (assignment) is whichever implementation `XBOOKMARKS_CATEGORIZER`
- * selects, behind the shared `BatchCategorizer` interface, so `runIngest` and
- * `recategorizeAll` are identical either way:
- *
- * - `claude-cli` (the DEFAULT): today's prompt-and-parse `Categorizer`, running
- *   on the flat-rate Claude subscription. Zero marginal cost.
- * - `typesafe`: the opt-in beam-search walk (issue #61). PAID per token, so it
- *   is reached only via an explicit opt-in AND a resolved `TYPESAFE_API_KEY`,
- *   and `db` is required because the walk reads the real tree rather than a
- *   rendered copy of it. The LLM categorizer is still built and injected as
- *   its `extend` fallback: only the LLM can propose a NEW node for a bookmark
- *   that fits nothing.
+ * The env-shaped config with the owner's in-app categorization choice layered
+ * under it (issue #71). `process.env` is passed, so an explicitly exported
+ * XBOOKMARKS_* variable keeps overriding the saved setting on the CLI.
  */
-function buildCategorizers(
-  config: Config,
-  llm: LlmFactory,
-  db: Database,
-  store: CredentialStore,
-) {
-  const assignment = llm.forRole('assignment');
-  const taxonomer = new LlmTaxonomyDesigner(toRunner(llm.forRole('taxonomy'), { json: true }), {
-    minDepth: config.minCategoryDepth,
-    maxDepth: config.maxCategoryDepth,
-  });
-  const llmCategorizer = new Categorizer(toRunner(assignment, { json: true }), {
-    model: assignment.model,
-    maxDepth: config.maxCategoryDepth,
-  });
-
-  if (config.categorizer !== 'typesafe') {
-    return { taxonomer, categorizer: llmCategorizer as BatchCategorizer };
-  }
-
-  // Refuses before anything can spend money; the key's VALUE is never printed.
-  const apiKey = requireTypeSafeCredentials(store);
-  const ts = config.typesafe;
-  const categorizer: BatchCategorizer = new TypeSafeCategorizer(
-    {
-      db,
-      asker: new TypeSafeLevelAsker({
-        apiKey,
-        model: ts.model,
-        baseURL: ts.baseUrl,
-        logger: (msg) => console.log(msg),
-      }),
-      extendFallback: llmCategorizer,
-      logger: (msg) => console.log(msg),
-    },
-    {
-      beamWidth: ts.beamWidth,
-      maxDepth: config.maxCategoryDepth,
-      confidenceThreshold: ts.confidenceThreshold,
-      multiLabelThreshold: ts.multiLabelThreshold,
-      maxLabels: ts.maxLabels,
-      concurrency: ts.concurrency,
-    },
-  );
-  return { taxonomer, categorizer };
-}
-
-/**
- * Say out loud, before any call is made, how the assignment pass is billed.
- *
- * `AGENTS.md`'s hardest constraint is that no code path may silently spend
- * money. Selecting `typesafe` moves categorization from a flat-rate
- * subscription to a metered API, so that change is announced every run rather
- * than inferred from a config file.
- */
-function reportCategorizerBilling(config: Config, llm: LlmFactory): void {
-  if (config.categorizer === 'typesafe') {
-    const model = config.typesafe.model ?? 'jev-latest';
-    console.log(
-      `Assignment pass: TypeSafe Jev (${model}) - ${billingLabel('per-token')}. ` +
-        'Unset XBOOKMARKS_CATEGORIZER to return to the Claude subscription.',
-    );
-    console.log(
-      `Taxonomy pass: ${llm.describe('taxonomy').providerId} - ` +
-        `${billingLabel(llm.describe('taxonomy').billing)}.`,
-    );
-    return;
-  }
-  const { providerId, model, billing } = llm.describe('assignment');
-  console.log(`Assignment pass: ${providerId} / ${model} - ${billingLabel(billing)}.`);
-}
-
-/**
- * Assert the provider backing these roles can actually run, with the adapter's
- * own actionable message. Availability is the adapter's business (for
- * `claude-cli`: does the binary resolve), never a hardcoded token check.
- */
-async function requireLlm(llm: LlmFactory, roles: LlmRole[]): Promise<void> {
-  for (const role of roles) {
-    const health = await llm.check(role);
-    // The detail is the adapter's own actionable message (and names the
-    // provider when the configured id does not exist at all).
-    if (health.state !== 'ok') throw new Error(health.detail);
-  }
+function withStoredSettings(config: Config, db: Database): Config {
+  const catalog = buildSettingsCatalog();
+  return applySettingsToConfig(config, effectiveSettings(db, catalog), process.env);
 }
 
 async function cmdLogin(config: Config, db: Database): Promise<void> {
@@ -187,11 +91,15 @@ async function cmdLogin(config: Config, db: Database): Promise<void> {
   console.log('Logged in. Refresh token stored locally. Future runs are headless.');
 }
 
-async function cmdRun(config: Config, db: Database, store: CredentialStore): Promise<void> {
+async function cmdRun(baseConfig: Config, db: Database, store: CredentialStore): Promise<void> {
+  // The choice made in the app is honored here too, so `run` and the viewer's
+  // Sync button categorize identically - but an explicitly exported
+  // XBOOKMARKS_* variable still wins on the CLI (see applySettingsToConfig).
+  const config = withStoredSettings(baseConfig, db);
   requireXCredentials(config);
   const llm = createLlmFactory(config, process.env, store);
   await requireLlm(llm, ['taxonomy', 'assignment']);
-  reportCategorizerBilling(config, llm);
+  reportCategorizerBilling(config, llm, (msg) => console.log(msg));
   const client = await getAuthenticatedClient(config, db);
   const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store);
 
@@ -212,10 +120,11 @@ async function cmdRun(config: Config, db: Database, store: CredentialStore): Pro
   console.log('Browse them with:  node dist/index.js serve');
 }
 
-async function cmdRecategorize(config: Config, db: Database, store: CredentialStore): Promise<void> {
+async function cmdRecategorize(baseConfig: Config, db: Database, store: CredentialStore): Promise<void> {
+  const config = withStoredSettings(baseConfig, db);
   const llm = createLlmFactory(config, process.env, store);
   await requireLlm(llm, ['taxonomy', 'assignment']);
-  reportCategorizerBilling(config, llm);
+  reportCategorizerBilling(config, llm, (msg) => console.log(msg));
   const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store);
 
   const summary = await recategorizeAll({
@@ -291,7 +200,13 @@ async function cmdClearSummaries(db: Database): Promise<void> {
   console.log(`Removed ${removed} cached summar${removed === 1 ? 'y' : 'ies'}.`);
 }
 
-async function cmdServe(config: Config, db: Database, store: CredentialStore): Promise<void> {
+async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore): Promise<void> {
+  // In the app, the owner's saved choice wins outright - no `process.env`
+  // argument - so the panel never reads "Claude model" while a variable in the
+  // launching shell quietly routes the run somewhere billable.
+  const catalog = buildSettingsCatalog();
+  const config = applySettingsToConfig(baseConfig, effectiveSettings(db, catalog));
+
   // Summaries go through the same provider abstraction as categorization, on
   // the summary role's model. The button is offered whenever the provider says
   // it can run; a call that then fails surfaces the adapter's actionable error
@@ -306,6 +221,19 @@ async function cmdServe(config: Config, db: Database, store: CredentialStore): P
     pageSize: config.pageSize,
     summaryGenerator,
     summaryUnavailableReason: available ? undefined : health.detail,
+    // The Sync button's work. `baseConfig` (not `config`) is handed over on
+    // purpose: the job re-reads the settings on every run, so changing them in
+    // the Settings panel takes effect without restarting the viewer.
+    syncJob: createSyncJob({ db, store, config: baseConfig }),
+    credentials: store,
+    xLogin: async () => {
+      const current = applySettingsToConfig(
+        loadConfig(process.env, store),
+        effectiveSettings(db, catalog),
+      );
+      requireXCredentials(current);
+      await login(current, db);
+    },
   });
   console.log(`Web viewer running at http://127.0.0.1:${config.webPort}`);
   if (available) {
@@ -314,6 +242,9 @@ async function cmdServe(config: Config, db: Database, store: CredentialStore): P
   } else {
     console.log(`Summaries disabled: ${health.detail}`);
   }
+  // The viewer can start a sync itself now, so say how one would be billed
+  // before the owner presses the button, not only once it is running.
+  reportCategorizerBilling(config, llm, (msg) => console.log(`Sync: ${msg}`));
   console.log('Press Ctrl+C to stop.');
   const shutdown = () => {
     app.close().finally(() => {
