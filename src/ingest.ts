@@ -103,7 +103,7 @@ function chunk<T>(items: T[], size: number): T[][] {
  * Maps one assignment path (root -> leaf) to a leaf category id, or undefined
  * when the path cannot/should not resolve to a node.
  */
-type PathResolver = (
+export type PathResolver = (
   db: Database,
   path: string[],
   maxDepth: number,
@@ -116,8 +116,13 @@ type PathResolver = (
  * Off-tree paths resolve to undefined so they fall back to `Uncategorized`
  * rather than minting ad-hoc nodes that would defeat the holistic taxonomy.
  * Used by the first run and by `recategorize`, where the tree is fixed.
+ *
+ * Exported for the categorizer comparison (`src/eval/`), which must decide
+ * "is this path on the tree?" the exact same way a real strict run does -
+ * including the case-insensitive sibling matching - or its agreement numbers
+ * would be measuring its own resolver rather than the two filing methods.
  */
-const resolveExistingPathToLeafId: PathResolver = (db, path, maxDepth) => {
+export const resolveExistingPathToLeafId: PathResolver = (db, path, maxDepth) => {
   const capped = path.slice(0, maxDepth);
   let parentId: number | null = null;
   let leafId: number | undefined;

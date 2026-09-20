@@ -4,6 +4,8 @@ import { createCredentialStore, type CredentialStore } from './creds/resolve';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
 import { buildCategorizers, reportCategorizerBilling, requireLlm } from './categorize/build';
+import { Categorizer } from './categorize/llm';
+import { LlmTaxonomyDesigner } from './categorize/taxonomy';
 import { recategorizeAll, runIngest } from './ingest';
 import { startServer } from './web/server';
 import { LlmSummaryGenerator } from './summarize/summarizer';
@@ -18,6 +20,11 @@ import { backfillXArticles } from './x/backfill-articles';
 import { refetchFailedArticles } from './articles/refetch';
 import { buildRanker, reportRankerBilling } from './rank/build';
 import { planRanking, rankBookmarks } from './rank/ranker';
+import { buildEvalJev, reportEvalBilling } from './eval/build';
+import { planCategorizerEval, runCategorizerEval } from './eval/run';
+import { DEFAULT_TYPESAFE_MODEL } from './categorize/typesafe/client';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const HELP = `X Bookmarks Organizer
 
@@ -62,6 +69,19 @@ Usage:
   node dist/index.js clear-scores
                                   Delete every stored ranking score. No
                                   secrets, no network - just the DB.
+  node dist/index.js eval-categorizers [--dry-run] [--limit N]
+                                  Compare the two assignment-pass methods.
+                                  Designs ONE fresh taxonomy, files every
+                                  stored bookmark into it with BOTH the Claude
+                                  and the TypeSafe/Jev categorizer, and writes
+                                  a Markdown comparison report to data/eval/.
+                                  Your library is never written to - not its
+                                  categories, read state, favorites, summaries
+                                  or scores. The Jev half is PAID per token and
+                                  OFF unless XBOOKMARKS_EVAL_CATEGORIZERS=typesafe
+                                  is set AND TYPESAFE_API_KEY resolves;
+                                  --dry-run sizes the run without calling
+                                  anything at all.
   node dist/index.js clear-summaries
                                   Wipe all cached bookmark summaries so they
                                   regenerate cleanly under the current logic.
@@ -82,6 +102,11 @@ only feature with no free implementation - it is PAID per token - so it is off b
 default and the \`rank\` command refuses to run without both the opt-in and
 TYPESAFE_API_KEY. XBOOKMARKS_RANKER_INTERESTS, when set, adds a relevance
 question about what you say you care about.
+
+XBOOKMARKS_EVAL_CATEGORIZERS turns the one-off categorizer COMPARISON on
+(\`typesafe\`). Its Jev half is PAID per token, so - exactly like ranking - it is
+off by default and \`eval-categorizers\` refuses without both the opt-in and
+TYPESAFE_API_KEY. It only ever produces a report; nothing in the app starts it.
 
 XBOOKMARKS_CATEGORIZER picks which implementation files bookmarks into the tree
 (the assignment pass) - claude-cli (default) or typesafe. \`typesafe\` routes that
@@ -271,6 +296,121 @@ async function cmdClearScores(db: Database): Promise<void> {
   console.log(`Removed ${removed} stored ranking score${removed === 1 ? '' : 's'}.`);
 }
 
+/**
+ * Compare the two assignment-pass methods on one fixed tree.
+ *
+ * Paid-safe by construction, mirroring `rank`: `buildEvalJev` refuses unless
+ * the comparison was explicitly turned on AND a key resolves (opt-in checked
+ * FIRST), the billing line is printed before any call, and `--dry-run` sizes
+ * the run while making no call at all - not even the free-but-slow taxonomy
+ * pass. The library is never written to; the only output is the report file.
+ *
+ * There is deliberately no in-app trigger for this, for the same reason `rank`
+ * has none: nothing that spends money per token gets a button.
+ */
+async function cmdEvalCategorizers(
+  baseConfig: Config,
+  db: Database,
+  store: CredentialStore,
+): Promise<void> {
+  const config = withStoredSettings(baseConfig, db);
+  const dryRun = process.argv.includes('--dry-run');
+  const limitArg = process.argv.indexOf('--limit');
+  const parsedLimit = limitArg === -1 ? NaN : Number.parseInt(process.argv[limitArg + 1] ?? '', 10);
+  const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+
+  if (dryRun) {
+    const plan = planCategorizerEval(db, { maxDepth: config.maxCategoryDepth, ...(limit != null ? { limit } : {}) });
+    console.log(
+      `Dry run: ${plan.bookmarks} of ${plan.libraryBookmarks} stored bookmark(s) would be filed ` +
+        'TWICE - once by the Claude assignment pass (free, subscription time) and once by ' +
+        `TypeSafe/Jev (${config.typesafe.model ?? DEFAULT_TYPESAFE_MODEL}, PAID per token).`,
+    );
+    console.log(
+      `A fresh taxonomy would be designed first (your current tree has ${plan.liveTreeNodes} node(s), ` +
+        'and would be left exactly as it is).',
+    );
+    console.log(
+      `Jev side: at most ${plan.jevRequestsUpperBound} request(s) (one per tree level per bookmark), ` +
+        `roughly ${plan.estimatedJevInputTokens} input token(s) - a floor, excluding per-level ` +
+        'choice criteria and linked-article context.',
+    );
+    console.log('No API call was made, and no taxonomy was designed.');
+    // A dry run deliberately needs no opt-in and no key: sizing the bill is how
+    // an owner decides whether to opt in at all. The real run still refuses
+    // without both.
+    console.log(
+      'To run it for real, set XBOOKMARKS_EVAL_CATEGORIZERS=typesafe and make TYPESAFE_API_KEY resolvable.',
+    );
+    return;
+  }
+
+  const llm = createLlmFactory(config, process.env, store);
+  await requireLlm(llm, ['taxonomy', 'assignment']);
+  // Refuses here if the comparison is not opted into, BEFORE the key is looked
+  // at and before anything is constructed.
+  const { asker, usage } = buildEvalJev(config, store, (msg) => console.log(msg));
+  reportEvalBilling(config, llm, (msg) => console.log(msg));
+
+  const assignment = llm.forRole('assignment');
+  const taxonomyRole = llm.describe('taxonomy');
+  const assignmentRole = llm.describe('assignment');
+  const { report, markdown } = await runCategorizerEval(
+    {
+      db,
+      taxonomer: new LlmTaxonomyDesigner(toRunner(llm.forRole('taxonomy'), { json: true }), {
+        minDepth: config.minCategoryDepth,
+        maxDepth: config.maxCategoryDepth,
+      }),
+      claude: new Categorizer(toRunner(assignment, { json: true }), {
+        model: assignment.model,
+        maxDepth: config.maxCategoryDepth,
+      }),
+      asker,
+      usage,
+      logger: (msg) => console.log(msg),
+    },
+    {
+      batchSize: config.batchSize,
+      maxDepth: config.maxCategoryDepth,
+      walk: {
+        beamWidth: config.typesafe.beamWidth,
+        maxDepth: config.maxCategoryDepth,
+        confidenceThreshold: config.typesafe.confidenceThreshold,
+        multiLabelThreshold: config.typesafe.multiLabelThreshold,
+        maxLabels: config.typesafe.maxLabels,
+        concurrency: config.typesafe.concurrency,
+      },
+      ...(limit != null ? { limit } : {}),
+      models: {
+        taxonomyProvider: taxonomyRole.providerId,
+        taxonomyModel: taxonomyRole.model,
+        taxonomyEffort: config.llm.roles.taxonomy.params?.effort ?? 'default',
+        claudeProvider: assignmentRole.providerId,
+        claudeModel: assignmentRole.model,
+        jevModel: config.typesafe.model ?? DEFAULT_TYPESAFE_MODEL,
+      },
+    },
+  );
+
+  const outDir = path.resolve(process.cwd(), 'data', 'eval');
+  fs.mkdirSync(outDir, { recursive: true });
+  const outPath = path.join(
+    outDir,
+    `categorizer-eval-${report.meta.generatedAt.replace(/[:.]/g, '-')}.md`,
+  );
+  fs.writeFileSync(outPath, markdown, 'utf8');
+
+  const { agreement } = report.comparison;
+  console.log(
+    `\nDone. ${agreement.bookmarks} bookmark(s) compared; ${agreement.samePrimaryLeaf} filed to the ` +
+      `same exact leaf by both methods, ${report.comparison.disagreements.total} filed differently. ` +
+      `Jev billed ${report.cost.jevInputTokens} input token(s) over ${report.cost.jevRequests} request(s).`,
+  );
+  console.log(`Report: ${outPath}`);
+  console.log('Your library was not modified.');
+}
+
 async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore): Promise<void> {
   // In the app, the owner's saved choice wins outright - no `process.env`
   // argument - so the panel never reads "Claude model" while a variable in the
@@ -363,6 +503,9 @@ async function main(): Promise<void> {
         break;
       case 'clear-scores':
         await cmdClearScores(db);
+        break;
+      case 'eval-categorizers':
+        await cmdEvalCategorizers(config, db, store);
         break;
       case 'clear-summaries':
         await cmdClearSummaries(db);

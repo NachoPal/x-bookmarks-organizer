@@ -352,6 +352,44 @@ What it buys, when enabled:
 - **Speed.** Each bookmark is classified independently and in parallel, which is what makes
   `recategorize` cheap enough to iterate on.
 
+## Comparing the two categorizers (optional, opt-in, **paid**)
+
+Which of the two above actually files *your* bookmarks better is a question about your library, not
+a question with a general answer - so `eval-categorizers` answers it with evidence you can read:
+
+```
+node dist/index.js eval-categorizers --dry-run                 # size + rough price; no call of any kind
+XBOOKMARKS_EVAL_CATEGORIZERS=typesafe node dist/index.js eval-categorizers
+XBOOKMARKS_EVAL_CATEGORIZERS=typesafe node dist/index.js eval-categorizers --limit 50   # a cost ceiling
+```
+
+It designs **one** fresh taxonomy (pass 1, Claude), then files every stored bookmark into **that
+same tree** with both methods, from the same article/link context, and writes a Markdown report to
+`data/eval/` (gitignored). Holding the tree fixed is the point: pass 1 is always Claude and cannot
+be Jev, so with the tree and the context identical, the filing pass is the only variable and every
+difference is attributable to the method rather than to taxonomy randomness.
+
+The report contains the run's exact models and effort, agreement metrics (same exact leaf, same
+top-level branch - with the multi-label and low-confidence rules spelled out), each method's top
+categories and `Uncategorized` count side by side, Jev's confidence and abstention rates, a sampled
+**disagreement table** so you can judge row by row who filed better, and the wall clock and token
+spend per method.
+
+**Your library is never written to** - not its categories, taxonomy, read state, favorites,
+summaries, scores, or even the URL-keyed link-metadata cache. The fresh tree lives in a throwaway
+database that is deleted when the run ends. Run `backfill-previews` first if you want the links it
+resolves cached for real.
+
+Paid-safety is the ranker's, gate for gate: the Jev half needs BOTH
+`XBOOKMARKS_EVAL_CATEGORIZERS=typesafe` and a resolved `TYPESAFE_API_KEY`, the opt-in is checked
+first (a key left over from another experiment cannot start a paid run by itself), billing is
+announced before any call, and `--dry-run` needs neither - sizing the bill is how you decide whether
+to opt in. The Claude half is free at the margin, costing subscription time instead. There is
+deliberately **no in-app trigger**, exactly as with `rank`.
+
+A run is one sample: Claude filing is non-deterministic, so the report says so and the disagreement
+table - not the percentages - is the real evidence.
+
 ## Ranking bookmarks by learning value (optional, opt-in, **paid**)
 
 You save bookmarks to extract insights from them, so an optional pass scores each one for exactly
