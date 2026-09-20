@@ -20,6 +20,9 @@ data/*.db-shm
 data/*.db-wal
 data/*.sqlite*
 
+# Categorizer comparison reports (`eval-categorizers`) - derived from personal data
+data/eval/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

@@ -588,6 +588,51 @@ injectable `Fetch`, `integration.test.ts` runs the REAL ranker against a local `
 standing in for the API and then asserts the viewer API's ordering. Never let a test reach
 `api.typesafe.ai`, and never make a real Jev call to validate a change here.
 
+## Categorizer comparison (`eval-categorizers`, issue #83)
+
+An OPTIONAL, PAID, off-by-default CLI command that answers "which assignment pass files MY
+bookmarks better" with a Markdown report in gitignored `data/eval/`. `src/eval/` is split the way
+`src/rank/` is: `compare.ts` (the metrics) and `report.ts` (the document) are PURE - no DB, SDK,
+clock or I/O - `jev.ts` holds the Jev side, `run.ts` orchestrates, `build.ts` is the single paid
+gate. There is deliberately NO in-app trigger: like `rank`, a per-token run gets no button. This is
+the sanctioned CLI-only exception to web-app-first.
+
+The design is one idea: **hold the taxonomy fixed**. `runCategorizerEval` designs ONE fresh tree
+(pass 1, always Claude), then files every bookmark into THAT tree with both methods from ONE shared
+`buildArticleContext`. Pass 1 cannot be Jev, so with the tree and the context identical the filing
+pass is the only variable - which is what makes a difference attributable to the method rather than
+to taxonomy randomness. Change either and the comparison stops meaning anything.
+
+**The live DB must stay byte-identical, and that is enforced structurally, not by care.** The fresh
+tree is materialized (via the real `materializeTaxonomy`, so it has a real run's depth cap and
+case-insensitive sibling merge) into a THROWAWAY database in a temp dir, removed in a `finally`;
+filings are compared in memory, so `storeCategorizedBatch` is never called; and the article context
+goes through `ReadThroughMetadataCache`, which reads the live caches and buffers writes in memory -
+an eval must not even populate `article_link_metadata`, which a normal `run` would. The integration
+test asserts a full before/after snapshot, and both halves of that guarantee are mutation-checked.
+
+Two reuse decisions worth keeping: the Jev side composes `buildBookmarkState` + `toWalkTree` +
+`walkTree` directly rather than wrapping `TypeSafeCategorizer`, because `Assignment[]` throws away
+the per-bookmark confidence and the "stopped at a confident ancestor" flag the report is built on
+(in `strict` mode the composition is behaviourally identical - the categorizer's only other
+behaviour is the `extend`-mode fallback, already a no-op there). And token spend is metered by
+`meteringFetch` riding on the SDK's own injectable transport, so the live client grows no counter
+and the cost reporting is exercised offline.
+
+Paid safety mirrors the ranker gate for gate, and the ORDER matters: `requireEvalCategorizersCredentials`
+(`src/config.ts`) checks `XBOOKMARKS_EVAL_CATEGORIZERS` BEFORE `TYPESAFE_API_KEY`, so a key left
+over from a categorization or ranking experiment can never start a paid run on its own; an
+unrecognized value is `off`, never an opt-in; and selecting `XBOOKMARKS_CATEGORIZER=typesafe` for
+real syncs does NOT turn this on - they are different decisions. `--dry-run` deliberately needs
+neither gate (sizing the bill is how an owner decides whether to opt in) and makes no call at all,
+not even the free-but-quota-burning taxonomy pass. Walk tuning is read from `config.typesafe`, the
+same knobs a real sync would run under, so the comparison judges the method the owner could turn on.
+
+Tests are entirely offline and must stay that way: `integration.test.ts` runs the REAL eval and the
+REAL SDK against a local `http` server standing in for the API, with a fake `LlmRunner` for the
+Claude half. Never let a test reach `api.typesafe.ai`, and never make a real Jev call to validate a
+change here.
+
 ## Quoted-post content, and structured content for a ranker
 
 A quoted ORDINARY post's content (author + text + created_at) is captured from the same

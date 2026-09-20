@@ -61,6 +61,15 @@ export interface Config {
    * this - ingestion, categorization, summaries and browsing are untouched.
    */
   ranker: RankerConfig;
+  /**
+   * The opt-in categorizer COMPARISON eval (env: XBOOKMARKS_EVAL_CATEGORIZERS).
+   * `off` by default, and `off` means the `eval-categorizers` command refuses
+   * to run the Jev side at all: it is PAID per token, so it takes an explicit
+   * choice AND a resolved TYPESAFE_API_KEY before any call is made. Nothing
+   * else in the tool reads this - it produces a report and never writes to the
+   * library.
+   */
+  evalCategorizers: EvalCategorizersId;
 }
 
 /** The ranking implementations the owner can choose between. `off` is the default. */
@@ -91,6 +100,17 @@ export interface RankerConfig {
   /** API root override, mainly for testing against a local stub. */
   baseUrl?: string;
 }
+
+/**
+ * The categorizer-comparison eval's opt-in (`eval-categorizers`).
+ *
+ * Its own switch rather than a reuse of `XBOOKMARKS_CATEGORIZER`: selecting the
+ * Jev categorizer for real syncs and asking for a one-off paid comparison run
+ * are different decisions, and conflating them would let the first silently
+ * authorize the second.
+ */
+export const EVAL_CATEGORIZERS_IDS = ['off', 'typesafe'] as const;
+export type EvalCategorizersId = (typeof EVAL_CATEGORIZERS_IDS)[number];
 
 /** The assignment-pass implementations the owner can choose between. */
 export const CATEGORIZER_IDS = ['claude-cli', 'typesafe'] as const;
@@ -140,6 +160,7 @@ const DEFAULT_TYPESAFE_MAX_LABELS = 3;
 const DEFAULT_TYPESAFE_CONCURRENCY = 8;
 const DEFAULT_RANKER: RankerId = 'off';
 const DEFAULT_RANKER_CONCURRENCY = 6;
+const DEFAULT_EVAL_CATEGORIZERS: EvalCategorizersId = 'off';
 
 function intFromEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   const raw = env[name];
@@ -246,6 +267,18 @@ function rankerFromEnv(env: NodeJS.ProcessEnv): RankerConfig {
   };
 }
 
+/**
+ * The eval opt-in from the environment. Like the ranker's, an unrecognized
+ * value is `off`, never an opt-in: the failure mode of a typo must be
+ * "no comparison run", not "unexpected spend".
+ */
+function evalCategorizersFromEnv(env: NodeJS.ProcessEnv): EvalCategorizersId {
+  const raw = env.XBOOKMARKS_EVAL_CATEGORIZERS?.trim();
+  return (EVAL_CATEGORIZERS_IDS as readonly string[]).includes(raw ?? '')
+    ? (raw as EvalCategorizersId)
+    : DEFAULT_EVAL_CATEGORIZERS;
+}
+
 function typeSafeFromEnv(env: NodeJS.ProcessEnv): TypeSafeConfig {
   return {
     model: optionalFromEnv(env, 'XBOOKMARKS_TYPESAFE_MODEL'),
@@ -294,6 +327,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, store?: Credent
     categorizer: categorizerFromEnv(env),
     typesafe: typeSafeFromEnv(env),
     ranker: rankerFromEnv(env),
+    evalCategorizers: evalCategorizersFromEnv(env),
   };
 }
 
@@ -353,6 +387,37 @@ export function requireRankerCredentials(config: Config, store: CredentialStore)
         'XBOOKMARKS_RANKER=typesafe scores bookmarks through the TypeSafe/Jev API, which\n' +
         'is PAID per token. Unset XBOOKMARKS_RANKER to leave ranking off; nothing else in\n' +
         'the tool needs this key.',
+    );
+  }
+  return resolved.value;
+}
+
+/**
+ * Assert the categorizer-comparison eval is BOTH opted into and able to
+ * authenticate, before anything can spend money.
+ *
+ * Exactly the ranker's two gates, in exactly the ranker's order: the opt-in is
+ * checked FIRST, so a `TYPESAFE_API_KEY` left in the environment by a
+ * categorization or ranking experiment can never turn `eval-categorizers` into
+ * a paid run on its own. Only the key's PRESENCE is checked here; its value is
+ * returned to the caller and never logged (`AGENTS.md`).
+ */
+export function requireEvalCategorizersCredentials(config: Config, store: CredentialStore): string {
+  if (config.evalCategorizers !== 'typesafe') {
+    throw new Error(
+      'The categorizer comparison is off. Its TypeSafe/Jev half is PAID per token, so it\n' +
+        'never runs unless you ask for it: set XBOOKMARKS_EVAL_CATEGORIZERS=typesafe to\n' +
+        'compare the Claude and Jev assignment passes. The report is the only thing it\n' +
+        'produces - your library is never written to.',
+    );
+  }
+  const resolved = store.get(TYPESAFE_API_KEY);
+  if (!resolved.value) {
+    throw new Error(
+      `${missingCredentialMessage([TYPESAFE_API_KEY])}\n\n` +
+        'XBOOKMARKS_EVAL_CATEGORIZERS=typesafe files every bookmark a second time through\n' +
+        'the TypeSafe/Jev API, which is PAID per token. Unset XBOOKMARKS_EVAL_CATEGORIZERS\n' +
+        'to leave the comparison off; nothing else in the tool needs this key.',
     );
   }
   return resolved.value;
