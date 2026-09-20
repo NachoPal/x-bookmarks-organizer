@@ -99,10 +99,11 @@ export function hasSummarizableContent(input: SummaryInput): boolean {
 export function buildSummaryPrompt(input: SummaryInput): string {
   const prose = postProse(input.postText);
   const lines = [
-    "Summarize this bookmarked X post so its owner can grasp its substance without reading it in full.",
-    'Write the summary as clean Markdown with tasteful, minimal structure: a short lead sentence or two, then the key points as a tight bullet list (and/or a couple of short paragraphs) when the material has distinct parts - use **bold** on the genuinely important terms, sparingly. No preamble like "This post is about". Structure only where it aids clarity: a one-line post deserves a single plain sentence, not a bulleted skeleton.',
-    'There is no fixed length: a short post deserves a short summary, and a dense article deserves a fuller one that actually captures its key points - favor a good, faithful summary over brevity for its own sake.',
-    'Everything available is quoted below. You cannot open links and must not ask for more content - summarize only what is here.',
+    'You are helping the owner LEARN from a post they bookmarked. This app is a learning tool - they save posts and articles to extract insights, not to skim a recap. Produce a summary that surfaces the useful substance and the takeaways worth remembering.',
+    'Write clean Markdown: a short lead (what this is and its core point, a sentence or two); then **Key insights / takeaways** as a tight bullet list - the specific ideas, arguments, principles, techniques, lessons, or notable facts/numbers worth remembering and applying. Be concrete (name the actual claims, steps and data), not vague. Use **bold** on genuinely important terms, sparingly. No preamble like "This post is about". Structure only where it aids clarity: a truly trivial one-line post deserves a single plain sentence, not a bulleted insight skeleton.',
+    "When a linked article is present, go deeper: capture the article's core argument AND the concrete lessons/principles it offers - the article is the real substance, so summarize it more thoroughly than the post's framing of it.",
+    'Favor genuine usefulness over brevity - a rich post or article deserves a fuller, insight-dense summary. Do not pad or restate the obvious.',
+    'Everything available is quoted below. You cannot open links and must not ask for more content - use only what is here.',
     '',
     `Post by @${input.authorUsername}${input.authorName ? ` (${input.authorName})` : ''}:`,
     prose || '(no text beyond a link)',
