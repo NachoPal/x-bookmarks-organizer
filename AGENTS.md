@@ -193,19 +193,6 @@ resolves `undefined` (deleted/protected), rejects, or a backstop timeout fires -
 spinner and never a raw-text flash. This runs per card, so lazy-loaded batches get it too. The seed
 uses a couple of real public post ids so a live embed appears alongside the fallbacks.
 
-The card's own full post text (issue #36) renders `RawBookmark.text` directly - via `el()`'s
-`textContent`, never `innerHTML`, so untrusted post content can't inject markup - as the primary,
-in-app way to read a long post, since X's embed truncates behind its own "Show more" that leaves
-the app. `renderPostText` in `app.js` sits between the action row and the embed slot; the embed
-stays for media/quotes/rich content, and (to avoid showing the same text twice) the fallback's own
-paragraph of `bm.text` was removed since this block already covers it. Whether a post needs the
-clamp + "Show more"/"Show less" toggle is a pure, DOM-free heuristic - `isLongPostText` in
-`post-text.js` (character/line-count thresholds), shared with `app.js` and `post-text.test.ts` the
-same way `read-toggle.js` is - rather than a runtime overflow measurement, so it stays deterministic
-and testable without a real layout. The expand/collapse state lives entirely as a class on the
-card's own DOM node, so it survives the client-side filter+category view cache (`viewCaches`)
-untouched, since that cache reuses the same DOM elements rather than re-rendering.
-
 To iterate on the viewer without the owner's private DB, seed a throwaway one and serve it:
 `npm run build && npm run seed:dev && XBOOKMARKS_DB_PATH=data/dev-seed.db node dist/index.js serve`
 (`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit
