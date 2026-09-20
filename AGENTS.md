@@ -185,24 +185,19 @@ children need `min-width: 0`) so counts never overflow.
 
 The **top bar** (issues #53/#37/#42/#65) is one sticky row in three flex regions: the animated
 categories-menu toggle (left), the selected category's title + counts on ONE line (center), and
-`search | colors | theme | settings gear` (right). The read-state filter LEFT this bar in #65 - it
+`search | theme | sync | settings gear` (right). The category-colors toggle now lives beside the sidebar's "Categories" heading, and the last-synced time + Sync button live in the sync popover (the icon left of the gear; same panel style as settings), not the bar or tab row. The read-state filter LEFT this bar in #65 - it
 is now the tab bar below (see next paragraph). There is no explanatory blurb and no second header
 inside the content pane - `#content-title`/`#content-count` live in the bar. Equal `flex: 1 1 0`
 flanks are what centers the middle region; the center is `flex: 0 1 auto` with
 `min-width: 0`, and `.topbar-right` carries a `min-width: min-content` floor so the controls are
 never squeezed. The title's ancestor crumb is a separate span capped at `max-width: 40%` (and
 hidden under 560px) so a deep path ellipsizes the CRUMB, never the leaf - weighting `flex-shrink`
-instead was tried and still clipped the leaf while the crumb had room left to give. Under 820px the
-bar drops the `quick-only` theme/colors icons (they are duplicates of the settings panel's
-switches, which is their canonical home - one `applyTheme`/`setColorEnabled` updates both controls);
-under 1100px it drops last-sync; under 560px the counts and the crumb.
+instead was tried and still clipped the leaf while the crumb had room left to give. Under 560px the bar drops the counts and the crumb.
 
 The **filter tab bar** (issue #65) is a row of four tabs - Unread / Read / All / Favorites -
 directly under the top bar, inside `.main-column` (a flex column holding the toolbar above the
 scrolling `.content`), so it spans the viewport with the drawer closed and SHRINKS with the column
-when the drawer pushes it. Since issue #71 it shares that row with the Sync control inside a
-`.toolbar` flex parent: the button sits OUTSIDE the `role="tablist"`, which may contain only tabs,
-and is `flex: 0 0 auto` so the tabs give up the width, not the view's primary action. The tablist
+when the drawer pushes it. It sits in a `.toolbar` flex parent (the Sync control left it for the top-bar sync popover). The tablist
 is a real one: roving tabindex, arrow keys + Home/End, `#bookmark-list` is its one `tabpanel` and
 its `aria-labelledby` follows the active tab (`renderFilterTabs` in `app.js`). It is always
 visible - hiding it on an empty category would jump the layout. The active tab is marked by an

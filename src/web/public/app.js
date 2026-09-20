@@ -445,52 +445,54 @@
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape" || isCollapsed()) return;
       // The settings popover and the setup dialog each own Escape while open.
-      if (isSettingsOpen() || isSetupOpen()) return;
+      if (popovers.some(isPopoverOpen) || isSetupOpen()) return;
       setCollapsed(true);
     });
   }
 
-  // ---- settings popover (issue #37) --------------------------------------
-  // The gear in the bar's right region. Canonical home of the post-size,
-  // theme and category-color settings; the bar's theme/colors icon buttons
-  // are wide-screen quick access to exactly the same state.
-  const settingsToggleBtn = document.getElementById("settings-toggle");
-  const settingsPanelEl = document.getElementById("settings-panel");
+  // ---- top-bar popovers: sync + settings (issues #37, #71) -----------------
+  // Two icon buttons in the bar's right region, each opening a panel anchored
+  // under it. Settings holds post size, order and categorization; Sync holds
+  // the last-synced time and the Sync button. Opening one closes the other.
+  const popovers = [
+    { toggle: document.getElementById("sync-toggle"), panel: document.getElementById("sync-panel"), name: "sync" },
+    { toggle: document.getElementById("settings-toggle"), panel: document.getElementById("settings-panel"), name: "settings" },
+  ].filter((p) => p.toggle && p.panel);
 
-  function isSettingsOpen() {
-    return !!settingsPanelEl && !settingsPanelEl.hidden;
+  function isPopoverOpen(p) {
+    return !p.panel.hidden;
   }
 
-  function setSettingsOpen(open, opts) {
+  function setPopoverOpen(p, open, opts) {
     const options = opts || {};
-    if (!settingsPanelEl || !settingsToggleBtn) return;
-    settingsPanelEl.hidden = !open;
-    settingsToggleBtn.setAttribute("aria-expanded", String(open));
-    settingsToggleBtn.setAttribute("aria-label", open ? "Close settings" : "Open settings");
+    if (open) popovers.forEach((o) => o !== p && isPopoverOpen(o) && setPopoverOpen(o, false, { returnFocus: false }));
+    p.panel.hidden = !open;
+    p.toggle.setAttribute("aria-expanded", String(open));
+    p.toggle.setAttribute("aria-label", `${open ? "Close" : "Open"} ${p.name}`);
 
     if (open) {
       const first =
-        settingsPanelEl.querySelector(".seg-input:checked") ||
-        settingsPanelEl.querySelector("button, input");
+        p.panel.querySelector(".seg-input:checked") || p.panel.querySelector("button:not(:disabled), input");
       if (first) first.focus();
     } else if (options.returnFocus !== false) {
-      settingsToggleBtn.focus();
+      p.toggle.focus();
     }
   }
 
   function initSettingsPanel() {
-    if (!settingsToggleBtn || !settingsPanelEl) return;
-    settingsToggleBtn.addEventListener("click", () => setSettingsOpen(!isSettingsOpen()));
+    popovers.forEach((p) => p.toggle.addEventListener("click", () => setPopoverOpen(p, !isPopoverOpen(p))));
 
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && isSettingsOpen() && !isSetupOpen()) setSettingsOpen(false);
+      if (e.key !== "Escape" || isSetupOpen()) return;
+      popovers.forEach((p) => isPopoverOpen(p) && setPopoverOpen(p, false));
     });
-    // A click anywhere outside dismisses it; inside it (or on the gear,
+    // A click anywhere outside dismisses it; inside it (or on its icon,
     // which toggles) does not.
     document.addEventListener("pointerdown", (e) => {
-      if (!isSettingsOpen()) return;
-      if (settingsPanelEl.contains(e.target) || settingsToggleBtn.contains(e.target)) return;
-      setSettingsOpen(false, { returnFocus: false });
+      popovers.forEach((p) => {
+        if (!isPopoverOpen(p) || p.panel.contains(e.target) || p.toggle.contains(e.target)) return;
+        setPopoverOpen(p, false, { returnFocus: false });
+      });
     });
   }
 
@@ -593,9 +595,7 @@
   // Lets the owner compare a plain (indentation + guide lines only) tree
   // against the per-root-hue colored one and persists the choice, so a
   // reload keeps whichever they picked. Defaults to off (the plain tree).
-  // Two controls drive the one state: the settings panel's switch (always
-  // present) and the bar's quick icon button (wide screens only).
-  const colorSwitchEl = document.getElementById("category-color-toggle");
+  // One icon button, beside the sidebar's "Categories" heading.
   const colorQuickBtn = document.getElementById("color-toggle");
 
   function isColorEnabled() {
@@ -605,10 +605,6 @@
   function setColorEnabled(enabled, opts) {
     if (enabled) bodyEl.setAttribute("data-tree-colors", "on");
     else bodyEl.removeAttribute("data-tree-colors");
-    // The switch's visible label stays "Category colors"; aria-checked alone
-    // communicates on/off (the standard switch pattern), so the accessible
-    // name keeps matching the visible text.
-    if (colorSwitchEl) colorSwitchEl.setAttribute("aria-checked", String(enabled));
     if (colorQuickBtn) {
       colorQuickBtn.setAttribute("aria-pressed", String(enabled));
       colorQuickBtn.setAttribute(
@@ -627,7 +623,6 @@
       : false;
     setColorEnabled(stored, { silent: true });
     const onToggle = () => setColorEnabled(!isColorEnabled());
-    if (colorSwitchEl) colorSwitchEl.addEventListener("click", onToggle);
     if (colorQuickBtn) colorQuickBtn.addEventListener("click", onToggle);
   }
 
@@ -691,7 +686,6 @@
   // Explicit light/dark preference in the top menu bar, overriding the system
   // default. Defaults to following the system theme until the owner picks.
   const themeToggleBtn = document.getElementById("theme-toggle");
-  const themeSwitchEl = document.getElementById("theme-switch");
 
   function applyTheme(theme) {
     // The icon shown is driven by CSS off this same attribute (see
@@ -703,22 +697,18 @@
       themeToggleBtn.setAttribute("aria-pressed", String(isDark));
       themeToggleBtn.setAttribute("aria-label", isDark ? "Switch to light theme" : "Switch to dark theme");
     }
-    if (themeSwitchEl) themeSwitchEl.setAttribute("aria-checked", String(isDark));
   }
 
   function initThemeToggle() {
     if (!window.XBOTheme) return;
     applyTheme(window.XBOTheme.effectiveTheme(window.localStorage, systemPrefersDark()));
 
-    // Same state from two places: the bar's quick icon (wide screens) and
-    // the settings panel's switch (every width).
     const onToggle = () => {
       const next = isDarkTheme() ? "light" : "dark";
       window.XBOTheme.writeTheme(window.localStorage, next);
       applyTheme(next);
     };
     if (themeToggleBtn) themeToggleBtn.addEventListener("click", onToggle);
-    if (themeSwitchEl) themeSwitchEl.addEventListener("click", onToggle);
 
     // Keep the toggle in sync if the system theme changes while following it
     // (no explicit preference stored yet).
