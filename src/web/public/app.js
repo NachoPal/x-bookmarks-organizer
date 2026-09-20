@@ -8,7 +8,11 @@
  */
 (function () {
   const treeEl = document.getElementById("tree");
-  const listEl = document.getElementById("bookmark-list");
+  // Host of the per-view panes. `listEl` is the ACTIVE pane (see the filter
+  // cache below); until the first category is opened it is the host itself,
+  // which still holds the static welcome state.
+  const listRoot = document.getElementById("bookmark-list");
+  let listEl = listRoot;
   const titleEl = document.getElementById("content-title");
   const countEl = document.getElementById("content-count");
   const searchInput = document.getElementById("category-search");
@@ -74,9 +78,14 @@
   // visited) reuses already-fetched pages and already-rendered DOM instead of
   // re-fetching and re-rendering - no reload flash and no reloading the X
   // embeds that were already loaded. Keyed by category id -> { counts,
-  // filters: Map(filter -> { ids, cardEls, bmById, offset, hasMore }) }.
+  // filters: Map(filter -> { ids, pane, cardEls, bmById, offset, hasMore }) }.
+  // Each view renders into its own `.view-pane` that STAYS MOUNTED in the
+  // document (just `hidden` while inactive): detaching an iframe and
+  // re-attaching it makes the browser reload it, which is what blanked the X
+  // embeds when the cache re-appended detached cards. Hiding never reloads.
   // Bounded to XBOFilterCache.MAX_CACHED_CATEGORIES categories via LRU
-  // eviction so it never grows unbounded across a long browsing session.
+  // eviction, and every pane no cache entry retains is removed from the
+  // document, so neither memory nor DOM grows across a long session.
   let viewCaches = new Map();
   let cacheOrder = []; // LRU order of cached category ids, oldest first
 
@@ -84,6 +93,33 @@
     const { order, evicted } = window.XBOFilterCache.touchLru(cacheOrder, categoryId);
     cacheOrder = order;
     for (const id of evicted) viewCaches.delete(id);
+    if (evicted.length) releaseOrphanPanes();
+  }
+
+  /** Remove every pane (or stray static node) no cache entry retains and that is not on screen. */
+  function releaseOrphanPanes() {
+    const retained = new Set();
+    for (const catCache of viewCaches.values()) {
+      for (const entry of catCache.filters.values()) retained.add(entry.pane);
+    }
+    for (const child of Array.from(listRoot.children)) {
+      if (child !== listEl && !retained.has(child)) child.remove();
+    }
+  }
+
+  /** Create a fresh (empty) pane for a new view and make it the visible one. */
+  function mountNewPane() {
+    const pane = el("div", "view-pane");
+    listRoot.appendChild(pane);
+    activatePane(pane);
+    return pane;
+  }
+
+  /** Show `pane`, hide every other pane (kept mounted, so embeds never reload). */
+  function activatePane(pane) {
+    for (const child of listRoot.children) child.hidden = child !== pane;
+    listEl = pane;
+    releaseOrphanPanes();
   }
 
   function ensureCategoryCache(categoryId) {
@@ -113,6 +149,7 @@
     }
     catCache.filters.set(readFilter, {
       ids,
+      pane: listEl,
       cardEls: Array.from(listEl.querySelectorAll(":scope > .bookmark-card")),
       bmById,
       offset: pageOffset,
@@ -141,8 +178,8 @@
     pageHasMore = entry.hasMore;
     currentViewBookmarks = entry.ids.map((id) => entry.bmById.get(id)).filter(Boolean);
 
+    activatePane(entry.pane);
     readFilterEl.hidden = categoryCounts.total === 0;
-    listEl.replaceChildren();
     if (categoryCounts.total === 0) {
       countEl.textContent = "";
       stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
@@ -153,7 +190,8 @@
       stateMessage(listEl, "empty", emptyFilterMessage());
       return;
     }
-    for (const cardEl of entry.cardEls) listEl.appendChild(cardEl);
+    const staleState = listEl.querySelector(":scope > .state");
+    if (staleState) staleState.remove();
     updateTail();
   }
 
@@ -207,6 +245,7 @@
         }
       }
     }
+    releaseOrphanPanes(); // panes of invalidated entries leave the document
   }
 
   /** Permanently remove a deleted bookmark from every cached filter entry. */
@@ -221,7 +260,7 @@
         const idx = entry.ids.indexOf(bm.id);
         if (idx === -1) continue;
         entry.ids.splice(idx, 1);
-        entry.cardEls.splice(idx, 1);
+        entry.cardEls.splice(idx, 1)[0].remove();
         entry.bmById.delete(bm.id);
         entry.offset = Math.max(0, entry.offset - 1);
       }
@@ -448,6 +487,14 @@
 
   function stateMessage(container, kind, message) {
     container.replaceChildren();
+    if (kind === "loading") {
+      // A real load: spinner over a gray block, never an empty white pane.
+      const box = el("div", "state state-loading");
+      box.setAttribute("role", "status");
+      box.append(el("span", "list-spinner"), el("span", "", message));
+      container.appendChild(box);
+      return;
+    }
     const p = el("p", `state state-${kind}`, message);
     if (kind === "error" || kind === "loading") p.setAttribute("role", "status");
     container.appendChild(p);
@@ -858,6 +905,7 @@
     currentViewBookmarks = [];
     countEl.textContent = "";
     readFilterEl.hidden = true;
+    mountNewPane();
     stateMessage(listEl, "loading", "Loading bookmarks…");
 
     let data;

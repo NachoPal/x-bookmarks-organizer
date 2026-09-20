@@ -1019,6 +1019,16 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   gap: var(--space-3);
   max-width: var(--content-measure);
 }
+/* One pane per cached category+filter view; inactive panes stay mounted
+   (hidden) so their X embeds are never detached and reloaded. */
+.view-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.view-pane[hidden] {
+  display: none;
+}
 .bookmark-card {
   min-width: 0;
   /* Uniform fixed-width column: every card is exactly this wide (the embed
@@ -1417,6 +1427,16 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   background: var(--color-surface);
   border: 1px dashed var(--color-border);
   text-align: center;
+}
+/* Real load in flight: spinner over a gray block, never a blank white pane. */
+.state-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: 40vh;
+  background: var(--color-surface-2);
+  border-style: solid;
 }
 .state-error {
   color: var(--color-danger);

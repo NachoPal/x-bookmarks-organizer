@@ -11,7 +11,7 @@
  * read-state change, so that decision stays unit-testable without a DOM.
  */
 (function (root) {
-  const MAX_CACHED_CATEGORIES = 5;
+  const MAX_CACHED_CATEGORIES = 3;
 
   /**
    * Move `categoryId` to the most-recently-used end of `order`, evicting the
