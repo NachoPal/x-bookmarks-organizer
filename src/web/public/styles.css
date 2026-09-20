@@ -1512,6 +1512,33 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   width: 1rem;
   height: 1rem;
 }
+/* The ranking score (issue #62): a read-only rating, not a control, so it is
+   deliberately quieter than the row's actual actions. The gauge icon plus the
+   number carry the meaning - the chip never signals by color alone - and both
+   `title` and `aria-label` hold the rubric breakdown behind it. Absent
+   entirely for an unranked bookmark: there is no "unranked" badge to show. */
+.score-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 1.75rem;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+.score-chip .icon-gauge {
+  width: 0.9375rem;
+  height: 0.9375rem;
+  color: var(--color-text-muted);
+}
 .delete-btn {
   width: 2.5rem;
   height: 2.5rem;

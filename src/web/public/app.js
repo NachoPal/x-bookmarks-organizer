@@ -54,6 +54,11 @@
   // Filters whose MEMBERSHIP a per-bookmark toggle can flip, so a cached
   // view of one can go stale ("all" never loses or gains a post this way).
   const MEMBERSHIP_FILTERS = ["unread", "read", "favorite"];
+  // How the list is ordered (issue #62): "recent" (always the default) or
+  // "score", the opt-in ranking pass's verdict. Ordering happens SERVER-side
+  // because paging does - sorting one page here would only shuffle whichever
+  // batch happened to arrive. Persisted through XBOSortOrder's guarded storage.
+  let activeSort = "recent";
 
   // ---- lazy loading (paged, filtered, infinite scroll) ------------------
   // The selected category is loaded one batch at a time as the owner scrolls,
@@ -519,6 +524,67 @@
         if (!input.checked) return;
         window.XBOPostScale.writePostScale(window.localStorage, input.value);
         applyPostScale(input.value);
+      });
+    });
+  }
+
+  // ---- list ordering (issue #62) -----------------------------------------
+  // The ranking pass is paid and runs from the CLI, so this panel only chooses
+  // how to ORDER what has already been scored - it never starts a paid run.
+  const sortOrderEl = document.getElementById("sort-order");
+  const sortOrderHintEl = document.getElementById("sort-order-hint");
+
+  function applySortOrder(id) {
+    activeSort = id;
+    if (!sortOrderEl) return;
+    sortOrderEl.querySelectorAll(".seg-input").forEach((input) => {
+      input.checked = input.value === id;
+    });
+  }
+
+  /**
+   * Say how much of the library is actually ranked, so "Top score" is never a
+   * control that silently does nothing. Falls back to the static markup when
+   * /api/setup could not be read.
+   */
+  function updateSortOrderHint() {
+    if (!sortOrderHintEl || !setupState || !setupState.ranking) return;
+    const { scored, total } = setupState.ranking;
+    if (scored === 0) {
+      sortOrderHintEl.textContent =
+        total === 0
+          ? "Nothing is ranked yet."
+          : `None of your ${total} bookmarks are ranked yet. Ranking is paid per token and runs from the command line: node dist/index.js rank`;
+      return;
+    }
+    sortOrderHintEl.textContent =
+      scored === total
+        ? `All ${total} bookmarks are ranked. Top score orders them by learning value.`
+        : `${scored} of ${total} bookmarks are ranked; the rest sort last under Top score.`;
+  }
+
+  /**
+   * Switch ordering: every cached view was paged under the OLD order, so any of
+   * them could now be in the wrong sequence - they are dropped wholesale rather
+   * than patched, exactly as a completed sync drops them.
+   */
+  function selectSortOrder(id) {
+    if (id === activeSort || !window.XBOSortOrder) return;
+    window.XBOSortOrder.writeSortOrder(window.localStorage, id);
+    applySortOrder(id);
+    viewCaches = new Map();
+    cacheOrder = [];
+    releaseOrphanPanes();
+    if (selectedCategoryId != null) void fetchAndRenderFirstPage();
+  }
+
+  function initSortOrder() {
+    if (!window.XBOSortOrder) return;
+    applySortOrder(window.XBOSortOrder.readSortOrder(window.localStorage));
+    if (!sortOrderEl) return;
+    sortOrderEl.querySelectorAll(".seg-input").forEach((input) => {
+      input.addEventListener("change", () => {
+        if (input.checked) selectSortOrder(input.value);
       });
     });
   }
@@ -991,9 +1057,11 @@
 
   /** Fetch one page of the current category under the active filter. */
   function fetchPage(offset) {
+    const sort = window.XBOSortOrder ? window.XBOSortOrder.sortParam(activeSort) : "recent";
     const url =
       `/api/categories/${selectedCategoryId}/bookmarks` +
-      `?filter=${encodeURIComponent(activeFilter)}&offset=${offset}`;
+      `?filter=${encodeURIComponent(activeFilter)}&sort=${encodeURIComponent(sort)}` +
+      `&offset=${offset}`;
     return getJSON(url);
   }
 
@@ -1201,6 +1269,9 @@
 
     const right = el("div", "bookmark-actions-group bookmark-actions-right");
 
+    const scoreChip = renderScoreChip(bm);
+    if (scoreChip) right.appendChild(scoreChip);
+
     const deleteBtn = el("button", "icon-btn delete-btn");
     deleteBtn.type = "button";
     deleteBtn.setAttribute("aria-label", "Delete bookmark");
@@ -1367,6 +1438,47 @@
   function applySummarizeButtonLabel(btn, hasSummary) {
     btn.replaceChildren(sparkleIcon(), document.createTextNode(hasSummary ? "Summary" : "Summarize"));
     btn.classList.toggle("has-summary", hasSummary);
+  }
+
+  /**
+   * The ranking score (issue #62), as a compact rating beside the card's other
+   * controls - or nothing at all for a bookmark the paid ranking pass has never
+   * scored, which is not the same as a score of zero.
+   *
+   * Deliberately not a control: the number is a read-only fact about the post,
+   * there is nothing to toggle, and the rubric's breakdown is what explains it
+   * (carried by both `title` and `aria-label`, so the reasoning is available to
+   * a screen reader and not only on hover).
+   */
+  function renderScoreChip(bm) {
+    if (!window.XBOSortOrder) return null;
+    const rating = window.XBOSortOrder.formatScore(bm.score);
+    if (rating === null) return null;
+
+    const chip = el("span", "score-chip");
+    chip.appendChild(gaugeIcon());
+    chip.appendChild(el("span", "score-chip-value", rating));
+    const description = window.XBOSortOrder.describeScore(bm.score);
+    if (description) {
+      chip.title = description;
+      chip.setAttribute("aria-label", description);
+    }
+    return chip;
+  }
+
+  /** A small gauge, so the chip reads as a rating rather than a bare number. */
+  function gaugeIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "icon icon-gauge");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.innerHTML =
+      '<path d="M3.5 14a7 7 0 1 1 13 0" fill="none" stroke="currentColor" stroke-width="1.6" ' +
+      'stroke-linecap="round" />' +
+      '<path d="M10 13.5 13.2 8.6" fill="none" stroke="currentColor" stroke-width="1.6" ' +
+      'stroke-linecap="round" />';
+    return svg;
   }
 
   /**
@@ -2122,6 +2234,7 @@
   function applySetupState() {
     updateSyncButton();
     updateEmptyLibraryState();
+    updateSortOrderHint();
     if (settingsForm && setupState && !settingsDirty) {
       settingsForm.setCatalog(setupState.catalog);
       settingsForm.setValues(setupState.settings);
@@ -2823,6 +2936,7 @@
   initSidebar();
   initSettingsPanel();
   initPostScale();
+  initSortOrder();
   initThemeToggle();
   initColorToggle();
   initSearch();

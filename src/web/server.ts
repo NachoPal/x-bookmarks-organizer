@@ -1,7 +1,7 @@
 import path from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
-import type { BookmarkFilter, Database } from '../db/database';
+import type { BookmarkFilter, BookmarkSortOrder, Database } from '../db/database';
 import { buildCategoryTree } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
 import { articleRecordFromResult, HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
@@ -116,7 +116,26 @@ type BookmarkForViewer = Omit<StoredBookmark, 'xArticle' | 'quotedXArticle'> & {
   hasSummary: boolean;
   categoryIds: number[];
   xArticle: ViewerXArticle | null;
+  score: ViewerScore | null;
 };
+
+/**
+ * A bookmark's ranking verdict as shipped to the viewer (issue #62), or null
+ * when it has never been ranked - which is NOT the same as a score of zero, so
+ * the client must render and sort it as "unranked" rather than "worst".
+ *
+ * `dimensions` rides along because it is small (a handful of numbers) and is
+ * what makes a score explainable in the card's tooltip instead of an
+ * unaccountable number.
+ */
+interface ViewerScore {
+  /** Weighted overall score, 0..1. */
+  value: number;
+  /** The model's own confidence, 0..1. */
+  confidence: number;
+  /** Per-rubric-dimension scores, 0..1. */
+  dimensions: Record<string, number>;
+}
 
 /**
  * The "X Article" card's data for a bookmark that hosts or quotes an X-native
@@ -170,16 +189,35 @@ function domainFromUrl(url: string): string {
 function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryIdsByBookmark: Map<number, number[]>): BookmarkForViewer[] {
   const xArticles = db.getXArticlesForBookmarks(bookmarks);
   const summarizedIds = db.getSummarizedBookmarkIds(bookmarks.map((b) => b.id));
-  return bookmarks.map((bookmark) => ({
-    ...bookmark,
-    hasSummary: summarizedIds.has(bookmark.id),
-    categoryIds: categoryIdsByBookmark.get(bookmark.id) ?? [],
-    xArticle: toViewerXArticle(xArticles.get(bookmark.postId)),
-  }));
+  // A pure read of the `bookmark_scores` table the opt-in `rank` command
+  // populates. With ranking never run this is simply empty, and every bookmark
+  // ships `score: null` - the viewer's default ordering does not depend on it.
+  const scores = db.getBookmarkScores(bookmarks.map((b) => b.id));
+  return bookmarks.map((bookmark) => {
+    const scored = scores.get(bookmark.id);
+    return {
+      ...bookmark,
+      hasSummary: summarizedIds.has(bookmark.id),
+      categoryIds: categoryIdsByBookmark.get(bookmark.id) ?? [],
+      xArticle: toViewerXArticle(xArticles.get(bookmark.postId)),
+      score: scored
+        ? { value: scored.score, confidence: scored.confidence, dimensions: scored.dimensions }
+        : null,
+    };
+  });
 }
 
 function parseBookmarkFilter(raw: unknown): BookmarkFilter {
   return raw === 'unread' || raw === 'read' || raw === 'favorite' ? raw : 'all';
+}
+
+/**
+ * The list's ordering. Anything unrecognized falls back to `recent`, which is
+ * the ordering the viewer has always used, so an old client or a typo'd query
+ * never silently reorders the library.
+ */
+function parseBookmarkSort(raw: unknown): BookmarkSortOrder {
+  return raw === 'score' ? 'score' : 'recent';
 }
 
 /** Parse a non-negative integer query param, falling back to {@link fallback}. */
@@ -289,6 +327,14 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         lastSyncedAt: db.getLastSyncedAt() ?? null,
         status: syncRunner ? syncRunner.status() : null,
       },
+      // How much of the library the opt-in ranking pass has scored (issue #62),
+      // so the Settings panel can say whether sorting by score will actually
+      // order anything. Two counts, not a trigger: ranking is PAID per token
+      // and is deliberately run from the CLI, never from a button in here.
+      ranking: {
+        scored: db.countScoredBookmarks(),
+        total: db.getBookmarkCount(),
+      },
     };
   });
 
@@ -372,13 +418,19 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
 
   // One page of a category's bookmarks, filtered by read state. Paging the
   // filtered set server-side keeps a large category from shipping all at once.
-  app.get<{ Params: { id: string }; Querystring: { filter?: string; offset?: string; limit?: string } }>(
+  app.get<{
+    Params: { id: string };
+    Querystring: { filter?: string; sort?: string; offset?: string; limit?: string };
+  }>(
     '/api/categories/:id/bookmarks',
     async (req, reply) => {
       const id = Number.parseInt(req.params.id, 10);
       if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid category id' });
 
       const filter = parseBookmarkFilter(req.query.filter);
+      // Ordering is server-side because paging is: sorting one page in the
+      // client would only shuffle whichever 20 rows happened to arrive.
+      const sort = parseBookmarkSort(req.query.sort);
       const offset = parseNonNegInt(req.query.offset, 0);
       // Clamp the client-supplied limit to the configured page size so no
       // request can pull the whole category down in one shot.
@@ -394,7 +446,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
             : filter === 'favorite'
               ? counts.favorite
               : counts.total;
-      const bookmarks = db.getBookmarksForCategory(id, { filter, offset, limit });
+      const bookmarks = db.getBookmarksForCategory(id, { filter, sort, offset, limit });
       const categoryIdsByBookmark = db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id));
 
       return {
@@ -402,6 +454,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         counts,
         offset,
         limit,
+        sort,
         total: filteredTotal,
         hasMore: offset + bookmarks.length < filteredTotal,
       };

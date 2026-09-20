@@ -544,6 +544,51 @@ reads it for already-stored bookmarks via `GET /2/tweets?ids=` - PAID reads, so 
 bookmarks whose cached `resolved_url` is an X Article or X post, supports `--dry-run`, and only
 authenticates when there is something to read.
 
+## Jev ranking pass (`XBOOKMARKS_RANKER`, issue #62)
+
+An OPTIONAL, PAID, off-by-default pass that scores each stored bookmark for learning value with
+TypeSafe/Jev `Score` questions over `BookmarkContent` (below) - the consumer that structure was
+built for. Additive end to end: nothing in ingestion, categorization, summaries or browsing reads
+it, and with it off the library and the viewer are byte-identical to before.
+
+`src/rank/` is split the way `src/categorize/typesafe/` is, and for the same reason: `rubric.ts` is
+PURE (the questions, their levels, the weights, and the weighted combination - no SDK, no DB, no
+clock) and `state.ts` is pure too (`BookmarkContent` -> Jev JSON state, with per-part caps);
+`client.ts` is the only file that touches the SDK, and it REUSES the categorizer's
+`describeTypeSafeError`/`DEFAULT_TYPESAFE_MODEL` rather than restating how a TypeSafe failure is
+redacted. `ranker.ts` orchestrates (concurrency, resume, the summary), `build.ts` is the single
+gate. Whole rubric = ONE `systemOne` call per bookmark: TypeSafe answers questions in parallel
+against one shared state, which is what makes a decomposed rubric affordable.
+
+Paid safety, and the ORDER matters: `requireRankerCredentials` checks the OPT-IN before the key, so
+a `TYPESAFE_API_KEY` left over from a categorization experiment can never turn `rank` into a paid
+run on its own; an unrecognized `XBOOKMARKS_RANKER` value is `off`, never an opt-in. `rank
+--dry-run` reports the size of a run while making no call. Never add an in-app button that starts a
+ranking run - the viewer only ORDERS what is already scored.
+
+Storage is `bookmark_scores` (`src/db/schema.ts`), keyed by bookmark: normalized 0..1 `score`, the
+model's own `confidence`, the per-dimension breakdown as JSON (read tolerantly - a blob this build
+cannot parse degrades to no dimensions, never to an exception), and `rubric_version`. That version
+is load-bearing: `getBookmarksToScore` re-selects a row scored under a DIFFERENT rubric, which is
+what stops two scales being sorted against each other, and it is why `buildRubric` hashes
+`XBOOKMARKS_RANKER_INTERESTS` into the tag. **An absent row means "never ranked", never "scored
+zero"** - every consumer must honor that, which is why `sort=score` puts unranked bookmarks LAST and
+the viewer renders no chip at all rather than a zero.
+
+Surface: `score` on every listed bookmark (a pure cache read in `toViewerBookmarks`, empty when
+ranking was never run), `?sort=score` on `/api/categories/:id/bookmarks` (server-side, because
+paging is), `ranking: { scored, total }` on `/api/setup`, and in the viewer an **Order** segmented
+control in the settings popover plus a read-only `.score-chip` on each ranked card.
+`src/web/public/sort-order.js` (`XBOSortOrder`) is the pure, unit-tested half (guarded persistence,
+the query param, the rating/tooltip formatting) in the same style as `post-scale.js`. Changing the
+order DROPS every cached view (`viewCaches`) wholesale - they were paged under the old order - the
+same way a completed sync does.
+
+Tests are entirely offline and must stay that way: `client.test.ts` drives the REAL SDK through its
+injectable `Fetch`, `integration.test.ts` runs the REAL ranker against a local `http` server
+standing in for the API and then asserts the viewer API's ordering. Never let a test reach
+`api.typesafe.ai`, and never make a real Jev call to validate a change here.
+
 ## Quoted-post content, and structured content for a ranker
 
 A quoted ORDINARY post's content (author + text + created_at) is captured from the same
@@ -556,8 +601,8 @@ own id, mirroring the `x_articles` pattern). A quoted post that hosts an X Artic
 `src/content/bookmark-content.ts`'s `BookmarkContent` assembles a bookmark's full content into
 named, self-describing parts (`post`, `quotedPost`, `linkedArticle`, `xArticle`, each carrying a
 `kind` label) for a downstream content-scoring/re-ranking tool that must never have to guess what a
-piece of text represents. `linkedArticle.body` is included only when the reader-view extraction
-(the #4 `articles` cache) is already cached - it stays lazy, never fetched by this read. Exposed as
+piece of text represents - which the Jev ranking pass above now is. `linkedArticle.body` is included
+only when the reader-view extraction (the #4 `articles` cache) is already cached - it stays lazy, never fetched by this read. Exposed as
 pure DB reads via `GET /api/bookmarks/:id/content` and a paged `GET /api/content` (see the README's
 "Structured bookmark content" section for the exact shape); no ranker logic lives here - this is
 data plumbing only.

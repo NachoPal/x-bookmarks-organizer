@@ -233,6 +233,13 @@ local DB. Idempotent - re-running removes 0:
 node dist/index.js clear-summaries
 ```
 
+Score stored bookmarks by learning value (opt-in and **paid** - see "Ranking bookmarks by learning
+value" below):
+
+```
+XBOOKMARKS_RANKER=typesafe node dist/index.js rank --dry-run
+```
+
 ## Structured bookmark content (for a ranking/scoring tool)
 
 The viewer exposes each bookmark's full content in a structured, labeled shape - meant for a
@@ -297,6 +304,10 @@ interface BookmarkContent {
 | `XBOOKMARKS_TYPESAFE_MULTILABEL` | `0.6`         | Score floor for keeping an ADDITIONAL category |
 | `XBOOKMARKS_TYPESAFE_MAX_LABELS` | `3`           | Cap on categories per bookmark            |
 | `XBOOKMARKS_TYPESAFE_CONCURRENCY` | `8`          | Bookmarks classified in parallel          |
+| `XBOOKMARKS_RANKER`      | `off`                  | Turn the **ranking** pass on (`typesafe`, **paid**, see below) |
+| `XBOOKMARKS_RANKER_MODEL` | `jev-latest`          | TypeSafe model for the ranking pass       |
+| `XBOOKMARKS_RANKER_INTERESTS` | -                 | What you care about, in your own words; adds a relevance question to the rubric |
+| `XBOOKMARKS_RANKER_CONCURRENCY` | `6`             | Bookmarks scored in parallel              |
 
 Model names and effort levels are interpreted by the selected provider, so a provider that has no
 notion of an effort level simply ignores `XBOOKMARKS_TAXONOMY_EFFORT` rather than failing.
@@ -340,6 +351,47 @@ What it buys, when enabled:
   LLM to propose a new category, so it invents exactly where invention is needed.
 - **Speed.** Each bookmark is classified independently and in parallel, which is what makes
   `recategorize` cheap enough to iterate on.
+
+## Ranking bookmarks by learning value (optional, opt-in, **paid**)
+
+You save bookmarks to extract insights from them, so an optional pass scores each one for exactly
+that and lets the viewer order by it. It runs on the TypeSafe/Jev API's `Score` questions over the
+same structured `BookmarkContent` above - which is what that shape was built for.
+
+```
+XBOOKMARKS_RANKER=typesafe node dist/index.js rank --dry-run   # how many would be scored; no API call
+XBOOKMARKS_RANKER=typesafe node dist/index.js rank             # score them
+XBOOKMARKS_RANKER=typesafe node dist/index.js rank --limit 50  # a cost ceiling for a first look
+XBOOKMARKS_RANKER=typesafe node dist/index.js rank --all       # re-score everything, not just what is missing
+node dist/index.js clear-scores                                # drop every stored score (no key needed)
+```
+
+**It is off by default and never runs on its own.** It needs BOTH `XBOOKMARKS_RANKER=typesafe` and a
+`TYPESAFE_API_KEY` resolved through the usual credential chain, and the opt-in is checked first - a
+key left over from a categorization experiment cannot turn `rank` into a paid run by itself. Every
+run prints how it is billed before making a call, and `--dry-run` makes none at all. Nothing else in
+the tool reads any of this: syncing, categorizing, summaries and browsing are untouched whether it
+is on or off. As with the paid categorizer, your bookmark text is sent to a third-party hosted API.
+
+The rubric asks four well-scoped questions per bookmark - **learning value**, **insight density**,
+**durability** and **actionability** - plus a **relevance** question when you set
+`XBOOKMARKS_RANKER_INTERESTS` to what you care about. They ride in ONE request per bookmark
+(TypeSafe evaluates questions in parallel against one shared state), and the weighted result plus
+the model's own confidence is stored per bookmark. The levels each question offers are the real
+tuning surface and live in `src/rank/rubric.ts`.
+
+Running it again only scores what is missing, so it is resumable and never pays twice; changing the
+rubric (or your interests) changes its version tag, which is what makes those bookmarks stale and
+re-scored rather than silently sorted against two different scales.
+
+Once anything is scored:
+
+- the bookmark list exposes it - `score: { value, confidence, dimensions } | null`, null for a
+  bookmark that was never ranked, which is not the same as a score of zero;
+- `GET /api/categories/:id/bookmarks?sort=score` pages the category by it, highest first, with
+  unranked bookmarks last;
+- the viewer's Settings panel gains an **Order** control (Newest / Top score), and each ranked card
+  shows its rating, with the per-question breakdown behind it.
 
 ## Development
 

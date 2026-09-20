@@ -53,6 +53,43 @@ export interface Config {
   categorizer: CategorizerId;
   /** Tuning for the TypeSafe categorizer. Inert unless it is the selected one. */
   typesafe: TypeSafeConfig;
+  /**
+   * The opt-in bookmark ranking pass (env: XBOOKMARKS_RANKER, issue #62).
+   * `off` by default, and `off` means the `rank` command refuses to run at all:
+   * ranking is PAID per token, so it takes an explicit choice AND a resolved
+   * TYPESAFE_API_KEY before any call is made. Nothing else in the tool reads
+   * this - ingestion, categorization, summaries and browsing are untouched.
+   */
+  ranker: RankerConfig;
+}
+
+/** The ranking implementations the owner can choose between. `off` is the default. */
+export const RANKER_IDS = ['off', 'typesafe'] as const;
+export type RankerId = (typeof RANKER_IDS)[number];
+
+/**
+ * Knobs for the TypeSafe/Jev ranking pass (issue #62).
+ *
+ * Separate from {@link TypeSafeConfig} on purpose: the two passes ask different
+ * question types, are enabled independently, and an owner may well want the
+ * free Claude categorizer alongside a paid one-off ranking run. They do share
+ * the one `TYPESAFE_API_KEY`.
+ */
+export interface RankerConfig {
+  /** Which implementation ranks bookmarks; `off` disables ranking entirely. */
+  id: RankerId;
+  /** Model id; the SDK's own default (`jev-latest`) when unset. */
+  model?: string;
+  /** How many bookmarks are scored concurrently. */
+  concurrency: number;
+  /**
+   * What the owner is interested in, in their own words (env:
+   * XBOOKMARKS_RANKER_INTERESTS). Set, the rubric gains a relevance question;
+   * unset, it asks only about the content itself. See `buildRubric`.
+   */
+  interests?: string;
+  /** API root override, mainly for testing against a local stub. */
+  baseUrl?: string;
 }
 
 /** The assignment-pass implementations the owner can choose between. */
@@ -101,6 +138,8 @@ const DEFAULT_TYPESAFE_CONFIDENCE = 0.55;
 const DEFAULT_TYPESAFE_MULTILABEL = 0.6;
 const DEFAULT_TYPESAFE_MAX_LABELS = 3;
 const DEFAULT_TYPESAFE_CONCURRENCY = 8;
+const DEFAULT_RANKER: RankerId = 'off';
+const DEFAULT_RANKER_CONCURRENCY = 6;
 
 function intFromEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   const raw = env[name];
@@ -188,6 +227,25 @@ function categorizerFromEnv(env: NodeJS.ProcessEnv): CategorizerId {
   return match;
 }
 
+/**
+ * The ranker choice from the environment. An unrecognized value is treated as
+ * `off`, never as an opt-in: the failure mode of a typo must be "no ranking",
+ * not "unexpected spend".
+ */
+function rankerFromEnv(env: NodeJS.ProcessEnv): RankerConfig {
+  const raw = env.XBOOKMARKS_RANKER?.trim();
+  const id = (RANKER_IDS as readonly string[]).includes(raw ?? '')
+    ? (raw as RankerId)
+    : DEFAULT_RANKER;
+  return {
+    id,
+    model: optionalFromEnv(env, 'XBOOKMARKS_RANKER_MODEL'),
+    concurrency: intFromEnv(env, 'XBOOKMARKS_RANKER_CONCURRENCY', DEFAULT_RANKER_CONCURRENCY),
+    interests: optionalFromEnv(env, 'XBOOKMARKS_RANKER_INTERESTS'),
+    baseUrl: optionalFromEnv(env, 'XBOOKMARKS_TYPESAFE_BASE_URL'),
+  };
+}
+
 function typeSafeFromEnv(env: NodeJS.ProcessEnv): TypeSafeConfig {
   return {
     model: optionalFromEnv(env, 'XBOOKMARKS_TYPESAFE_MODEL'),
@@ -235,6 +293,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, store?: Credent
     pageSize: intFromEnv(env, 'XBOOKMARKS_PAGE_SIZE', DEFAULT_PAGE_SIZE),
     categorizer: categorizerFromEnv(env),
     typesafe: typeSafeFromEnv(env),
+    ranker: rankerFromEnv(env),
   };
 }
 
@@ -264,6 +323,36 @@ export function requireTypeSafeCredentials(store: CredentialStore): string {
         'XBOOKMARKS_CATEGORIZER=typesafe routes the assignment pass through the TypeSafe/Jev\n' +
         'API, which is PAID per token. Unset XBOOKMARKS_CATEGORIZER to go back to the\n' +
         'default Claude-subscription categorizer, which costs nothing per call.',
+    );
+  }
+  return resolved.value;
+}
+
+/**
+ * Assert the ranking pass is BOTH opted into and able to authenticate, before
+ * anything can spend money (issue #62).
+ *
+ * Two independent gates, and the order matters: an owner who never asked for
+ * ranking is told that first, so a stale `TYPESAFE_API_KEY` left in the
+ * environment from a categorization experiment can never turn `rank` into a
+ * paid run on its own. Only the key's PRESENCE is ever checked here; its value
+ * is returned to the caller and never logged (`AGENTS.md`).
+ */
+export function requireRankerCredentials(config: Config, store: CredentialStore): string {
+  if (config.ranker.id !== 'typesafe') {
+    throw new Error(
+      'Ranking is off. It is PAID per token, so it never runs unless you ask for it:\n' +
+        'set XBOOKMARKS_RANKER=typesafe to score bookmarks with the TypeSafe/Jev API.\n' +
+        'Everything else - syncing, categorizing, summaries, browsing - is unaffected.',
+    );
+  }
+  const resolved = store.get(TYPESAFE_API_KEY);
+  if (!resolved.value) {
+    throw new Error(
+      `${missingCredentialMessage([TYPESAFE_API_KEY])}\n\n` +
+        'XBOOKMARKS_RANKER=typesafe scores bookmarks through the TypeSafe/Jev API, which\n' +
+        'is PAID per token. Unset XBOOKMARKS_RANKER to leave ranking off; nothing else in\n' +
+        'the tool needs this key.',
     );
   }
   return resolved.value;

@@ -61,6 +61,14 @@
  *   `referenced_tweets.id` expansion already requested - no separate fetch.
  *   Never holds a quoted post that turned out to host an X Article - that
  *   body stays solely in `x_articles`, so it is not duplicated here.
+ * - `bookmark_scores` holds the opt-in Jev ranking pass's verdict for a
+ *   bookmark (issue #62), keyed by bookmark: one overall 0..1 `score`, the
+ *   model's own `confidence`, and the per-dimension 0..1 scores the rubric
+ *   asked for, kept individually so the weighting can be retuned (or a single
+ *   dimension surfaced) without re-spending on a paid pass. A row exists only
+ *   for a bookmark the owner actually paid to rank, so every consumer must
+ *   treat an absent row as "not scored" rather than "scored zero" - which is
+ *   why the viewer sorts unscored bookmarks last instead of first.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -162,6 +170,20 @@ CREATE TABLE IF NOT EXISTS quoted_posts (
   created_at      TEXT NOT NULL DEFAULT '',
   fetched_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS bookmark_scores (
+  bookmark_id     INTEGER PRIMARY KEY REFERENCES bookmarks(id) ON DELETE CASCADE,
+  score           REAL NOT NULL,
+  confidence      REAL NOT NULL,
+  dimensions      TEXT NOT NULL,
+  model           TEXT NOT NULL,
+  rubric_version  TEXT NOT NULL,
+  scored_at       TEXT NOT NULL
+);
+
+-- Sorting a category by score is a paged server-side query, so the ordering
+-- column is indexed rather than sorted in the client.
+CREATE INDEX IF NOT EXISTS idx_bookmark_scores_score ON bookmark_scores(score);
 `;
 
 /**

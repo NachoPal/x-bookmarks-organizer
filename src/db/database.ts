@@ -10,6 +10,7 @@ import {
 import type {
   ArticleLinkMetadata,
   ArticleRecord,
+  BookmarkScoreRecord,
   CategoryNode,
   QuotedPost,
   RawBookmark,
@@ -35,9 +36,21 @@ export interface CategoryBookmarkCounts {
   favorite: number;
 }
 
+/**
+ * How a paged bookmark list is ordered.
+ *
+ * `recent` is the default everywhere and is what the viewer has always done.
+ * `score` orders by the opt-in ranking pass's stored score, highest first
+ * (issue #62); a bookmark with no score row sorts LAST rather than as a zero,
+ * because "never ranked" is not the same claim as "ranked worthless". Both
+ * orders break ties on the original recency ordering, so paging is stable.
+ */
+export type BookmarkSortOrder = 'recent' | 'score';
+
 /** Paging + filtering options for {@link Database.getBookmarksForCategory}. */
 export interface BookmarkPageOptions {
   filter?: BookmarkFilter;
+  sort?: BookmarkSortOrder;
   offset?: number;
   limit?: number;
 }
@@ -167,6 +180,50 @@ interface SummaryRow {
 
 function toSummaryRecord(row: SummaryRow): SummaryRecord {
   return { bookmarkId: row.bookmark_id, summary: row.summary, generatedAt: row.generated_at };
+}
+
+interface BookmarkScoreRow {
+  bookmark_id: number;
+  score: number;
+  confidence: number;
+  dimensions: string;
+  model: string;
+  rubric_version: string;
+  scored_at: string;
+}
+
+/**
+ * Read a stored ranking row back. `dimensions` is JSON in a TEXT column so the
+ * rubric can gain or drop a dimension without a migration; a row written by a
+ * different rubric therefore has to be read tolerantly - anything that is not
+ * a plain object of finite numbers degrades to no dimensions rather than
+ * throwing and taking the whole bookmark list down with it.
+ */
+function toBookmarkScoreRecord(row: BookmarkScoreRow): BookmarkScoreRecord {
+  return {
+    bookmarkId: row.bookmark_id,
+    score: row.score,
+    confidence: row.confidence,
+    dimensions: parseDimensions(row.dimensions),
+    model: row.model,
+    rubricVersion: row.rubric_version,
+    scoredAt: row.scored_at,
+  };
+}
+
+function parseDimensions(raw: string): Record<string, number> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
+  }
+  return out;
 }
 
 interface ArticleLinkMetadataRow {
@@ -326,14 +383,18 @@ export class Database {
     else if (opts.filter === 'read') where.push('b.read = 1');
     else if (opts.filter === 'favorite') where.push('b.favorite = 1');
 
+    // Sorting by score is a LEFT JOIN, not an inner one: an unranked bookmark
+    // must still appear in the list, just after every ranked one.
+    const scored = opts.sort === 'score';
     let sql = `WITH RECURSIVE subtree(id) AS (
          SELECT ?
          UNION
          SELECT c.id FROM categories c JOIN subtree s ON c.parent_id = s.id
        )
        SELECT b.* FROM bookmarks b
+       ${scored ? 'LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id' : ''}
        WHERE ${where.join(' AND ')}
-       ORDER BY b.ingested_at DESC, b.id DESC`;
+       ORDER BY ${scored ? 'sc.score IS NULL, sc.score DESC, ' : ''}b.ingested_at DESC, b.id DESC`;
     const params: (number | string)[] = [categoryId];
     if (opts.limit != null) {
       sql += ' LIMIT ? OFFSET ?';
@@ -907,5 +968,93 @@ export class Database {
   /** Delete one bookmark's cached summary; true when there was one to remove. */
   deleteSummary(bookmarkId: number): boolean {
     return this.db.prepare('DELETE FROM summaries WHERE bookmark_id = ?').run(bookmarkId).changes > 0;
+  }
+
+  // --- Ranking scores (issue #62) -----------------------------------------
+
+  /** The stored ranking verdict for one bookmark, if it has been ranked. */
+  getBookmarkScore(bookmarkId: number): BookmarkScoreRecord | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM bookmark_scores WHERE bookmark_id = ?')
+      .get(bookmarkId) as BookmarkScoreRow | undefined;
+    return row ? toBookmarkScoreRecord(row) : undefined;
+  }
+
+  /**
+   * The stored ranking verdicts for a page of bookmarks, keyed by bookmark id.
+   * Absent ids simply have no entry - the viewer renders those as unranked.
+   */
+  getBookmarkScores(bookmarkIds: number[]): Map<number, BookmarkScoreRecord> {
+    const map = new Map<number, BookmarkScoreRecord>();
+    if (bookmarkIds.length === 0) return map;
+    const placeholders = bookmarkIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT * FROM bookmark_scores WHERE bookmark_id IN (${placeholders})`)
+      .all(...bookmarkIds) as BookmarkScoreRow[];
+    for (const row of rows) map.set(row.bookmark_id, toBookmarkScoreRecord(row));
+    return map;
+  }
+
+  /** Store (or replace) one bookmark's ranking verdict. */
+  saveBookmarkScore(record: BookmarkScoreRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO bookmark_scores
+           (bookmark_id, score, confidence, dimensions, model, rubric_version, scored_at)
+         VALUES (@bookmarkId, @score, @confidence, @dimensions, @model, @rubricVersion, @scoredAt)
+         ON CONFLICT(bookmark_id) DO UPDATE SET
+           score = excluded.score,
+           confidence = excluded.confidence,
+           dimensions = excluded.dimensions,
+           model = excluded.model,
+           rubric_version = excluded.rubric_version,
+           scored_at = excluded.scored_at`,
+      )
+      .run({ ...record, dimensions: JSON.stringify(record.dimensions) });
+  }
+
+  /**
+   * The bookmarks a ranking run should score, oldest-ingested first so a run
+   * interrupted partway through resumes in a stable order.
+   *
+   * By default that is every bookmark with no score row, plus any scored by a
+   * DIFFERENT rubric version - mixing two rubrics' scales in one sort would
+   * make the ordering meaningless. `rescoreAll` returns every bookmark instead,
+   * which is the only way to re-spend on rows that are already current.
+   */
+  getBookmarksToScore(opts: {
+    rubricVersion: string;
+    rescoreAll?: boolean;
+    limit?: number;
+  }): StoredBookmark[] {
+    // Positional params, bound only for the clauses actually emitted:
+    // better-sqlite3 rejects a bound value the statement has no slot for.
+    const params: (string | number)[] = [];
+    let sql = `SELECT b.* FROM bookmarks b
+         LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id`;
+    if (!opts.rescoreAll) {
+      sql += ' WHERE sc.bookmark_id IS NULL OR sc.rubric_version <> ?';
+      params.push(opts.rubricVersion);
+    }
+    sql += ' ORDER BY b.ingested_at ASC, b.id ASC';
+    if (opts.limit != null) {
+      sql += ' LIMIT ?';
+      params.push(opts.limit);
+    }
+    const rows = this.db.prepare(sql).all(...params) as BookmarkRow[];
+    return rows.map(toStoredBookmark);
+  }
+
+  /** How many bookmarks currently carry a ranking score. */
+  countScoredBookmarks(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM bookmark_scores').get() as { n: number }).n;
+  }
+
+  /**
+   * Delete every stored ranking score. Explicit-only and idempotent - the way
+   * to abandon a rubric rather than a migration, mirroring `clear-summaries`.
+   */
+  clearBookmarkScores(): number {
+    return this.db.prepare('DELETE FROM bookmark_scores').run().changes;
   }
 }

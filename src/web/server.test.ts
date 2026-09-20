@@ -828,3 +828,96 @@ describe('bookmark content API', () => {
     expect(body.hasMore).toBe(true);
   });
 });
+
+describe('ranking score on the bookmark API (issue #62)', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let categoryId: number;
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    categoryId = db.getOrCreateCategory('AI', null, '2024-01-01T00:00:00.000Z').id;
+    db.storeCategorizedBatch([bm('low')], () => [categoryId], '2024-01-01T00:00:00.000Z');
+    db.storeCategorizedBatch([bm('high')], () => [categoryId], '2024-01-02T00:00:00.000Z');
+    app = buildServer(db);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  function score(postId: string, value: number): void {
+    db.saveBookmarkScore({
+      bookmarkId: db.getBookmarkByPostId(postId)!.id,
+      score: value,
+      confidence: 0.8,
+      dimensions: { learning_value: value },
+      model: 'jev-1.13.0',
+      rubricVersion: 'v1',
+      scoredAt: '2026-01-01T00:00:00.000Z',
+    });
+  }
+
+  it('ships score: null for a library that was never ranked, and keeps the default ordering', async () => {
+    const res = await app.inject({ url: `/api/categories/${categoryId}/bookmarks` });
+    const body = res.json() as { sort: string; bookmarks: { postId: string; score: unknown }[] };
+    expect(body.sort).toBe('recent');
+    expect(body.bookmarks.map((b) => b.postId)).toEqual(['high', 'low']);
+    expect(body.bookmarks.every((b) => b.score === null)).toBe(true);
+  });
+
+  it('exposes the stored score, its confidence and its per-dimension breakdown', async () => {
+    score('high', 0.9);
+    const res = await app.inject({ url: `/api/categories/${categoryId}/bookmarks` });
+    const body = res.json() as { bookmarks: { postId: string; score: unknown }[] };
+    expect(body.bookmarks.find((b) => b.postId === 'high')!.score).toEqual({
+      value: 0.9,
+      confidence: 0.8,
+      dimensions: { learning_value: 0.9 },
+    });
+    expect(body.bookmarks.find((b) => b.postId === 'low')!.score).toBeNull();
+  });
+
+  it('orders by score with ?sort=score, unscored last', async () => {
+    score('low', 0.1);
+    score('high', 0.9);
+    db.storeCategorizedBatch([bm('unranked')], () => [categoryId], '2024-01-03T00:00:00.000Z');
+
+    const res = await app.inject({ url: `/api/categories/${categoryId}/bookmarks?sort=score` });
+    const body = res.json() as { sort: string; bookmarks: { postId: string }[] };
+    expect(body.sort).toBe('score');
+    expect(body.bookmarks.map((b) => b.postId)).toEqual(['high', 'low', 'unranked']);
+  });
+
+  it('falls back to recency for an unrecognized sort, never silently reordering the library', async () => {
+    score('low', 0.1);
+    const res = await app.inject({ url: `/api/categories/${categoryId}/bookmarks?sort=whatever` });
+    const body = res.json() as { sort: string; bookmarks: { postId: string }[] };
+    expect(body.sort).toBe('recent');
+    expect(body.bookmarks.map((b) => b.postId)).toEqual(['high', 'low']);
+  });
+
+  it('keeps the filter and the counts intact when sorting by score', async () => {
+    score('high', 0.9);
+    db.markRead(db.getBookmarkByPostId('high')!.id);
+    const res = await app.inject({
+      url: `/api/categories/${categoryId}/bookmarks?sort=score&filter=unread`,
+    });
+    const body = res.json() as {
+      counts: { total: number; unread: number };
+      total: number;
+      bookmarks: { postId: string }[];
+    };
+    expect(body.bookmarks.map((b) => b.postId)).toEqual(['low']);
+    expect(body.counts).toMatchObject({ total: 2, unread: 1 });
+    expect(body.total).toBe(1);
+  });
+
+  it('reports how much of the library is ranked, so the viewer can say whether sorting will order anything', async () => {
+    score('high', 0.9);
+    const res = await app.inject({ url: '/api/setup' });
+    expect((res.json() as { ranking: unknown }).ranking).toEqual({ scored: 1, total: 2 });
+  });
+});
