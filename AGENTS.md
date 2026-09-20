@@ -183,7 +183,8 @@ checker pass:
 `python3 ~/.claude/skills/building-frontends/scripts/check_frontend.py src/web/public/*` must be PASS.
 All colors/spacing are CSS custom properties in `styles.css`; consume `var(--token)`, never raw
 literals in component rules. The viewer is an app shell: a sticky top bar, a full-width filter tab
-bar under it, a category drawer that pushes the content aside (overlays it only on narrow screens),
+bar under it, a category column that the content shrinks to make room for (it overlays the content
+only on narrow screens),
 and an independently scrolling content pane; keep tree labels wrapping inside the sidebar (flex
 children need `min-width: 0`) so counts never overflow.
 
@@ -207,15 +208,30 @@ its `aria-labelledby` follows the active tab (`renderFilterTabs` in `app.js`). I
 visible - hiding it on an empty category would jump the layout. The active tab is marked by an
 underline AND a color, never color alone.
 
-The **category sidebar PUSHES the ENTIRE view on wide screens** (issues #65, #78): at
-`min-width: 821px` the sidebar is a full-height fixed panel and `.viewer` (top bar + tab bar + posts,
-one unit) gets `margin-left: var(--sidebar-width)` when it is open, so the title and bar move with
-the posts. The slide is animated with a transform-only FLIP: the margin changes once (a single
-relayout), and a `viewer-slide-open/close` keyframe starts the viewer at its previous on-screen
-position and glides it home in step with the sidebar's own `translateX`; `data-sidebar-anim`
-(`playViewerSlide` in `app.js`) names the run. Never animate width/margin - that relayouts every
-card and embedded tweet per frame. See the "App body / sidebar" block in `styles.css`. At `<=820px`
-it remains the overlay drawer with its scrim and auto-dismiss-on-pick; the viewer never moves. A
+The **category sidebar RESIZES the two columns on wide screens** (issues #65, #78, #86): at
+`min-width: 821px` `body` is a two-column grid - the sidebar track, then `.viewer` (top bar + tab
+bar + posts, one unit) - and opening transitions the ONE declaration
+`grid-template-columns: 0 minmax(0, 1fr)` -> `var(--sidebar-width) minmax(0, 1fr)`. The sidebar
+grows while the content column gives up exactly that width, out of a single interpolation, so the
+two can never drift apart. `app.js` only sets the `data-sidebar` body attribute; there is no
+keyframe to start or clean up. See the "App body / sidebar" block in `styles.css` (authoritative).
+Do NOT go back to sliding the whole `.viewer` with a transform FLIP (the #78 `playViewerSlide` /
+`viewer-slide-*` approach, removed in #86): it translates the top bar and tab bar off-screen behind
+`body`'s `overflow: hidden`, which reads as the entire app re-rendering as one block - the owner
+rejected it on sight.
+Resizing a column IS a layout animation, and the reason #78 avoided one is real: relayouting a
+container that owns embedded tweets re-lays-out every iframe per frame. Two things, both
+load-bearing, stop that here. `.sidebar-inner` is held at the FULL `--sidebar-width` and anchored to
+the track's right edge, so the shrinking track only CLIPS it and no tree label or count ever
+rewraps. And the posts live in `.content-inner`, a fixed `--content-measure` block with auto
+margins, so a card's width is CONSTANT through the whole run - only the empty space around it
+changes, and an iframe whose box never changes size is never re-laid-out (`.bookmark-card` also
+carries `contain: layout`). Measured on the dev seed with 55 cards and a live X embed mounted:
+zero frames over 20ms in either direction, and the embed's width identical on every frame. Keep
+both properties if you touch this. (Animatable grid tracks: Firefox 66+, Chrome/Edge 107+,
+Safari 16.1+; the track count never changes, which is what keeps the two lists interpolable.)
+At `<=820px` it remains the FIXED overlay drawer with its scrim and auto-dismiss-on-pick, sliding on
+transform; the viewer never moves and never resizes. A
 closed drawer gets `inert` from JS (not just an off-screen transform) so it leaves the tab order.
 The empty-state prompts (`[data-open-categories]`: the landing card and the top-bar "Select a
 category" button) open it through the same `setCollapsed`.

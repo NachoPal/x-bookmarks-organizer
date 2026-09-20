@@ -465,13 +465,14 @@
     persistSelection(); // nothing (valid) to restore: forget a dead selection
   }
 
-  // ---- sidebar (pushes the content, issue #65) ---------------------------
-  // On wide screens the drawer is in flow: opening it displaces the main
-  // column (tab bar + posts) to the right, where it re-centers in the
-  // narrower space - nothing is hidden underneath it. That is all CSS; the
-  // state here is just the body attribute. On narrow screens it stays the
-  // overlay drawer with its scrim (a pushed column would have no room
-  // left), which is also where the *auto-dismiss on pick* applies.
+  // ---- sidebar (resizes the content, issues #65, #86) --------------------
+  // On wide screens the sidebar is an in-flow column beside `.viewer`:
+  // opening it grows that column and shrinks the viewer by the same width,
+  // where the posts re-center in the narrower space - nothing is hidden
+  // underneath it. That is all CSS; the state here is just the body
+  // attribute. On narrow screens it stays the overlay drawer with its scrim
+  // (a resized column would have no room left), which is also where the
+  // *auto-dismiss on pick* applies.
 
   const bodyEl = document.body;
   const contentEl = document.getElementById("bookmarks"); // the scrolling pane
@@ -496,22 +497,15 @@
     return bodyEl.getAttribute("data-sidebar") === "collapsed";
   }
 
-  // The wide-screen push slides the whole viewer with a transform-only
-  // keyframe (styles.css `viewer-slide-*`); this just names the run and clears
-  // it afterwards. Silent (initial) changes and the narrow overlay drawer,
-  // which has its own transition, never animate the viewer.
-  const viewerEl = document.getElementById("viewer");
-  function playViewerSlide(collapsed) {
-    bodyEl.removeAttribute("data-sidebar-anim");
-    if (!viewerEl || drawerQuery.matches) return;
-    void viewerEl.offsetWidth; // restart the keyframe if a run is in flight
-    bodyEl.setAttribute("data-sidebar-anim", collapsed ? "close" : "open");
-  }
+  // The open/close animation is entirely CSS (issue #86): on wide screens
+  // `body`'s `grid-template-columns` transitions, so the sidebar track grows
+  // and the viewer's shrinks out of one interpolation; on narrow screens the
+  // fixed overlay drawer transitions its transform. Either way the body
+  // attribute below is the only state JS owns - there is no keyframe to name,
+  // start or clean up.
 
   function setCollapsed(collapsed, opts) {
     const options = opts || {};
-    const changed = isCollapsed() !== collapsed;
-    if (changed && !options.silent) playViewerSlide(collapsed);
     if (collapsed) bodyEl.setAttribute("data-sidebar", "collapsed");
     else bodyEl.removeAttribute("data-sidebar");
 
@@ -538,11 +532,6 @@
     setCollapsed(readStoredCollapsed(), { silent: true });
 
     toggleBtn.addEventListener("click", () => setCollapsed(!isCollapsed()));
-    if (viewerEl) {
-      viewerEl.addEventListener("animationend", (e) => {
-        if (e.target === viewerEl) bodyEl.removeAttribute("data-sidebar-anim");
-      });
-    }
     // The empty-state prompts (landing card + top-bar title) open the same
     // animated sidebar as the menu toggle.
     const openFromPrompt = () => {
