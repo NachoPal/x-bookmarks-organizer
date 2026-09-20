@@ -14,7 +14,6 @@
   const listRoot = document.getElementById("bookmark-list");
   let listEl = listRoot;
   const titleEl = document.getElementById("content-title");
-  const countEl = document.getElementById("content-count");
   const searchInput = document.getElementById("category-search");
   const searchClear = document.getElementById("category-search-clear");
   const filterTabsEl = document.getElementById("filter-tabs");
@@ -196,7 +195,7 @@
 
     activatePane(entry.pane);
     if (categoryCounts.total === 0) {
-      countEl.textContent = "";
+      renderCountLine();
       stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
       return;
     }
@@ -890,23 +889,37 @@
     titleEl.title = path.join(" › ");
   }
 
-  /** How many bookmarks match the active tab in this category. */
-  function filteredTotal() {
-    if (activeFilter === "unread") return categoryCounts.unread;
-    if (activeFilter === "read") return categoryCounts.total - categoryCounts.unread;
-    if (activeFilter === "favorite") return categoryCounts.favorite || 0;
-    return categoryCounts.total;
+  /** Per-tab counts for the selected category, derived from categoryCounts. */
+  function tabCounts() {
+    return window.XBOTreeCounts.tabCounts(categoryCounts);
   }
 
-  /** Count line reflecting the active tab: total when All, filtered vs total otherwise. */
+  /** How many bookmarks match the active tab in this category. */
+  function filteredTotal() {
+    return tabCounts()[activeFilter];
+  }
+
+  /** Paint each filter tab's count badge (issue #72). */
   function renderCountLine() {
-    const total = categoryCounts.total;
-    if (activeFilter === "all") {
-      countEl.textContent = `${total} bookmark${total === 1 ? "" : "s"} · ${categoryCounts.unread} unread`;
-    } else {
-      const noun =
-        activeFilter === "unread" ? "unread" : activeFilter === "read" ? "read" : "favorited";
-      countEl.textContent = `${filteredTotal()} ${noun} · ${total} total`;
+    const counts = tabCounts();
+    for (const tab of filterTabButtons()) {
+      const badge = tab.querySelector(".filter-tab-count");
+      if (!badge) continue;
+      const n = counts[tab.dataset.filter];
+      badge.textContent = String(n);
+      tab.setAttribute(
+        "aria-label",
+        `${tab.querySelector(".filter-tab-label").textContent}, ${n}`,
+      );
+    }
+  }
+
+  /** No category is settled yet (loading): show no counts rather than stale ones. */
+  function clearTabCounts() {
+    for (const tab of filterTabButtons()) {
+      const badge = tab.querySelector(".filter-tab-count");
+      if (badge) badge.textContent = "";
+      tab.removeAttribute("aria-label");
     }
   }
 
@@ -941,7 +954,7 @@
     pageOffset = 0;
     pageHasMore = false;
     currentViewBookmarks = [];
-    countEl.textContent = "";
+    clearTabCounts();
     mountNewPane();
     stateMessage(listEl, "loading", "Loading bookmarks…");
 
@@ -965,7 +978,7 @@
 
     listEl.replaceChildren();
     if (categoryCounts.total === 0) {
-      countEl.textContent = "";
+      renderCountLine();
       stateMessage(listEl, "empty", "No bookmarks are filed under this category.");
       return;
     }

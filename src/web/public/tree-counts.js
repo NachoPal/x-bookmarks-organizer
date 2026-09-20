@@ -64,7 +64,22 @@
     return updated;
   }
 
-  const api = { buildCategoryIndex, ancestorChainIds, affectedCategoryIds, applyCountDelta };
+  /**
+   * Per-tab badge counts for one category's rolled-up counts (issue #72).
+   * Read is derived (total - unread); favorite may be absent on old payloads.
+   */
+  function tabCounts(counts) {
+    const total = counts.total || 0;
+    const unread = counts.unread || 0;
+    return {
+      unread,
+      read: Math.max(0, total - unread),
+      all: total,
+      favorite: counts.favorite || 0,
+    };
+  }
+
+  const api = { tabCounts, buildCategoryIndex, ancestorChainIds, affectedCategoryIds, applyCountDelta };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
