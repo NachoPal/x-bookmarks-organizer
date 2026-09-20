@@ -65,15 +65,11 @@
 
   /* Type */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  /* Text-size setting (settings panel): one multiplier every --text-*
-     token derives from, so a single value scales the viewer's type
-     without disturbing the spacing scale or any layout measure. */
-  --text-scale: 1;
-  --text-body: calc(clamp(0.9375rem, 0.9rem + 0.2vw, 1.0625rem) * var(--text-scale));
-  --text-title: calc(clamp(1.25rem, 1.1rem + 0.8vw, 1.75rem) * var(--text-scale));
-  --text-h2: calc(clamp(1.05rem, 1rem + 0.3vw, 1.25rem) * var(--text-scale));
-  --text-small: calc(clamp(0.8125rem, 0.8rem + 0.1vw, 0.875rem) * var(--text-scale));
-  --text-post: calc(clamp(0.9rem, 0.885rem + 0.08vw, 0.9375rem) * var(--text-scale));
+  --text-body: clamp(0.9375rem, 0.9rem + 0.2vw, 1.0625rem);
+  --text-title: clamp(1.25rem, 1.1rem + 0.8vw, 1.75rem);
+  --text-h2: clamp(1.05rem, 1rem + 0.3vw, 1.25rem);
+  --text-small: clamp(0.8125rem, 0.8rem + 0.1vw, 0.875rem);
+  --text-post: clamp(0.9rem, 0.885rem + 0.08vw, 0.9375rem);
   --leading-body: 1.5;
   --leading-post: 1.35;
 
@@ -93,8 +89,12 @@
   /* Fixed card column width (like X, ~550-600px): every card renders at this
      same width regardless of its post's content length. */
   --post-card-measure: 36rem;
+  /* Post-size setting (settings panel): drives `zoom` on the bookmark card,
+     which is the only way to resize the embedded tweet - X owns the widget's
+     iframe and its font cannot be restyled from here. */
+  --post-scale: 1;
   --reader-measure: 38rem;
-  --text-reader: calc(clamp(1rem, 0.95rem + 0.2vw, 1.1875rem) * var(--text-scale));
+  --text-reader: clamp(1rem, 0.95rem + 0.2vw, 1.1875rem);
   --leading-reader: 1.7;
 
   /* Stacking */
@@ -1030,6 +1030,15 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   display: none;
 }
 .bookmark-card {
+  /* The post-size setting. `zoom` (not `transform: scale`) because it scales
+     the LAYOUT box as well as the rendering: transform leaves the original
+     box behind, so scaled-down cards strand a gap and scaled-up ones overlap
+     their neighbour. It also re-renders rather than re-rasterizing, so text
+     stays crisp, and Chrome carries the zoom into the cross-origin X embed,
+     which is the whole point - the tweet itself gets bigger or smaller.
+     A browser without `zoom` support simply ignores it: cards render at
+     their normal size and nothing else breaks. */
+  zoom: var(--post-scale);
   min-width: 0;
   /* Uniform fixed-width column: every card is exactly this wide (the embed
      inside may cap narrower on its own), centered in the content area. */

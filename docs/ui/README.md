@@ -138,7 +138,7 @@ categories-menu toggle (left), the selected category's title + counts on one lin
 light/dark, settings gear). The explanatory blurb is gone. The categories sidebar is
 an overlay drawer at *every* width, so the content column stays centered and never
 shifts when it opens or closes. The gear opens a settings popover holding a persisted
-text-size control (Small / Medium / Large) plus the theme and category-color switches.
+post-size control (Small / Medium / Large) plus the theme and category-color switches.
 Same seeded dataset (`npm run seed:dev`), never real bookmarks.
 
 | File | What it shows |
@@ -147,10 +147,29 @@ Same seeded dataset (`npm run seed:dev`), never real bookmarks.
 | `topbar-dark-desktop.png` | **Desktop, dark.** Same bar on dark surfaces; the theme icon is the moon. |
 | `sidebar-open-overlay-light.png` | **Drawer open, light.** The toggle icon has animated to an X; the drawer overlays the content and the card column has **not** moved (compare against the collapsed shot). |
 | `sidebar-open-overlay-dark.png` | **Drawer open, dark.** Same, dark theme. |
-| `settings-panel-light.png` | **Settings popover, light.** Text size (Small/Medium/Large), Dark theme and Category colors switches; the gear shows its open state. |
+| `settings-panel-light.png` | **Settings popover, light.** Post size (Small/Medium/Large), Dark theme and Category colors switches; the gear shows its open state. |
 | `settings-panel-dark.png` | **Settings popover, dark.** Dark theme switch on; both bar and panel controls stay in sync. |
-| `text-size-small.png` | **Text size Small.** Post and interface text scaled down via `--text-scale`; card width and spacing unchanged. |
-| `text-size-large.png` | **Text size Large.** Same view scaled up; the choice persists across reloads. |
 | `topbar-narrow-400-light.png` | **~400px, light.** The bar sheds last-sync, the counts and the ancestor crumb; toggle + truncated title + filter + search + gear still fit one line with no overflow. |
 | `topbar-narrow-400-dark.png` | **~400px, dark.** Same, dark theme. |
 | `sidebar-overlay-narrow-400-dark.png` | **~400px, drawer open.** Full-height overlay drawer with its scrim; the content behind it has not reflowed. |
+
+## Post size — resizing the post, not the app chrome (issue #37, follow-up)
+
+The settings control was reworked: scaling the viewer's own text is what the browser's zoom
+already does, so the setting now resizes the **post card**, the embedded X post included. It
+drives `--post-scale`, which is applied as `zoom` on `.bookmark-card` — `zoom` rather than
+`transform: scale` because it scales the layout box as well as the rendering (so scaled cards
+leave no gap and never overlap), it re-renders instead of re-rasterizing (so text stays crisp),
+and Chrome carries it into the cross-origin X embed, which is the only way to reach inside a
+widget X owns. In the same pass the sidebar's redundant close button was removed — the top bar's
+animated menu toggle is the single close control. Captured against the seeded dataset, on the
+category that contains a real public post id so a live X embed is in frame.
+
+| File | What it shows |
+| --- | --- |
+| `post-size-small.png` | **Small (0.875), light.** Cards and the live X embed render smaller; the top bar and sidebar are untouched — only the posts scale. |
+| `post-size-medium.png` | **Medium (1), light.** The unscaled baseline. |
+| `post-size-large.png` | **Large (1.15), light.** The same embedded tweet renders larger — avatar, text and the reply row all scale, and stay crisp. |
+| `post-size-small-dark.png` | **Small, dark.** Same behavior on dark surfaces. |
+| `post-size-large-dark.png` | **Large, dark.** |
+| `post-size-large-narrow-400.png` | **Large at ~400px.** The card cannot grow wider than the column, so the post content scales inside the same footprint — no horizontal overflow at any step. |

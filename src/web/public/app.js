@@ -290,7 +290,6 @@
   const contentEl = document.getElementById("bookmarks"); // the scrolling pane
   const sidebarEl = document.getElementById("sidebar");
   const toggleBtn = document.getElementById("sidebar-toggle");
-  const closeBtn = document.getElementById("sidebar-close");
   const backdropEl = document.getElementById("sidebar-backdrop");
   const searchOpenBtn = document.getElementById("search-open");
   const drawerQuery = window.matchMedia("(max-width: 820px)");
@@ -338,7 +337,6 @@
     setCollapsed(readStoredCollapsed(), { silent: true });
 
     toggleBtn.addEventListener("click", () => setCollapsed(!isCollapsed()));
-    closeBtn.addEventListener("click", () => setCollapsed(true));
     backdropEl.addEventListener("click", () => setCollapsed(true));
 
     // The bar's search control is an entry point to the drawer's own filter
@@ -360,7 +358,7 @@
   }
 
   // ---- settings popover (issue #37) --------------------------------------
-  // The gear in the bar's right region. Canonical home of the text-size,
+  // The gear in the bar's right region. Canonical home of the post-size,
   // theme and category-color settings; the bar's theme/colors icon buttons
   // are wide-screen quick access to exactly the same state.
   const settingsToggleBtn = document.getElementById("settings-toggle");
@@ -403,33 +401,36 @@
     });
   }
 
-  // ---- text size (issue #37) ---------------------------------------------
-  // One --text-scale multiplier on :root that every --text-* token derives
-  // from, so the whole viewer's type resizes without any layout measure
-  // moving. Persisted through XBOTextSize's guarded storage.
-  const textSizeEl = document.getElementById("text-size");
+  // ---- post size (issue #37) ---------------------------------------------
+  // A --post-scale multiplier on :root driving `zoom` on the bookmark card,
+  // so the POST resizes - the embedded tweet included. Scaling the app's own
+  // text was the first cut and is what the browser's zoom already does; what
+  // is actually wanted is a bigger or smaller tweet, and since X owns the
+  // embed's iframe, zooming the card is the only way to reach inside it.
+  // Persisted through XBOPostScale's guarded storage.
+  const postScaleEl = document.getElementById("post-scale");
 
-  function applyTextSize(id) {
-    if (!window.XBOTextSize) return;
+  function applyPostScale(id) {
+    if (!window.XBOPostScale) return;
     document.documentElement.style.setProperty(
-      "--text-scale",
-      String(window.XBOTextSize.scaleFor(id)),
+      "--post-scale",
+      String(window.XBOPostScale.scaleFor(id)),
     );
-    if (!textSizeEl) return;
-    textSizeEl.querySelectorAll(".seg-input").forEach((input) => {
+    if (!postScaleEl) return;
+    postScaleEl.querySelectorAll(".seg-input").forEach((input) => {
       input.checked = input.value === id;
     });
   }
 
-  function initTextSize() {
-    if (!window.XBOTextSize) return;
-    applyTextSize(window.XBOTextSize.readTextSize(window.localStorage));
-    if (!textSizeEl) return;
-    textSizeEl.querySelectorAll(".seg-input").forEach((input) => {
+  function initPostScale() {
+    if (!window.XBOPostScale) return;
+    applyPostScale(window.XBOPostScale.readPostScale(window.localStorage));
+    if (!postScaleEl) return;
+    postScaleEl.querySelectorAll(".seg-input").forEach((input) => {
       input.addEventListener("change", () => {
         if (!input.checked) return;
-        window.XBOTextSize.writeTextSize(window.localStorage, input.value);
-        applyTextSize(input.value);
+        window.XBOPostScale.writePostScale(window.localStorage, input.value);
+        applyPostScale(input.value);
       });
     });
   }
@@ -1837,7 +1838,7 @@
   // ---- init --------------------------------------------------------------
   initSidebar();
   initSettingsPanel();
-  initTextSize();
+  initPostScale();
   initThemeToggle();
   initColorToggle();
   initSearch();
