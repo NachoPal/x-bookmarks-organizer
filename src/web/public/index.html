@@ -162,6 +162,29 @@
             </div>
 
             <div class="settings-group">
+              <span class="settings-label" id="sort-order-label">Order</span>
+              <div
+                id="sort-order"
+                class="segmented settings-segmented"
+                role="radiogroup"
+                aria-labelledby="sort-order-label"
+              >
+                <label class="seg">
+                  <input class="seg-input" type="radio" name="sort-order" value="recent" checked />
+                  <span class="seg-label">Newest</span>
+                </label>
+                <label class="seg">
+                  <input class="seg-input" type="radio" name="sort-order" value="score" />
+                  <span class="seg-label">Top score</span>
+                </label>
+              </div>
+              <p id="sort-order-hint" class="settings-hint">
+                Top score needs the ranking pass, which is paid per token and runs from the
+                command line: <code>node dist/index.js rank</code>.
+              </p>
+            </div>
+
+            <div class="settings-group">
               <span class="settings-label" id="settings-categorization-label">Categorization</span>
               <p class="settings-hint">How a sync sorts new bookmarks into the tree.</p>
               <div
@@ -489,6 +512,7 @@
     <script src="tree-counts.js" defer></script>
     <script src="read-toggle.js" defer></script>
     <script src="filter-cache.js" defer></script>
+    <script src="sort-order.js" defer></script>
     <script src="categorization.js" defer></script>
     <script src="app.js" defer></script>
   </body>

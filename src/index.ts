@@ -16,6 +16,8 @@ import { backfillArticlePreviews } from './articles/backfill';
 import { HttpArticleFetcher } from './articles/fetch-article';
 import { backfillXArticles } from './x/backfill-articles';
 import { refetchFailedArticles } from './articles/refetch';
+import { buildRanker, reportRankerBilling } from './rank/build';
+import { planRanking, rankBookmarks } from './rank/ranker';
 
 const HELP = `X Bookmarks Organizer
 
@@ -48,6 +50,18 @@ Usage:
                                   each one that now has a body so Summarize
                                   regenerates it with the article. Other
                                   summaries are kept.
+  node dist/index.js rank [--all] [--dry-run] [--limit N]
+                                  Score stored bookmarks by learning value with
+                                  the TypeSafe/Jev API and store the score, so
+                                  the viewer can sort by it. PAID per token and
+                                  OFF unless XBOOKMARKS_RANKER=typesafe is set
+                                  AND TYPESAFE_API_KEY resolves; --dry-run says
+                                  how many would be scored without calling the
+                                  API. Scores only what is missing, so it is
+                                  resumable; --all re-scores everything.
+  node dist/index.js clear-scores
+                                  Delete every stored ranking score. No
+                                  secrets, no network - just the DB.
   node dist/index.js clear-summaries
                                   Wipe all cached bookmark summaries so they
                                   regenerate cleanly under the current logic.
@@ -62,6 +76,12 @@ vault such as \`av inject\`, a shell export, a systemd unit, CI secrets), a
 Categorization and summaries run through the LLM provider named by
 XBOOKMARKS_LLM_PROVIDER (default: claude-cli, your Claude Code subscription via
 the local claude CLI).
+
+XBOOKMARKS_RANKER turns the optional ranking pass on (\`typesafe\`). It is the
+only feature with no free implementation - it is PAID per token - so it is off by
+default and the \`rank\` command refuses to run without both the opt-in and
+TYPESAFE_API_KEY. XBOOKMARKS_RANKER_INTERESTS, when set, adds a relevance
+question about what you say you care about.
 
 XBOOKMARKS_CATEGORIZER picks which implementation files bookmarks into the tree
 (the assignment pass) - claude-cli (default) or typesafe. \`typesafe\` routes that
@@ -200,6 +220,57 @@ async function cmdClearSummaries(db: Database): Promise<void> {
   console.log(`Removed ${removed} cached summar${removed === 1 ? 'y' : 'ies'}.`);
 }
 
+/**
+ * Score stored bookmarks by learning value (issue #62).
+ *
+ * Paid-safe by construction: `buildRanker` refuses unless ranking was explicitly
+ * turned on AND a key resolves, the billing line is printed before any call, and
+ * `--dry-run` reports the size of a run while making no call at all. Ranking
+ * touches only the score table - no bookmark, category or taxonomy row.
+ */
+async function cmdRank(config: Config, db: Database, store: CredentialStore): Promise<void> {
+  const dryRun = process.argv.includes('--dry-run');
+  const rescoreAll = process.argv.includes('--all');
+  const limitArg = process.argv.indexOf('--limit');
+  const parsedLimit = limitArg === -1 ? NaN : Number.parseInt(process.argv[limitArg + 1] ?? '', 10);
+  const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+
+  const { scorer, rubric } = buildRanker(config, store);
+  const options = {
+    rubric,
+    concurrency: config.ranker.concurrency,
+    ...(rescoreAll ? { rescoreAll: true } : {}),
+    ...(limit != null ? { limit } : {}),
+  };
+
+  if (dryRun) {
+    const planned = planRanking(db, options);
+    console.log(
+      `Dry run: ${planned.length} bookmark(s) would be scored against rubric ${rubric.version} ` +
+        `(${rubric.dimensions.length} question(s) each, one request per bookmark). No API call was made.`,
+    );
+    console.log(`${db.countScoredBookmarks()} of ${db.getBookmarkCount()} bookmark(s) already have a score.`);
+    return;
+  }
+
+  reportRankerBilling(config, rubric, (msg) => console.log(msg));
+  const summary = await rankBookmarks({ db, scorer, logger: (msg) => console.log(msg) }, options);
+  console.log(
+    `\nDone. ${summary.scored} of ${summary.candidates} bookmark(s) scored ` +
+      `(${summary.skipped} had nothing to judge, ${summary.failed} failed); ` +
+      `${summary.inputTokens} input token(s) billed.`,
+  );
+  if (summary.scored > 0) {
+    console.log('Sort by score in the viewer\'s Settings panel, or pass ?sort=score to the bookmarks API.');
+  }
+}
+
+/** Delete every stored ranking score - the way to abandon a rubric. Idempotent. */
+async function cmdClearScores(db: Database): Promise<void> {
+  const removed = db.clearBookmarkScores();
+  console.log(`Removed ${removed} stored ranking score${removed === 1 ? '' : 's'}.`);
+}
+
 async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore): Promise<void> {
   // In the app, the owner's saved choice wins outright - no `process.env`
   // argument - so the panel never reads "Claude model" while a variable in the
@@ -286,6 +357,12 @@ async function main(): Promise<void> {
         break;
       case 'refetch-articles':
         await cmdRefetchArticles(db);
+        break;
+      case 'rank':
+        await cmdRank(config, db, store);
+        break;
+      case 'clear-scores':
+        await cmdClearScores(db);
         break;
       case 'clear-summaries':
         await cmdClearSummaries(db);

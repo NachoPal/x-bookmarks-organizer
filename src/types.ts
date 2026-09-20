@@ -185,3 +185,27 @@ export interface TaxonomyNode {
   description?: string;
   children: TaxonomyNode[];
 }
+
+/**
+ * The opt-in ranking pass's stored verdict for one bookmark (issue #62).
+ *
+ * `score` and every value in `dimensions` are normalized to 0..1 regardless of
+ * how many levels the rubric's Jev `Score` questions used, so the weighting can
+ * change without rewriting stored rows. `confidence` is the model's own, not a
+ * derived quantity. `rubricVersion` records which rubric produced the row, so a
+ * later rubric revision can be re-scored deliberately rather than silently
+ * mixing two scales in one sort.
+ */
+export interface BookmarkScoreRecord {
+  bookmarkId: number;
+  /** Weighted overall score, 0..1. */
+  score: number;
+  /** The model's reported confidence, 0..1. */
+  confidence: number;
+  /** Per-rubric-dimension scores, 0..1, keyed by dimension id. */
+  dimensions: Record<string, number>;
+  /** The Jev model that answered (e.g. `jev-1.13.0`). */
+  model: string;
+  rubricVersion: string;
+  scoredAt: string;
+}
