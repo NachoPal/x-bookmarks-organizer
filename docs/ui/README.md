@@ -223,3 +223,17 @@ model call.
 | `71-sync-blocked-light.png` | **Blocked sync + empty library.** Pressing Sync with no X credentials reachable shows one actionable sentence naming both variables and every place the server looks, with Try again; behind it, the empty library's own "Set up sync" call to action. |
 | `71-sync-narrow-400-dark.png` | **~400px, dark.** The Sync button keeps its icon and its ≥24px target and sheds only its label; the strip and its Details list wrap with no horizontal overflow. |
 | `71-setup-narrow-400-dark.png` | **~400px, dark.** The step rail collapses to numbers, the footer stacks with the primary action on top, and a missing credential is reported in full. |
+
+## Sync panel, settings without Appearance, colors toggle in the sidebar
+
+The sync control left the tab row for its own icon in the top bar (left of the gear); its panel shows the
+last-synced time and the Sync button. Settings lost the redundant Appearance section, the category-colors
+toggle moved next to the sidebar's "Categories" heading, and the stray last-sync text beside the menu icon is gone.
+
+| File | What it shows |
+|---|---|
+| `sync-panel-light.png` | Sync popover, light, desktop. |
+| `settings-no-appearance-light.png` | Settings without Appearance. |
+| `sidebar-colors-toggle-light.png` | Sidebar with the colors toggle beside "Categories" (colors on). |
+| `sync-panel-dark-400.png` | Sync popover, dark, narrow. |
+| `sidebar-colors-toggle-dark-400.png` | Sidebar colors toggle, dark, narrow. |
