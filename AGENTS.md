@@ -133,9 +133,12 @@ top. The dense-category seed leaf exists to exercise this.
 
 Switching the Unread/Read/All filter (or back to a category already visited) does NOT re-fetch or
 re-render from scratch (issue #33): `app.js`'s `viewCaches` snapshots a settled view's DOM
-cards + bookmark objects, keyed by category id -> filter, when the owner navigates away from it
-(`saveCurrentViewToCache`) - restoring one (`restoreViewFromCache`) reuses the same DOM nodes, so an
-already-loaded X embed is never reloaded. Bounded to `XBOFilterCache.MAX_CACHED_CATEGORIES`
+pane + bookmark objects, keyed by category id -> filter, when the owner navigates away from it
+(`saveCurrentViewToCache`). Each view renders into its own `.view-pane` that stays MOUNTED (just
+`hidden`) - never `replaceChildren()`/re-append cards: detaching an iframe and re-attaching it reloads
+it, which is what blanked the X embeds (issue #33 follow-up). `activatePane` shows one pane;
+`releaseOrphanPanes` removes any pane no cache entry retains. A real load shows the spinner
+placeholder (`.state-loading`) in a fresh pane. Bounded to `XBOFilterCache.MAX_CACHED_CATEGORIES` (3)
 categories via LRU eviction (`src/web/public/filter-cache.js`, the pure/testable half of this - LRU
 touch/evict and `isFilterEntryStale`). A view mid-fetch is never cached (`viewReady` guard) - caching
 one would poison that category+filter with a false "0 results" snapshot if the owner switches
