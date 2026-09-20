@@ -476,15 +476,29 @@ body:not([data-sidebar="collapsed"]) .menu-toggle .menu-bar:nth-child(3) {
 
 
 /* ============================================================
-   App body / sidebar (issue #65 - the drawer PUSHES, reversing #42)
-   Wide screens: the sidebar is IN FLOW, so opening it displaces the main
-   column (tab bar + posts) to the right; the column then re-centers itself
-   in the narrower space and the full-width tab bar shrinks with it. Nothing
-   is ever hidden underneath it.
+   App body / sidebar (issues #65, #78)
+   Wide screens: the sidebar is a full-height panel beside `.viewer`, which
+   holds the ENTIRE chrome (top bar, tab bar, posts). Opening it gives the
+   viewer a left margin, so it is displaced as ONE unit (top bar + title
+   included) and its content re-centers in the space left; nothing is ever
+   hidden underneath. The open/close SLIDE is transform-only: the layout
+   change happens once, up front, and a keyframe (`viewer-slide-*`) starts the
+   viewer at its previous on-screen position and glides it home - animating
+   width/margin would relayout the tab bar, every card and every embedded
+   tweet on each frame. app.js sets `data-sidebar-anim` for the run.
    Narrow screens (<=820px): a pushed column would have no room left, so the
-   sidebar stays the overlay drawer it has always been there, with its scrim
-   and its auto-dismiss on picking a category.
+   sidebar stays the overlay drawer under the bar, with its scrim and its
+   auto-dismiss on picking a category; the viewer never moves.
    ============================================================ */
+.viewer {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
 .app-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -516,8 +530,7 @@ body:not([data-sidebar="collapsed"]) .sidebar-backdrop {
   opacity: 1;
   pointer-events: auto;
 }
-/* Wide screens get no scrim: the drawer covers only a strip beside the
-   centered column, so the posts stay readable and clickable behind it. */
+/* Wide screens get no scrim: the panel sits beside the viewer. */
 @media (min-width: 821px) {
   .sidebar-backdrop {
     display: none;
@@ -546,28 +559,40 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   box-shadow: var(--shadow-lg);
 }
 
-/* Wide screens: in flow, so it pushes rather than overlays. Collapsing it to
-   width 0 (its panel keeps its own width and is clipped) is a layout change,
-   not an animation - animating the width would relayout the tab bar, the
-   cards and every embedded tweet on each frame. */
 @media (min-width: 821px) {
   .sidebar {
-    position: relative;
-    top: auto;
-    bottom: auto;
-    flex: 0 0 auto;
-    width: 0;
-    border-right-width: 0;
-    transform: none;
-    transition: none;
+    top: 0;
+    width: var(--sidebar-width);
   }
   body:not([data-sidebar="collapsed"]) .sidebar {
-    width: var(--sidebar-width);
-    border-right-width: 1px;
     box-shadow: none;
   }
-  .sidebar-inner {
-    width: var(--sidebar-width);
+  body:not([data-sidebar="collapsed"]) .viewer {
+    margin-left: var(--sidebar-width);
+  }
+  body[data-sidebar-anim="open"] .viewer {
+    animation: viewer-slide-open var(--motion-slow) var(--ease);
+  }
+  body[data-sidebar-anim="close"] .viewer {
+    animation: viewer-slide-close var(--motion-slow) var(--ease);
+  }
+  /* On close the (already full-width) viewer starts one sidebar-width to the
+     right of the viewport; body's own overflow: hidden clips it. */
+}
+@keyframes viewer-slide-open {
+  from {
+    transform: translateX(calc(var(--sidebar-width) * -1));
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes viewer-slide-close {
+  from {
+    transform: translateX(var(--sidebar-width));
+  }
+  to {
+    transform: translateX(0);
   }
 }
 .sidebar-inner {
@@ -1149,6 +1174,11 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
    of the active view, never detached, so X embeds are not reloaded - plus
    this one pane for the loading/empty/error states and the scroll tail. Cards
    are sequenced by inline `order`; the pane sorts after all of them. */
+/* A tab switch keeps the current posts up (dimmed) until the next page lands. */
+.bookmark-list[aria-busy="true"] {
+  opacity: 0.55;
+  transition: opacity var(--motion-fast) var(--ease);
+}
 .view-pane {
   display: flex;
   flex-direction: column;
@@ -1669,6 +1699,33 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
    body copy; the state's own tight gap is meant for its two text lines. */
 .state-welcome .btn {
   margin-top: var(--space-3);
+}
+/* The empty-state prompts open the categories sidebar (issue #78): a real
+   <button> in the top bar, and the landing card as a button-role. */
+.state-prompt {
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+}
+.state-prompt:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-text-muted);
+}
+.state-prompt:active {
+  background: var(--color-border);
+}
+.topbar-prompt {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: var(--space-1) var(--space-2);
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.topbar-prompt:hover {
+  background: var(--color-surface-2);
 }
 .state-icon {
   font-size: 2.25rem;

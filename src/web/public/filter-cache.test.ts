@@ -151,3 +151,12 @@ describe("deriveFilterIds", () => {
     expect(deriveFilterIds("all", [3, 2, 1], byId)).toEqual([3, 2, 1]);
   });
 });
+
+describe("loadingStrategy (issue #78)", () => {
+  const { loadingStrategy } = require("./filter-cache.js");
+  it("keeps the current content only for a tab switch inside a mounted category", () => {
+    expect(loadingStrategy(false, true)).toBe("keep-content");
+    expect(loadingStrategy(true, true)).toBe("placeholder");
+    expect(loadingStrategy(false, false)).toBe("placeholder");
+  });
+});

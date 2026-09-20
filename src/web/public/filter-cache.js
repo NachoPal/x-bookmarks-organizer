@@ -99,7 +99,19 @@
     return ids.includes(bookmarkId) !== survivesFilter(filter, bm);
   }
 
+  /**
+   * How to show a view that is not cached and must be fetched (issue #78).
+   * Switching only the TAB of an already-open category keeps the current
+   * content on screen until the new first page arrives, so there is no
+   * blank/white frame in between; anything else (a new category, or nothing
+   * mounted yet) shows the loading placeholder at once.
+   */
+  function loadingStrategy(categoryChanged, hostMounted) {
+    return !categoryChanged && hostMounted ? "keep-content" : "placeholder";
+  }
+
   const api = {
+    loadingStrategy,
     MAX_CACHED_CATEGORIES,
     MAX_POOLED_POSTS,
     touchLru,

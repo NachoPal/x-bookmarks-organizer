@@ -207,16 +207,18 @@ its `aria-labelledby` follows the active tab (`renderFilterTabs` in `app.js`). I
 visible - hiding it on an empty category would jump the layout. The active tab is marked by an
 underline AND a color, never color alone.
 
-The **category sidebar PUSHES the content on wide screens** (issue #65, reversing #42's overlay):
-at `min-width: 821px` it is in flow (`position: relative`, `flex: 0 0 auto`), `width: 0` when
-collapsed and `--sidebar-width` when open, with `.sidebar-inner` holding its own width so the panel
-is clipped rather than squeezed. `.content-inner` stays `margin: 0 auto`, so the posts re-center in
-whatever width is left and nothing hides under the drawer. That width change is deliberately NOT
-animated: animating it would relayout the tab bar, every card and every embedded tweet per frame
-(and the floor allows only transform/opacity). At `<=820px` it remains the overlay drawer with its
-scrim and auto-dismiss-on-pick - a pushed column would have no room left there. A closed drawer
-gets `inert` from JS (not just an off-screen transform) so it leaves the tab order; its `box-shadow`
-belongs to the OPEN overlay state only, or it bleeds a grey band down the viewport edge.
+The **category sidebar PUSHES the ENTIRE view on wide screens** (issues #65, #78): at
+`min-width: 821px` the sidebar is a full-height fixed panel and `.viewer` (top bar + tab bar + posts,
+one unit) gets `margin-left: var(--sidebar-width)` when it is open, so the title and bar move with
+the posts. The slide is animated with a transform-only FLIP: the margin changes once (a single
+relayout), and a `viewer-slide-open/close` keyframe starts the viewer at its previous on-screen
+position and glides it home in step with the sidebar's own `translateX`; `data-sidebar-anim`
+(`playViewerSlide` in `app.js`) names the run. Never animate width/margin - that relayouts every
+card and embedded tweet per frame. See the "App body / sidebar" block in `styles.css`. At `<=820px`
+it remains the overlay drawer with its scrim and auto-dismiss-on-pick; the viewer never moves. A
+closed drawer gets `inert` from JS (not just an off-screen transform) so it leaves the tab order.
+The empty-state prompts (`[data-open-categories]`: the landing card and the top-bar "Select a
+category" button) open it through the same `setCollapsed`.
 `--header-offset` (the bar's real outer height, safe-area included) is what the narrow fixed drawer
 and its scrim hang off - keep them on that token. `--z-header` sits ABOVE `--z-sidebar` so the
 settings popover, which is a child of the bar, is not painted over by the drawer.
@@ -260,6 +262,15 @@ Unread/Read/Favorites view of a category whose cached All list is complete is DE
 drops out of the live tab is `hidden` (not removed), and `syncCachedViewsOnChange` deletes only the
 stale id lists so the next visit re-derives or re-fetches while reusing the pooled cards; a delete
 releases the card (`purgeFromCache`). `filter-cache.js` holds the pure, DOM-free half.
+
+**Last view survives a reload** (issue #78, `view-persist.js`, pure + unit-tested): the selection
+(category + tab) is in localStorage; a bounded snapshot of the fetched pages is in sessionStorage
+(TTL, view-count and byte caps, keyed to the sort order) and is hydrated into `viewCaches` on load so
+the reload re-fetches no bookmarks (X embeds re-init regardless). Every place that drops
+`viewCaches` (sync, reset, sort change) also calls `clearPersistedViews`; a stored category that no
+longer exists falls back to the empty state. A tab switch inside an open category keeps the current
+posts on screen (`aria-busy`, dimmed) until the new page lands (`XBOFilterCache.loadingStrategy`) so
+no blank frame is painted.
 
 **Favorites** (issue #63) mirror read state end to end: a `favorite` column on `bookmarks` added
 through the same `PRAGMA table_info`-guarded migration (`BOOKMARKS_ADDED_COLUMNS`),
