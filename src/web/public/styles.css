@@ -144,6 +144,9 @@
   /* Above the top bar (a chip near the top of the content would otherwise
      open its detail UNDER the sticky bar), still below the summary modal. */
   --z-popover: 54;
+  /* The chip that follows the pointer while a post is dragged onto the tree
+     (issue #92): above everything, because it IS the pointer. */
+  --z-drag: 70;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -3320,4 +3323,273 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 }
 .first-run-sync .btn {
   align-self: flex-start;
+}
+
+/* ============================================================
+   Move a post to another category (issue #92)
+
+   Two surfaces for ONE re-file: the card's drag handle dropped on a sidebar
+   category, and the picker modal that is its keyboard equivalent.
+   ============================================================ */
+
+/* --- the card's two controls ---------------------------------------------
+   Cut to the favorite star's size so the action row reads as one set of
+   controls rather than three sizes; both are >=24px at every post-size step. */
+.card-grip,
+.move-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-2);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.card-grip {
+  /* A finger has to be able to drag it without the page scrolling away. */
+  cursor: grab;
+  touch-action: none;
+}
+.card-grip:hover,
+.move-btn:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+  background: var(--color-border);
+}
+.card-grip:active {
+  cursor: grabbing;
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.move-btn:active,
+.move-btn[aria-expanded="true"] {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.icon-grip {
+  width: 1rem;
+  height: 1rem;
+}
+.icon-move {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+/* --- while a card is being dragged --------------------------------------- */
+/* The card it came from stays exactly where it is, dimmed: the thing moving
+   is the ghost under the pointer, and lifting the card itself would reflow
+   the column (and re-lay-out every embed in it) for the whole gesture. */
+.bookmark-card.is-moving {
+  opacity: 0.55;
+}
+/* Nothing under the pointer should select, hover or drag away while a post
+   is in flight - the tree's drop targets are the only live thing left. */
+body.is-card-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+body.is-card-dragging .tree-node {
+  cursor: copy;
+}
+
+/* The hovered drop target. A ring AND a tint AND the ghost's own "Move to
+   <name>" label, so the target is never signalled by color alone. */
+.tree-node.is-drop-target {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+/* The chip that follows the pointer. Positioned by `transform` only, so
+   tracking the pointer never triggers layout, and `pointer-events: none` so
+   it can never become the element under the cursor. */
+.move-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-drag);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 14rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  font-size: var(--text-small);
+}
+.move-ghost.is-over {
+  border-color: var(--color-accent);
+}
+.move-ghost-verb {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.move-ghost-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+.move-ghost.is-over .move-ghost-target {
+  color: var(--color-accent);
+}
+
+/* --- the picker modal ----------------------------------------------------- */
+.move-panel {
+  width: min(30rem, 100%);
+  /* Tall enough to browse a real tree in, still inside the modal's gutters. */
+  height: min(34rem, 100%);
+}
+.move-search {
+  flex: 0 0 auto;
+  padding: 0 var(--space-5) var(--space-3);
+}
+.move-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--space-5);
+}
+.move-tree-list,
+.move-group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* The same guide line + step the sidebar's nested lists use, so the picker
+   reads as the tree the owner already knows. Roots carry no reorder grip
+   here (#82 is a sidebar-only affordance), so no grip column to clear. */
+.move-group {
+  margin-left: var(--space-1);
+  padding-left: var(--tree-indent);
+  border-left: 1px solid var(--color-border);
+}
+.move-group[hidden] {
+  display: none;
+}
+.move-item {
+  border-radius: var(--radius-sm);
+}
+.move-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.move-item:hover > .move-row {
+  background: var(--color-surface-2);
+}
+.move-row.is-selected {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+.move-chev {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  transition: transform var(--motion-med) var(--ease);
+}
+.move-item[aria-expanded="true"] > .move-row > .move-chev {
+  transform: rotate(90deg);
+}
+.move-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.move-label mark {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: 700;
+}
+.move-row.is-selected .move-label mark {
+  background: transparent;
+  color: inherit;
+}
+/* Reserved whether or not it is filled, so selecting a row never nudges its
+   label sideways. */
+.move-check {
+  flex: 0 0 auto;
+  width: 1.1rem;
+  height: 1.1rem;
+  color: var(--color-accent);
+}
+.move-check .icon-check {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+.move-footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+}
+.move-selection {
+  margin: 0;
+  padding: 0 var(--space-5);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.move-footer .setup-error {
+  margin: 0 var(--space-5);
+}
+.move-actions {
+  padding-top: 0;
+}
+/* Same reason as `.rank-btn:disabled`: an accent fill at 55% opacity still
+   reads as "go". Until a destination is chosen this is a muted surface, and
+   the selection line right above it says why. */
+.move-actions .btn-primary:disabled {
+  opacity: 1;
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  box-shadow: none;
+}
+
+@media (max-width: 560px) {
+  .move-search,
+  .move-tree,
+  .move-selection {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+  .move-footer .setup-error {
+    margin-inline: var(--space-4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .move-chev,
+  .card-grip,
+  .move-btn,
+  .move-row {
+    transition: none;
+  }
 }

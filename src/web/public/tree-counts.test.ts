@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 // Plain browser JS, required directly (not compiled by tsc).
-const { tabCounts, buildCategoryIndex, ancestorChainIds, affectedCategoryIds, applyCountDelta } = require("./tree-counts.js");
+const {
+  tabCounts,
+  buildCategoryIndex,
+  ancestorChainIds,
+  affectedCategoryIds,
+  applyCountDelta,
+  applyMoveDelta,
+} = require("./tree-counts.js");
 
 /** AI (1) -> Evals (2), Harnesses (3); Design (4) -> UI (5). */
 function sampleTree() {
@@ -113,5 +120,55 @@ describe("tabCounts (filter tab badges, issue #72)", () => {
 
   it("tolerates a missing favorite total", () => {
     expect(tabCounts({ total: 2, unread: 1 } as never).favorite).toBe(0);
+  });
+});
+
+describe("applyMoveDelta (issue #92)", () => {
+  /** AI(1) -> Evals(2), Harnesses(3); Design(4) -> UI(5). */
+  const counts = (index: Map<number, { total: number; unread: number }>) =>
+    [1, 2, 3, 4, 5].map((id) => [index.get(id)!.total, index.get(id)!.unread]);
+
+  it("takes the post off the source chain and adds it to the destination chain", () => {
+    const index = buildCategoryIndex(sampleTree());
+    // An unread post moves from Evals (under AI) to UI (under Design).
+    applyMoveDelta(index, [2], 5, 1);
+    expect(counts(index)).toEqual([
+      [2, 1], // AI lost it
+      [0, 0], // Evals lost it
+      [2, 1], // Harnesses untouched
+      [2, 1], // Design gained it
+      [2, 1], // UI gained it
+    ]);
+  });
+
+  it("nets a shared ancestor to zero when the post never leaves its subtree", () => {
+    const index = buildCategoryIndex(sampleTree());
+    applyMoveDelta(index, [2], 3, 1); // Evals -> Harnesses, both under AI
+    expect(counts(index)).toEqual([
+      [3, 2], // AI unchanged: it counted the post once before and does now
+      [0, 0],
+      [3, 2],
+      [1, 0],
+      [1, 0],
+    ]);
+  });
+
+  it("collapses a multi-category post onto the one destination", () => {
+    const index = buildCategoryIndex(sampleTree());
+    applyMoveDelta(index, [2, 3], 5, 0); // a READ post filed twice under AI
+    expect(counts(index)).toEqual([
+      [2, 2], // AI: -1 once, despite two direct categories losing it
+      [0, 1], // a READ post leaves the unread tallies alone
+      [1, 1],
+      [2, 0],
+      [2, 0],
+    ]);
+  });
+
+  it("reports each moved node exactly once", () => {
+    const index = buildCategoryIndex(sampleTree());
+    const updated = applyMoveDelta(index, [2], 3, 1);
+    const ids = updated.map((n: { id: number }) => n.id).sort();
+    expect(ids).toEqual([1, 2, 3]);
   });
 });

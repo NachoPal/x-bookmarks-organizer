@@ -462,6 +462,48 @@ To iterate on the viewer without the owner's private DB, seed a throwaway one an
 (`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit
 real data).
 
+## Manual move to another category (issue #92)
+
+The owner can re-file ONE post by hand, two ways into ONE action. **"Move" is re-file, not add**
+(the owner's decision on #92): `Database.setBookmarkCategory` DELETEs every
+`bookmark_categories` row for the bookmark and INSERTs the single chosen one in one transaction,
+so a post that the assignment pass multi-labelled collapses to exactly the category picked.
+`PUT /api/bookmarks/:id/category` `{ categoryId }` validates the TARGET (400 for an unknown or
+malformed id - a bad request) separately from the BOOKMARK (404), and needs nothing but `db`, so
+it is fully live on a `buildServer(db)` with no sync/rank wiring.
+
+The two surfaces are `app.js`'s `startCardDrag` (the card's `.card-grip`, LEFT of the read chip)
+and `openMovePicker` (the `.move-btn`, between Favorite and Summarize); both end in
+`moveBookmarkToCategory`, which is the only place the re-file's consequences are settled.
+
+- **The drag is POINTER events, not HTML5 DnD** - the same idiom the roots' reorder grip (#82)
+  uses. It works with a finger, it is unaffected by the cross-origin X embeds a card is full of,
+  and hover-expand timing stays in `app.js`. Expanding a hovered category is delegated to the
+  tree's OWN toggle, which is what makes drilling in recursive for free. The grip also OPENS THE
+  PICKER on a press that never became a drag (and on Enter/Space): a focusable control that only
+  answers to a pointer gesture would be a dead stop for the keyboard.
+- **The picker is the accessible equivalent** and a real ARIA `tree`, so it owns that contract in
+  full (arrow keys walk the VISIBLE rows, Right opens then steps in, Left closes then climbs out,
+  Home/End, Enter/Space select). Its pure half is `src/web/public/category-picker.js`
+  (`XBOCategoryPicker`: the search filter - the sidebar's, so it prunes identically -
+  `visibleItems`, `focusTarget`/`lateralTarget`, `isNoOp`, `pathLabel`), unit-tested DOM-free like
+  `tree-counts.js`. Roots carry NO reorder grip here; #82 is a sidebar-only affordance.
+- **Counts are `XBOTreeCounts.applyMoveDelta`**: the source chains lose the post and the
+  destination chain gains it, as two sequenced `applyCountDelta` calls, so an ancestor common to
+  both nets ZERO - correct, because a rolled-up count is DISTINCT bookmarks in the subtree.
+- **Caches are decided per SUBTREE, not per direct category** (`syncCachedViewsOnMove`): a cached
+  view can be an ancestor showing a rolled-up list. A subtree the post LEFT has it spliced out of
+  its id lists; a subtree it JOINED has its id lists dropped (where the server's sort would place
+  it is not knowable client-side); a subtree that held it before and still does is untouched. The
+  pooled CARD is never released - the post still exists, and detaching it would reload its X
+  embeds (#67, #89).
+- **The exit animation is only the settling half of #95's** (`reflowCardOut`): the posts below FLIP
+  up to close the gap, with no slide-right and no fade - a re-file is not a dismissal. It shares
+  `commitCardOut` with `dropCardFromView`, so the two exits differ only in motion.
+- **Focus cannot always go back to the trigger.** A moved post's card is hidden, and focusing a
+  control inside a hidden subtree is a silent no-op that strands focus on `<body>`; the picker
+  falls back to the DESTINATION's sidebar button (`returnFocusFromPicker`).
+
 ## Article extraction (issue #4, reader removed in the "summarize-ux" change)
 
 `src/articles/extract-link.ts` finds the primary link in a bookmark's stored post text (all

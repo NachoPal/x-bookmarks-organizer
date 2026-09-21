@@ -931,3 +931,85 @@ describe('ranking score on the bookmark API (issue #62)', () => {
     });
   });
 });
+
+describe('PUT /api/bookmarks/:id/category (issue #92)', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let ai: number;
+  let evals: number;
+  let design: number;
+  let id: number;
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    const when = new Date().toISOString();
+    ai = db.getOrCreateCategory('AI', null, when).id;
+    evals = db.getOrCreateCategory('Evals', ai, when).id;
+    design = db.getOrCreateCategory('Design', null, when).id;
+    db.storeCategorizedBatch([bm('1')], () => [evals, design]);
+    id = db.getBookmarkByPostId('1')!.id;
+    // No sync/rank wiring: the move must work on a plain buildServer(db).
+    app = buildServer(db);
+    await app.ready();
+  });
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  const move = (bookmarkId: number | string, body: unknown) =>
+    app.inject({
+      method: 'PUT',
+      url: `/api/bookmarks/${bookmarkId}/category`,
+      payload: body as object,
+    });
+
+  it('re-files the post under exactly the chosen category', async () => {
+    const res = await move(id, { categoryId: ai });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().categoryIds).toEqual([ai]);
+    expect(db.getCategoryIdsForBookmarks([id]).get(id)).toEqual([ai]);
+    expect(db.getCategoryBookmarkCounts(design).total).toBe(0);
+    expect(db.getCategoryBookmarkCounts(ai).total).toBe(1);
+  });
+
+  it('is what the bookmark list then reports as the post categories', async () => {
+    await move(id, { categoryId: ai });
+    const list = await app.inject({ url: `/api/categories/${ai}/bookmarks` });
+    expect(list.json().bookmarks[0].categoryIds).toEqual([ai]);
+    const gone = await app.inject({ url: `/api/categories/${design}/bookmarks` });
+    expect(gone.json().bookmarks).toHaveLength(0);
+  });
+
+  it('rejects an unknown category id and changes nothing', async () => {
+    const res = await move(id, { categoryId: 9999 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain('9999');
+    expect(db.getCategoryIdsForBookmarks([id]).get(id)!.sort()).toEqual([evals, design].sort());
+  });
+
+  it('rejects a missing or malformed target', async () => {
+    expect((await move(id, {})).statusCode).toBe(400);
+    expect((await move(id, { categoryId: 'AI' })).statusCode).toBe(400);
+    expect((await move(id, { categoryId: 1.5 })).statusCode).toBe(400);
+    expect((await move(id, { categoryId: null })).statusCode).toBe(400);
+    expect(db.getCategoryIdsForBookmarks([id]).get(id)).toHaveLength(2);
+  });
+
+  it('404s for an unknown bookmark and 400s for a malformed id', async () => {
+    expect((await move(4242, { categoryId: ai })).statusCode).toBe(404);
+    expect((await move('abc', { categoryId: ai })).statusCode).toBe(400);
+  });
+
+  it('keeps read state and the favorite star across the move', async () => {
+    await app.inject({ method: 'POST', url: `/api/bookmarks/${id}/read`, payload: { read: true } });
+    await app.inject({
+      method: 'POST',
+      url: `/api/bookmarks/${id}/favorite`,
+      payload: { favorite: true },
+    });
+    const res = await move(id, { categoryId: ai });
+    expect(res.json().bookmark.read).toBe(true);
+    expect(res.json().bookmark.favorite).toBe(true);
+  });
+});

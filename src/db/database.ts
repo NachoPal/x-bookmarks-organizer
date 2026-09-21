@@ -518,6 +518,14 @@ export class Database {
     return rows.map(toCategoryNode);
   }
 
+  /** One category by id, or undefined - how a caller validates a target id. */
+  getCategoryById(id: number): CategoryNode | undefined {
+    const row = this.db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as
+      | CategoryRow
+      | undefined;
+    return row ? toCategoryNode(row) : undefined;
+  }
+
   /**
    * Find a child of `parentId` by case-insensitive name WITHOUT creating it.
    * `parentId` null means a root node. Used by the assignment pass to resolve a
@@ -603,6 +611,32 @@ export class Database {
         'INSERT OR IGNORE INTO bookmark_categories (bookmark_id, category_id) VALUES (?, ?)',
       )
       .run(bookmarkId, categoryId);
+  }
+
+  /**
+   * Re-file a bookmark under exactly one category (issue #92): every existing
+   * `bookmark_categories` row for it is dropped and the chosen one inserted,
+   * in ONE transaction, so the post is never momentarily filed nowhere (or
+   * under both) if the process dies mid-write.
+   *
+   * "Move" is re-file, not add - the owner's decision on #92: a post that the
+   * categorization pass filed under several categories collapses to the single
+   * chosen one. Returns false if the bookmark id is unknown; the CALLER
+   * validates that `categoryId` is a real category (the route answers 400 with
+   * an actionable message), because a bad target is a request error, not a
+   * missing row.
+   */
+  setBookmarkCategory(bookmarkId: number, categoryId: number): boolean {
+    const tx = this.db.transaction((id: number, target: number) => {
+      const exists = this.db.prepare('SELECT 1 FROM bookmarks WHERE id = ?').get(id);
+      if (!exists) return false;
+      this.db.prepare('DELETE FROM bookmark_categories WHERE bookmark_id = ?').run(id);
+      this.db
+        .prepare('INSERT INTO bookmark_categories (bookmark_id, category_id) VALUES (?, ?)')
+        .run(id, target);
+      return true;
+    });
+    return tx(bookmarkId, categoryId);
   }
 
   // --- Atomic batch write ------------------------------------------------
