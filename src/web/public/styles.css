@@ -61,13 +61,14 @@
   --space-5: 1.5rem;
   --space-6: 2rem;
 
-  /* The one size every popover's primary action is cut to (issue #90): Sync,
-     Reset library and Rank now sit in three different panels and used to be
-     three different sizes. The width is the widest of their labels ("Reset
-     library") plus the padding, so the shortest ("Sync", which also carries an
-     icon) is padded out to match rather than any of them being truncated. */
+  /* The one size every popover's primary action is cut to (issues #90, #99):
+     Sync, Reset library, Rank now and the settings panel's Save sit in three
+     different panels and used to be four different sizes. They now span their
+     panel's full width (the owner's call in #99), so only the HEIGHT is a
+     token - the width is the panel's. A full-width primary action also reads
+     as the panel's one conclusion rather than as a button that happens to be
+     in it. */
   --panel-action-height: 2.25rem;
-  --panel-action-width: 9.5rem;
 
   /* The app's own dropdown chevron (#95): the arm length of the glyph
      drawn beside every <select>, plus the room its column takes at the end of
@@ -120,7 +121,17 @@
   /* The top bar's real outer height: the fixed sidebar and its scrim hang
      off the bottom of the bar, so they must use the same value. */
   --header-offset: calc(var(--header-height) + env(safe-area-inset-top, 0px));
+  /* The sidebar's width. A DEFAULT, not a constant: dragging the sidebar's
+     right edge (issue #99) overwrites this on `:root` with the persisted
+     pixel width, and the bounds it is held between live in
+     `sidebar-width.js`, which is the one place they are stated. */
   --sidebar-width: clamp(17rem, 24vw, 21rem);
+  /* The splitter's own hit width. It sits INSIDE the sidebar's padding, so it
+     never covers a tree row: pressing near a label still selects it. */
+  --sidebar-resizer-width: 0.75rem;
+  /* The floating scroll-to-top control (issue #99): a 44px target, and the
+     room the sort pill gives up for it where the two would otherwise meet. */
+  --scroll-top-size: 2.75rem;
   /* The score chip's breakdown popover: a fixed measure so every card's graph
      is the same size, held inside the viewport's gutters on a narrow screen. */
   --score-detail-width: 16.5rem;
@@ -796,9 +807,89 @@ body:not([data-sidebar="collapsed"]) .sidebar {
     top: 0;
     right: 0;
     bottom: 0;
-    width: var(--sidebar-width);
+    /* The full track width LESS the splitter's hit strip (issue #99), so the
+       tree's own scrollbar sits clear of it rather than underneath it. Still
+       a CONSTANT independent of the track, which is the property that keeps
+       a label from rewrapping mid-animation. */
+    width: calc(var(--sidebar-width) - var(--sidebar-resizer-width));
   }
 }
+/* --- The drag-resizable right edge (issue #99) ---------------------------
+   A real ARIA window splitter, so it is not a drag-only affordance: it takes
+   focus and its arrow keys / Home / End resize the column, with the pixel
+   width reported through `aria-valuenow`.
+   It lives INSIDE the sidebar's own padding rather than straddling the
+   boundary, so it covers no tree row (a press near a label still selects the
+   category) and steals no click from the content column beside it. The hit
+   area is the full height of the column, which is what buys back the width:
+   the 24px minimum target is a size for a button-shaped control, and a
+   splitter has a keyboard path of its own besides.
+   Hidden at <=820px: there the sidebar is a `min(88vw, …)` overlay drawer and
+   there is no second column to hand width back to.
+   The drag itself sets `--sidebar-width` on `:root`. `body[data-resizing]`
+   suppresses the open/close transition for the duration, so the column tracks
+   the pointer exactly instead of easing after it. */
+.sidebar-resizer {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: var(--sidebar-resizer-width);
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+}
+@media (min-width: 821px) {
+  body:not([data-sidebar="collapsed"]) .sidebar-resizer {
+    display: block;
+  }
+}
+/* The grab line: 2px of border colour, drawn centred in the hit area and
+   only while the splitter is hovered, focused or in use, so a resting column
+   keeps the single hairline divider the track's inset shadow paints. */
+.sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(var(--sidebar-resizer-width) / 2 - 1px);
+  width: 2px;
+  border-radius: 2px;
+  background: var(--color-accent);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease);
+}
+.sidebar-resizer:hover::before,
+body[data-resizing="sidebar"] .sidebar-resizer::before {
+  opacity: 1;
+}
+/* The focus ring is drawn on the LINE, not on the hit strip: a ring around a
+   12px-wide, full-height box paints as two stray verticals with nothing
+   between them. Ringing the grab line instead gives one unmistakable marker
+   exactly where the edge is. */
+.sidebar-resizer:focus {
+  outline: none;
+}
+.sidebar-resizer:focus-visible::before {
+  opacity: 1;
+  width: 4px;
+  right: calc(var(--sidebar-resizer-width) / 2 - 2px);
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+/* While the pointer is dragging, the column must follow it exactly: the
+   grid's own open/close interpolation would lag a frame behind every move. */
+body[data-resizing="sidebar"] {
+  cursor: col-resize;
+  user-select: none;
+}
+@media (min-width: 821px) {
+  body[data-resizing="sidebar"]:not([data-sidebar="collapsed"]) {
+    transition: none;
+  }
+}
+
 .sidebar-topbar {
   display: flex;
   align-items: center;
@@ -847,9 +938,6 @@ body:not([data-sidebar="collapsed"]) .sidebar {
 }
 .sync-panel {
   width: min(17rem, calc(100vw - 2 * var(--space-4)));
-}
-.sync-panel .sync-btn {
-  align-self: flex-start;
 }
 .settings-panel-title {
   margin: 0;
@@ -1025,6 +1113,84 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   max-width: var(--content-measure);
   margin: 0 auto;
   padding: var(--space-5) var(--space-4) var(--space-6);
+}
+
+/* ============================================================
+   Floating scroll-to-top (issue #99)
+   A zero-height `position: sticky` row pinned to the very top of the
+   scrolling pane, holding one round icon button at the pane's right edge. It
+   is a sibling of `.content-inner`, not a child: `.content-inner` is capped
+   at --content-measure and centred, so a button inside it would sit at the
+   post column's edge rather than the pane's, and - the load-bearing half -
+   anything that changes that block's box would re-lay-out every X embed
+   (the #86 constraint). A zero-height row changes nothing about the flow the
+   cards are in.
+   On a wide viewport the button floats in the gutter beside the centred
+   posts, well clear of the sticky sort pill. Only at <=560px do the two meet,
+   and there the pill gives up the room instead (see the breakpoint below) -
+   unconditionally, so the pill's layout does not shift when the button
+   appears mid-scroll.
+   ============================================================ */
+.scroll-top-anchor {
+  position: sticky;
+  top: 0;
+  /* One above the sort pill: on a narrow viewport they share the band, and
+     the control that is only sometimes there has to be the one on top. */
+  z-index: calc(var(--z-sort-bar) + 1);
+  height: 0;
+  /* Only the button itself is interactive; the rest of the row must not
+     swallow clicks on the posts scrolling underneath it. */
+  pointer-events: none;
+}
+.scroll-top {
+  pointer-events: auto;
+  position: absolute;
+  top: var(--space-3);
+  right: calc(var(--space-4) + env(safe-area-inset-right, 0px));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--scroll-top-size);
+  height: var(--scroll-top-size);
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transition: opacity var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease);
+}
+.scroll-top:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-2);
+}
+.scroll-top:active {
+  transform: translateY(1px);
+}
+.scroll-top:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  color: var(--color-text);
+}
+/* Arriving: it fades and lifts into place rather than blinking in. `hidden`
+   is what takes it out of the tab order, so the animation only has to cover
+   the frames after that. */
+.scroll-top:not([hidden]) {
+  animation: scroll-top-in var(--motion-fast) var(--ease);
+}
+@keyframes scroll-top-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ============================================================
@@ -1384,6 +1550,18 @@ body:not([data-sidebar="collapsed"]) .sidebar {
     width: auto;
     max-width: none;
   }
+  /* The floating scroll-to-top control and the sort pill both want the top of
+     the pane, and at this width there is no gutter left for them to share:
+     centred, the pill reaches within a pixel of the button. So the pill gives
+     up the trailing gutter and rides that much left of centre - the
+     alternative, reserving the room on BOTH sides to keep it centred, would
+     make it narrow enough to wrap onto two lines, which costs far more than
+     the offset does. Reserved unconditionally: doing it only while the button
+     is on screen would re-lay-out the pill (and shift every card down)
+     mid-scroll. */
+  .sort-bar {
+    padding-right: calc(var(--scroll-top-size) + var(--space-2));
+  }
   /* Four tabs share ~400px: trim their padding rather than their labels. */
   .filter-tab {
     gap: var(--space-1);
@@ -1679,6 +1857,31 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
      embedded tweet. `layout` only - `paint`/`size` would clip or freeze the
      embed's own height as the widget settles. */
   contain: layout;
+}
+/* "View" on the move toast (issue #99) jumps to the post it just moved and
+   rings the card so the eye can find it after the scroll. Focus goes to the
+   card as well, so this is a second channel on the same event, never the only
+   one - and `box-shadow`/`opacity` only, so a highlight cannot reflow the
+   embed it surrounds. The global reduced-motion block flattens the pulse; the
+   `animationend` that clears the class still fires. */
+.bookmark-card.is-located {
+  animation: card-located 1.6s var(--ease);
+}
+@keyframes card-located {
+  0%,
+  70% {
+    box-shadow: var(--shadow-sm), 0 0 0 2px var(--color-accent);
+  }
+  100% {
+    box-shadow: var(--shadow-sm), 0 0 0 2px transparent;
+  }
+}
+.bookmark-card:focus {
+  outline: none;
+}
+.bookmark-card:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 .bookmark-card.is-unread {
   border-left-color: var(--color-unread);
@@ -2678,6 +2881,14 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* A move offers two follow-ups (Undo and View, issue #99); they group at the
+   toast's trailing edge and never wrap away from each other. */
+.toast-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
 .toast-action {
   flex: 0 0 auto;
 }
@@ -2729,11 +2940,14 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   min-width: 0;
   border-bottom: 0;
 }
-/* A popover's primary action. Sizing only - each button keeps its own variant
-   (primary / danger) and its own behavior; see `--panel-action-width`. */
+/* A popover's primary action: Sync, Reset library, Rank now and the settings
+   panel's Save. Sizing only - each button keeps its own variant (primary /
+   danger) and its own behavior. It spans the panel (issue #99), which is what
+   cuts all four to one size without a width token to keep in step with the
+   longest label. */
 .panel-action {
+  width: 100%;
   min-height: var(--panel-action-height);
-  min-width: var(--panel-action-width);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-small);
 }
@@ -2997,21 +3211,17 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   color: var(--color-text);
   font-size: var(--text-small);
 }
-/* Save is the panel's one primary action, so it is centred rather than left
-   against the edge of a column of full-width fields (issue #90). The status
-   ("Saved", or why it failed) stacks UNDER it: beside it, a long message would
-   pull the button off centre, and an error that wraps would pull it further.
-   A column keeps the button put whatever the status says. */
+/* Save is the panel's one primary action and spans it (issue #99), matching
+   Sync / Reset library / Rank now through the shared `.panel-action` sizing -
+   it sits under a column of full-width fields, so any narrower button read as
+   unfinished. The status ("Saved", or why it failed) stacks UNDER it rather
+   than beside it: a long message would otherwise squeeze the button, and an
+   error that wraps would squeeze it further. */
 .settings-actions {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: var(--space-2);
-}
-.settings-save {
-  min-height: 2.25rem;
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--text-small);
 }
 .settings-save-status {
   color: var(--color-text-muted);
@@ -3275,9 +3485,6 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   gap: var(--space-3);
   align-items: flex-start;
 }
-.rank-panel .rank-btn {
-  align-self: flex-start;
-}
 /* A run keeps going with the panel closed, so the icon carries that state
    too - by a slow pulse AND the title, never by color alone. The global
    reduced-motion block at the end of this file flattens the animation. */
@@ -3413,7 +3620,9 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 .sync-reset {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  /* `stretch`, so "Reset library" spans the panel like every other
+     `.panel-action` (issue #99). */
+  align-items: stretch;
   gap: var(--space-2);
   margin-top: var(--space-3);
   padding-top: var(--space-3);

@@ -639,29 +639,38 @@ export class Database {
   }
 
   /**
-   * Re-file a bookmark under exactly one category (issue #92): every existing
-   * `bookmark_categories` row for it is dropped and the chosen one inserted,
-   * in ONE transaction, so the post is never momentarily filed nowhere (or
-   * under both) if the process dies mid-write.
+   * Re-file a bookmark under exactly the given categories (issue #92): every
+   * existing `bookmark_categories` row for it is dropped and the chosen ones
+   * inserted, in ONE transaction, so the post is never momentarily filed
+   * nowhere (or under both) if the process dies mid-write.
    *
    * "Move" is re-file, not add - the owner's decision on #92: a post that the
    * categorization pass filed under several categories collapses to the single
-   * chosen one. Returns false if the bookmark id is unknown; the CALLER
-   * validates that `categoryId` is a real category (the route answers 400 with
-   * an actionable message), because a bad target is a request error, not a
-   * missing row.
+   * chosen one. The list form exists for exactly one caller, the move toast's
+   * Undo (issue #99), which has to put a multi-labelled post back the way it
+   * was; a move itself always passes one id.
+   *
+   * Returns false if the bookmark id is unknown; the CALLER validates that
+   * each target is a real category (the route answers 400 with an actionable
+   * message), because a bad target is a request error, not a missing row.
    */
-  setBookmarkCategory(bookmarkId: number, categoryId: number): boolean {
-    const tx = this.db.transaction((id: number, target: number) => {
+  setBookmarkCategories(bookmarkId: number, categoryIds: number[]): boolean {
+    const tx = this.db.transaction((id: number, targets: number[]) => {
       const exists = this.db.prepare('SELECT 1 FROM bookmarks WHERE id = ?').get(id);
       if (!exists) return false;
       this.db.prepare('DELETE FROM bookmark_categories WHERE bookmark_id = ?').run(id);
-      this.db
-        .prepare('INSERT INTO bookmark_categories (bookmark_id, category_id) VALUES (?, ?)')
-        .run(id, target);
+      const insert = this.db.prepare(
+        'INSERT OR IGNORE INTO bookmark_categories (bookmark_id, category_id) VALUES (?, ?)',
+      );
+      for (const target of targets) insert.run(id, target);
       return true;
     });
-    return tx(bookmarkId, categoryId);
+    return tx(bookmarkId, categoryIds);
+  }
+
+  /** The single-target move; see `setBookmarkCategories`. */
+  setBookmarkCategory(bookmarkId: number, categoryId: number): boolean {
+    return this.setBookmarkCategories(bookmarkId, [categoryId]);
   }
 
   // --- Atomic batch write ------------------------------------------------
