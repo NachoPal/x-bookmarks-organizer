@@ -37,6 +37,34 @@ export interface CategoryBookmarkCounts {
 }
 
 /**
+ * What deleting a category would remove (issue #101), as computed by
+ * {@link Database.planCategoryDeletion} and carried out by
+ * {@link Database.deleteCategory}.
+ */
+export interface CategoryDeletionPlan {
+  /** Every category row the delete removes: the target plus its descendants. */
+  categoryIds: number[];
+  /** Descendants only - what the confirmation calls "sub-categories". */
+  subcategoryCount: number;
+  /**
+   * The bookmarks the delete PERMANENTLY removes: those filed inside the
+   * subtree and nowhere else. A bookmark also filed under a surviving
+   * category is kept and only unlinked.
+   */
+  orphanedBookmarkIds: number[];
+}
+
+/** The same plan as counts, which is what the route and the dialog speak in. */
+export interface CategoryDeletionCounts {
+  /** Category rows removed, including the one the owner pressed the bin on. */
+  categories: number;
+  /** Of those, the descendants. */
+  subcategories: number;
+  /** Bookmarks permanently deleted (and tombstoned) as orphans. */
+  posts: number;
+}
+
+/**
  * WHAT a paged bookmark list is ordered by.
  *
  * `recent` is the default everywhere and is what the viewer has always done.
@@ -628,6 +656,126 @@ export class Database {
       description: desc,
       createdAt: when,
     };
+  }
+
+  /**
+   * Create a category under `parentId` (null for a root). Returns undefined
+   * when a sibling of that name already exists - deliberately NOT a merge,
+   * unlike {@link getOrCreateCategory}: the taxonomy passes want get-or-create,
+   * but the owner typing a name into the category editor (issue #101) is
+   * asking for a NEW node and must be told when that name is taken. The
+   * comparison is case-insensitive, matching how sibling names merge
+   * everywhere else, so "AI" and "ai" are the same sibling.
+   *
+   * The CALLER validates that `parentId` names a real category (an unknown
+   * parent is a bad request, not a missing row).
+   */
+  createCategory(
+    name: string,
+    parentId: number | null,
+    when: string = new Date().toISOString(),
+  ): CategoryNode | undefined {
+    const trimmed = name.trim();
+    if (!trimmed) return undefined;
+    if (this.findCategory(trimmed, parentId)) return undefined;
+    const info = this.db
+      .prepare('INSERT INTO categories (parent_id, name, description, created_at) VALUES (?, ?, NULL, ?)')
+      .run(parentId, trimmed, when);
+    return {
+      id: Number(info.lastInsertRowid),
+      parentId,
+      name: trimmed,
+      description: null,
+      createdAt: when,
+    };
+  }
+
+  /**
+   * A category's own id followed by every descendant's. `categories.parent_id`
+   * is `ON DELETE CASCADE`, so a delete only needs the subtree's root - but
+   * the count the destructive confirmation shows, and the orphan test in
+   * {@link planCategoryDeletion}, both need the whole set spelled out.
+   */
+  getCategorySubtreeIds(id: number): number[] {
+    const rows = this.db
+      .prepare(
+        `WITH RECURSIVE subtree(id) AS (
+           SELECT id FROM categories WHERE id = ?
+           UNION ALL
+           SELECT c.id FROM categories c JOIN subtree s ON c.parent_id = s.id
+         )
+         SELECT id FROM subtree`,
+      )
+      .all(id) as { id: number }[];
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * What deleting `id` would remove, computed WITHOUT mutating anything: the
+   * category rows (the target plus its descendants) and the bookmarks that
+   * would be left filed nowhere.
+   *
+   * The orphan test is the owner's decided rule on issue #101: a bookmark
+   * inside the doomed subtree is deleted only when it has NO membership
+   * outside it. A post that is also filed under a surviving category is kept
+   * and merely loses its link to the subtree - so the number the confirmation
+   * dialog states is the number of posts that really go, never "every post in
+   * here". The delete runs this same plan inside its transaction, which is why
+   * the preview and the delete can never disagree.
+   */
+  planCategoryDeletion(id: number): CategoryDeletionPlan | undefined {
+    if (!this.getCategoryById(id)) return undefined;
+    const categoryIds = this.getCategorySubtreeIds(id);
+    const placeholders = categoryIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT bc.bookmark_id AS id
+           FROM bookmark_categories bc
+          WHERE bc.category_id IN (${placeholders})
+            AND NOT EXISTS (
+              SELECT 1 FROM bookmark_categories other
+               WHERE other.bookmark_id = bc.bookmark_id
+                 AND other.category_id NOT IN (${placeholders})
+            )
+          ORDER BY bc.bookmark_id`,
+      )
+      .all(...categoryIds, ...categoryIds) as { id: number }[];
+    return {
+      categoryIds,
+      subcategoryCount: categoryIds.length - 1,
+      orphanedBookmarkIds: rows.map((r) => r.id),
+    };
+  }
+
+  /**
+   * Delete a category, its descendants and the bookmarks orphaned by that -
+   * the whole thing in ONE transaction, so a crash half way can never leave
+   * the tree pruned but the posts still filed under nodes that are gone.
+   *
+   * Each orphaned bookmark goes through {@link deleteBookmark}, i.e. the same
+   * tombstoning path the per-card delete and the reset use, so a post removed
+   * here can never be re-added by a later incremental sync. The category rows
+   * and every remaining link drop via `ON DELETE CASCADE`, which is why only
+   * the subtree's root is deleted explicitly.
+   *
+   * Returns the counts actually removed, or undefined if the id is unknown.
+   */
+  deleteCategory(
+    id: number,
+    when: string = new Date().toISOString(),
+  ): CategoryDeletionCounts | undefined {
+    const tx = this.db.transaction((categoryId: number) => {
+      const plan = this.planCategoryDeletion(categoryId);
+      if (!plan) return undefined;
+      for (const bookmarkId of plan.orphanedBookmarkIds) this.deleteBookmark(bookmarkId, when);
+      this.db.prepare('DELETE FROM categories WHERE id = ?').run(categoryId);
+      return {
+        categories: plan.categoryIds.length,
+        subcategories: plan.subcategoryCount,
+        posts: plan.orphanedBookmarkIds.length,
+      };
+    });
+    return tx(id);
   }
 
   linkBookmarkToCategory(bookmarkId: number, categoryId: number): void {

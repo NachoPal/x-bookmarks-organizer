@@ -537,6 +537,51 @@ To iterate on the viewer without the owner's private DB, seed a throwaway one an
 (`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit
 real data).
 
+## Category editor: add / delete categories (issue #101)
+
+The pencil beside the sidebar's "Categories" heading (LEFT of the colors toggle) opens a modal
+that adds and deletes categories by hand. Adding is unremarkable; the DELETE is the only feature
+in the app that destroys posts, so treat everything below as load-bearing.
+
+**The rule (the owner's decision on #101): deleting a category deletes ONLY the posts it orphans.**
+`Database.planCategoryDeletion` is the single place that decides: the subtree's ids
+(`getCategorySubtreeIds`, a recursive CTE) plus the bookmarks that have a link INTO the subtree and
+none outside it. A post also filed under a surviving category is kept and merely unlinked.
+`deleteCategory` runs that same plan inside ONE transaction, deletes each orphan through the
+existing `deleteBookmark` (so it is tombstoned in `deleted_bookmarks` and a later sync cannot
+re-add it), then deletes the subtree's ROOT row only - `categories.parent_id` and
+`bookmark_categories.category_id` are `ON DELETE CASCADE`, so the descendants and every remaining
+link go with it.
+
+The **preview and the delete can never disagree**, because the preview route runs the same
+`planCategoryDeletion`. That is the whole point of splitting it out: the confirmation dialog states
+a number that posts are then deleted by, so a second, independently-written count would be a bug
+waiting to happen. Server surface: `POST /api/categories` (409 on a sibling name already taken -
+deliberately NOT `getOrCreateCategory`'s merge, which is what the taxonomy passes want and not what
+an owner typing a new name is asking for), `GET /api/categories/:id/deletion` (read-only) and
+`DELETE /api/categories/:id`. All three need nothing but `db`, so they are live on a
+`buildServer(db)`; the two WRITES are refused 409 while a sync or a ranking run is going, since an
+ingest is minting the very categories an edit would move under.
+
+Frontend: `src/web/public/category-editor.js` (`XBOCategoryEditor`) is the pure, unit-tested half -
+the name validation (case-insensitive among siblings, matching `findCategory`'s NOCASE collation),
+the dialog's prose, and `needsConfirm`, which **fails closed**: "don't ask again" (guarded
+localStorage) may silence a sub-category delete but NEVER a root, and an unknown node always
+confirms. `app.js` owns the markup. Two things there are deliberate. The editor's tree is a nested
+`<ul>` DISCLOSURE list, not an ARIA `tree` (each row carries real buttons - a bin, a twisty, an add
+- which is the opposite of a tree's single-focus contract), and EVERY row gets a twisty including a
+leaf, because opening a leaf is what reveals the "+" that files a child under it - without it a
+category the owner just created would be a dead end. The bin is a fixed column at the far LEFT of
+every row, so depth is carried by a spacer INSIDE the row (`--ced-depth`) rather than by padding on
+the nested list. After a delete the viewer drops every cached view and resets the card pool (posts
+went, and the ones spared were re-filed), and a selection inside the deleted subtree falls back to
+the empty state.
+
+Escape inside any modal over the tree must not also collapse the sidebar: the sidebar's own
+Escape handler bails on `isCatEditorOpen() || isCatDeleteOpen() || isMovePickerOpen()`, the same
+way it already bailed for the settings popover and the setup dialog. Without it the drawer closed
+underneath, went `inert`, and the pencil the editor hands focus back to could not take it.
+
 ## Manual move to another category (issues #92, #99)
 
 The owner can re-file ONE post by hand, two ways into ONE action. **"Move" is re-file, not add**
