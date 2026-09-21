@@ -323,29 +323,6 @@
               </div>
 
               <div class="settings-group">
-                <span class="settings-label" id="sort-order-label">Order</span>
-                <div
-                  id="sort-order"
-                  class="segmented settings-segmented"
-                  role="radiogroup"
-                  aria-labelledby="sort-order-label"
-                >
-                  <label class="seg">
-                    <input class="seg-input" type="radio" name="sort-order" value="recent" checked />
-                    <span class="seg-label">Newest</span>
-                  </label>
-                  <label class="seg">
-                    <input class="seg-input" type="radio" name="sort-order" value="score" />
-                    <span class="seg-label">Top score</span>
-                  </label>
-                </div>
-                <p id="sort-order-hint" class="settings-hint">
-                  Top score needs the ranking pass, which is paid per token. Start a run from
-                  &ldquo;Rank now&rdquo; in the ranking panel.
-                </p>
-              </div>
-
-              <div class="settings-group">
                 <span class="settings-label" id="settings-categorization-label">Categorization</span>
                 <p class="settings-hint">A sync works in two phases: first it designs the category tree, then it files each bookmark into it.</p>
                 <div
@@ -464,6 +441,56 @@
 
         <main id="bookmarks" class="content" aria-label="Bookmarks" tabindex="-1">
           <div class="content-inner">
+            <!-- Sticky sort selector (issue #97). It starts below the content
+                 pane's top padding, clear of the first post, and pins itself
+                 there as the list scrolls under it. `#sort-sentinel` is a
+                 zero-height marker an IntersectionObserver watches so the bar
+                 can pick up its floating shadow only once it is actually
+                 stuck. -->
+            <div id="sort-sentinel" class="sort-sentinel" aria-hidden="true"></div>
+            <div id="sort-bar" class="sort-bar" hidden>
+              <div
+                id="sort-field"
+                class="sort-pill"
+                role="radiogroup"
+                aria-label="Sort bookmarks by"
+              >
+                <label class="sort-opt" data-sort-order="recent">
+                  <input
+                    class="sort-opt-input"
+                    type="radio"
+                    name="sort-field"
+                    value="recent"
+                    checked
+                  />
+                  <span class="sort-opt-label">Newest</span>
+                </label>
+                <label class="sort-opt" data-sort-order="score">
+                  <input class="sort-opt-input" type="radio" name="sort-field" value="score" />
+                  <span class="sort-opt-label">Top score</span>
+                </label>
+                <span class="sort-pill-divider" aria-hidden="true"></span>
+                <button id="sort-direction" class="sort-dir" type="button">
+                  <svg
+                    class="sort-dir-icon"
+                    viewBox="0 0 16 16"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path
+                      d="M8 2.5v11m0 0 3.5-3.5M8 13.5 4.5 10"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <span id="sort-direction-label" class="sort-dir-label">Newest first</span>
+                </button>
+              </div>
+              <p id="sort-note" class="sort-note" hidden></p>
+            </div>
             <div
               id="bookmark-list"
               class="bookmark-list"

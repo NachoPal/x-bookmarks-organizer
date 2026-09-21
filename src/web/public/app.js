@@ -73,11 +73,14 @@
   // Filters whose MEMBERSHIP a per-bookmark toggle can flip, so a cached
   // view of one can go stale ("all" never loses or gains a post this way).
   const MEMBERSHIP_FILTERS = ["unread", "read", "favorite"];
-  // How the list is ordered (issue #62): "recent" (always the default) or
-  // "score", the opt-in ranking pass's verdict. Ordering happens SERVER-side
-  // because paging does - sorting one page here would only shuffle whichever
-  // batch happened to arrive. Persisted through XBOSortOrder's guarded storage.
+  // How the list is ordered: the FIELD (issue #62) - "recent", always the
+  // default, or "score", the opt-in ranking pass's verdict - and the
+  // DIRECTION it runs in (issue #97): "desc" is newest/highest first, "asc"
+  // is oldest/lowest first. Ordering happens SERVER-side because paging does -
+  // sorting one page here would only shuffle whichever batch happened to
+  // arrive. Both are persisted through XBOSortOrder's guarded storage.
   let activeSort = "recent";
+  let activeDir = "desc";
 
   // ---- lazy loading (paged, filtered, infinite scroll) ------------------
   // The selected category is loaded one batch at a time as the owner scrolls,
@@ -457,6 +460,16 @@
     if (window.XBOViewPersist) window.XBOViewPersist.clearSnapshot(window.sessionStorage);
   }
 
+  /**
+   * What the page snapshot is keyed by: the field AND the direction (issue
+   * #97). Pages fetched under one ordering are worthless under any other, and
+   * a snapshot keyed by the field alone would survive a direction flip and
+   * hydrate the list backwards.
+   */
+  function persistedSortKey() {
+    return window.XBOSortOrder ? window.XBOSortOrder.sortKey(activeSort, activeDir) : "recent:desc";
+  }
+
   function persistViewSnapshot() {
     if (!window.XBOViewPersist || !viewRestoreDone) return;
     saveCurrentViewToCache();
@@ -479,12 +492,12 @@
     // The open view goes last so the size bound drops the others first.
     const live = views.findIndex((v) => v.categoryId === selectedCategoryId && v.filter === activeFilter);
     if (live !== -1) views.push(views.splice(live, 1)[0]);
-    window.XBOViewPersist.writeSnapshot(window.sessionStorage, views, activeSort, Date.now());
+    window.XBOViewPersist.writeSnapshot(window.sessionStorage, views, persistedSortKey(), Date.now());
   }
 
   /** Seed `viewCaches` from the stored snapshot, for categories that still exist. */
   function hydrateViewSnapshot() {
-    const views = window.XBOViewPersist.readSnapshot(window.sessionStorage, activeSort, Date.now());
+    const views = window.XBOViewPersist.readSnapshot(window.sessionStorage, persistedSortKey(), Date.now());
     for (const view of views) {
       const node = categoryIndex.get(view.categoryId);
       if (!node) continue; // renamed/removed since (e.g. a recategorize)
@@ -722,69 +735,176 @@
     });
   }
 
-  // ---- list ordering (issue #62) -----------------------------------------
-  // This control only chooses how to ORDER what has already been scored; it
-  // never starts a run. Starting one lives behind the confirm-gated "Rank now"
-  // in the ranking popover (issues #80, #89), where the paid decision belongs.
-  const sortOrderEl = document.getElementById("sort-order");
-  const sortOrderHintEl = document.getElementById("sort-order-hint");
+  // ---- the floating sort selector (issues #62, #97) -----------------------
+  // The one sort UI in the app: it left the settings popover in #97, because
+  // an ordering control belongs beside what it orders, not among post-size
+  // and theme switches. It only chooses how to ORDER what has already been
+  // scored; it never starts a run. Starting one lives behind the
+  // confirm-gated "Rank now" in the ranking popover (issues #80, #89), where
+  // the paid decision belongs.
+  const sortBarEl = document.getElementById("sort-bar");
+  const sortFieldEl = document.getElementById("sort-field");
+  const sortSentinelEl = document.getElementById("sort-sentinel");
+  const sortDirBtn = document.getElementById("sort-direction");
+  const sortDirLabelEl = document.getElementById("sort-direction-label");
+  const sortNoteEl = document.getElementById("sort-note");
+  let sortStuckObserver = null;
 
-  function applySortOrder(id) {
-    activeSort = id;
-    if (!sortOrderEl) return;
-    sortOrderEl.querySelectorAll(".seg-input").forEach((input) => {
-      input.checked = input.value === id;
-    });
+  function sortOrderApi() {
+    return window.XBOSortOrder;
+  }
+
+  function sortFieldInputs() {
+    return sortFieldEl ? Array.from(sortFieldEl.querySelectorAll(".sort-opt-input")) : [];
+  }
+
+  /** Whether the ranking pass has stored at least one score to sort by. */
+  function scoreOrderAvailable() {
+    const api = sortOrderApi();
+    return !!api && api.scoreOrderAvailable(setupState && setupState.ranking);
   }
 
   /**
-   * Say how much of the library is actually ranked, so "Top score" is never a
-   * control that silently does nothing. Falls back to the static markup when
-   * /api/setup could not be read.
+   * Repaint the selector from `activeSort`/`activeDir`: which field is
+   * checked, whether "Top score" is offered at all, and what the direction
+   * toggle reads. Pure display - it never re-pages the list.
    */
-  function updateSortOrderHint() {
-    if (!sortOrderHintEl || !setupState || !setupState.ranking) return;
-    const { scored, total } = setupState.ranking;
-    if (scored === 0) {
-      sortOrderHintEl.textContent =
-        total === 0
-          ? "Nothing is ranked yet."
-          : `None of your ${total} bookmarks are ranked yet. Ranking is paid per token; start a run from "Rank now" in the ranking panel.`;
-      return;
+  function renderSortBar() {
+    const api = sortOrderApi();
+    if (!api || !sortBarEl) return;
+    const scoreOk = scoreOrderAvailable();
+
+    for (const input of sortFieldInputs()) {
+      input.checked = input.value === activeSort;
+      const blocked = input.value === "score" && !scoreOk;
+      input.disabled = blocked;
+      // A disabled radio cannot take focus, so the title is the POINTER half
+      // of the explanation; `.sort-note` below carries the rest.
+      if (blocked) input.parentElement.title = api.SCORE_UNAVAILABLE_MESSAGE;
+      else input.parentElement.removeAttribute("title");
     }
-    sortOrderHintEl.textContent =
-      scored === total
-        ? `All ${total} bookmarks are ranked. Top score orders them by learning value.`
-        : `${scored} of ${total} bookmarks are ranked; the rest sort last under Top score.`;
+
+    if (sortNoteEl) {
+      sortNoteEl.textContent = scoreOk ? "" : api.SCORE_UNAVAILABLE_MESSAGE;
+      sortNoteEl.hidden = scoreOk;
+    }
+    // Entering the radiogroup announces why an option is missing, which a
+    // `title` on a disabled input never would.
+    if (sortFieldEl) {
+      if (scoreOk) sortFieldEl.removeAttribute("aria-describedby");
+      else sortFieldEl.setAttribute("aria-describedby", "sort-note");
+    }
+
+    sortBarEl.dataset.direction = activeDir;
+    if (sortDirLabelEl) sortDirLabelEl.textContent = api.directionLabel(activeSort, activeDir);
+    if (sortDirBtn) {
+      const name = api.directionToggleLabel(activeSort, activeDir);
+      sortDirBtn.setAttribute("aria-label", name);
+      sortDirBtn.title = name;
+    }
   }
 
   /**
-   * Switch ordering: every cached view was paged under the OLD order, so any of
-   * them could now be in the wrong sequence - they are dropped wholesale rather
-   * than patched, exactly as a completed sync drops them.
+   * Show the selector exactly when the tab bar shows: both are controls OF an
+   * open category's list, and neither means anything without one (PR #95).
    */
-  function selectSortOrder(id) {
-    if (id === activeSort || !window.XBOSortOrder) return;
-    window.XBOSortOrder.writeSortOrder(window.localStorage, id);
-    applySortOrder(id);
+  function updateSortBarVisibility(show) {
+    if (sortBarEl) sortBarEl.hidden = !show;
+  }
+
+  /**
+   * Re-page the open category under the current ordering.
+   *
+   * Every cached view was paged under the OLD ordering, so any of them could
+   * now be in the wrong sequence - they are dropped wholesale rather than
+   * patched, exactly as a completed sync drops them. The POOL is deliberately
+   * kept: re-paging only re-sequences the cards it already holds
+   * (`paintViewCards` sets `order` and LRU-evicts the cold ones), so no loaded
+   * post - and no mounted X embed - reloads.
+   *
+   * `sameCategory` is what makes this a CONTENT-ONLY refresh (issue #97): it
+   * keeps the posts on screen (dimmed) until the new page lands instead of
+   * blanking them, and - the actual glitch - it skips `clearTabCounts()`, so
+   * the filter tabs' badges are never emptied and repainted. The tab bar's DOM
+   * is not touched here at all.
+   */
+  function repageForSort() {
     clearPersistedViews();
     viewCaches = new Map();
     cacheOrder = [];
-    // The POOL is deliberately kept: re-paging only re-sequences the cards it
-    // already holds (`paintViewCards` sets `order` and LRU-evicts the cold
-    // ones), so no loaded post - and no mounted X embed - reloads.
-    if (selectedCategoryId != null) void fetchAndRenderFirstPage();
+    if (selectedCategoryId != null) void fetchAndRenderFirstPage({ sameCategory: true });
+  }
+
+  /** Switch the sort FIELD. */
+  function selectSortOrder(id) {
+    const api = sortOrderApi();
+    if (!api || id === activeSort || !api.isKnownSortOrder(id)) return;
+    if (id === "score" && !scoreOrderAvailable()) return;
+    api.writeSortOrder(window.localStorage, id);
+    activeSort = id;
+    renderSortBar();
+    repageForSort();
+  }
+
+  /** Flip the DIRECTION the current field runs in. */
+  function toggleSortDirection() {
+    const api = sortOrderApi();
+    if (!api) return;
+    activeDir = api.flipDirection(activeDir);
+    api.writeSortDirection(window.localStorage, activeDir);
+    renderSortBar();
+    repageForSort();
+  }
+
+  /**
+   * Elevate the pill only once it is actually pinned, so it sits flat in the
+   * list at rest and lifts off the posts travelling under it. The sentinel is
+   * a zero-height marker at the top of the content pane; the observer's root
+   * margin is the bar's own sticky offset, read from the stylesheet rather
+   * than restated here.
+   */
+  function initSortStuckObserver() {
+    if (!sortBarEl || !sortSentinelEl || !contentEl || !("IntersectionObserver" in window)) return;
+    if (sortStuckObserver) sortStuckObserver.disconnect();
+    const offset = Math.round(Number.parseFloat(getComputedStyle(sortBarEl).top) || 0);
+    sortStuckObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) sortBarEl.classList.toggle("is-stuck", !entry.isIntersecting);
+      },
+      { root: contentEl, rootMargin: `-${offset}px 0px 0px 0px`, threshold: 0 },
+    );
+    sortStuckObserver.observe(sortSentinelEl);
   }
 
   function initSortOrder() {
-    if (!window.XBOSortOrder) return;
-    applySortOrder(window.XBOSortOrder.readSortOrder(window.localStorage));
-    if (!sortOrderEl) return;
-    sortOrderEl.querySelectorAll(".seg-input").forEach((input) => {
+    const api = sortOrderApi();
+    if (!api) return;
+    activeSort = api.readSortOrder(window.localStorage);
+    activeDir = api.readSortDirection(window.localStorage);
+    renderSortBar();
+    for (const input of sortFieldInputs()) {
       input.addEventListener("change", () => {
         if (input.checked) selectSortOrder(input.value);
       });
-    });
+    }
+    if (sortDirBtn) sortDirBtn.addEventListener("click", toggleSortDirection);
+    initSortStuckObserver();
+  }
+
+  /**
+   * Re-decide what the selector may offer after `/api/setup` moved (a rank run
+   * finished, or a reset wiped every score). A stored "Top score" that is no
+   * longer orderable falls back to recency and re-pages; the stored CHOICE is
+   * left alone, so it comes back by itself after the next run.
+   */
+  function updateSortAvailability() {
+    const api = sortOrderApi();
+    if (!api) return;
+    const resolved = api.resolveSortOrder(activeSort, setupState && setupState.ranking);
+    const changed = resolved !== activeSort;
+    activeSort = resolved;
+    renderSortBar();
+    if (changed) repageForSort();
   }
 
   // ---- category-color toggle ---------------------------------------------
@@ -1658,18 +1778,24 @@
     return tabCounts()[activeFilter];
   }
 
-  /** Paint each filter tab's count badge (issue #72). */
+  /**
+   * Paint each filter tab's count badge (issue #72).
+   *
+   * Every write is guarded on the value actually changing. Re-paging under a
+   * new sort order re-runs this with the very same numbers - a category's
+   * counts do not depend on how it is ordered - and writing them back anyway
+   * would churn the tab bar's DOM on a change that is only ever about the
+   * post list (issue #97).
+   */
   function renderCountLine() {
     const counts = tabCounts();
     for (const tab of filterTabButtons()) {
       const badge = tab.querySelector(".filter-tab-count");
       if (!badge) continue;
-      const n = counts[tab.dataset.filter];
-      badge.textContent = String(n);
-      tab.setAttribute(
-        "aria-label",
-        `${tab.querySelector(".filter-tab-label").textContent}, ${n}`,
-      );
+      const n = String(counts[tab.dataset.filter]);
+      if (badge.textContent !== n) badge.textContent = n;
+      const label = `${tab.querySelector(".filter-tab-label").textContent}, ${n}`;
+      if (tab.getAttribute("aria-label") !== label) tab.setAttribute("aria-label", label);
     }
   }
 
@@ -1694,6 +1820,9 @@
     const show = categorization().showFilterTabs(count, selectedCategoryId);
     if (!show) clearTabCounts();
     toolbarEl.hidden = !show;
+    // The sort selector is a control OF the open category's list too, so it
+    // comes and goes with the tabs rather than floating over an empty pane.
+    updateSortBarVisibility(show);
     if (show) {
       listRoot.setAttribute("role", "tabpanel");
       renderFilterTabs(); // re-establishes aria-labelledby on the active tab
@@ -1723,11 +1852,13 @@
 
   /** Fetch one page of the current category under the active filter. */
   function fetchPage(offset) {
-    const sort = window.XBOSortOrder ? window.XBOSortOrder.sortParam(activeSort) : "recent";
+    const api = window.XBOSortOrder;
+    const sort = api ? api.sortParam(activeSort) : "recent";
+    const dir = api ? api.dirParam(activeDir) : "desc";
     const url =
       `/api/categories/${selectedCategoryId}/bookmarks` +
       `?filter=${encodeURIComponent(activeFilter)}&sort=${encodeURIComponent(sort)}` +
-      `&offset=${offset}`;
+      `&dir=${encodeURIComponent(dir)}&offset=${offset}`;
     return getJSON(url);
   }
 
@@ -3959,7 +4090,7 @@
     updateRankControl();
     updateEmptyLibraryState();
     updateToolbarVisibility();
-    updateSortOrderHint();
+    updateSortAvailability();
     if (settingsForm && setupState && !settingsDirty) {
       settingsForm.setCatalog(setupState.catalog);
       settingsForm.setValues(setupState.settings);
@@ -4361,7 +4492,7 @@
       const status = data.ranking && data.ranking.status;
       renderRankProgress(status);
       updateRankControl();
-      updateSortOrderHint();
+      updateSortAvailability();
 
       if (status && (status.state === "done" || status.state === "error")) {
         stopRankPolling();
@@ -4391,9 +4522,11 @@
     cacheOrder = [];
     // The pool is kept, exactly as a sort change keeps it: the re-paged rows
     // carry the new scores, and `poolPost` folds them into the cards already
-    // on screen rather than rebuilding (and reloading) them.
+    // on screen rather than rebuilding (and reloading) them. `sameCategory`
+    // keeps this a CONTENT-only refresh (issue #97) - the tab bar and its
+    // badges are left alone.
     await fetchSetup();
-    if (selectedCategoryId != null) await fetchAndRenderFirstPage();
+    if (selectedCategoryId != null) await fetchAndRenderFirstPage({ sameCategory: true });
   }
 
   function initRanking() {

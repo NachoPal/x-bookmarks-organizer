@@ -13,6 +13,10 @@
   --color-border-strong: #b3bac5;
   --color-text: #14181f;
   --color-text-muted: #4a5361;
+  /* An inactive control's label. Disabled text is exempt from the 4.5:1 floor,
+     but it still has to be READABLE - this clears 3:1 on both themes'
+     surfaces - and it is never the only signal that something is off. */
+  --color-text-disabled: #767f8e;
 
   /* Brand / accent (X blue), contrast-checked against surfaces */
   --color-accent: #1868d6;
@@ -147,6 +151,11 @@
   /* The chip that follows the pointer while a post is dragged onto the tree
      (issue #92): above everything, because it IS the pointer. */
   --z-drag: 70;
+  /* The sticky sort selector (issue #97). It only has to beat the cards it
+     pins above - each of which is its own stacking context, because
+     `contain: layout` plus the post-size `zoom` makes one - so it stays a
+     local value, far below the app-level bar/popover/modal layers. */
+  --z-sort-bar: 3;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -159,6 +168,7 @@
     --color-border-strong: #414b58;
     --color-text: #eaeef4;
     --color-text-muted: #9aa5b4;
+    --color-text-disabled: #6f7a8a;
 
     --color-accent: #4d9bff;
     --color-accent-hover: #77b3ff;
@@ -198,6 +208,7 @@
   --color-border-strong: #414b58;
   --color-text: #eaeef4;
   --color-text-muted: #9aa5b4;
+  --color-text-disabled: #6f7a8a;
 
   --color-accent: #4d9bff;
   --color-accent-hover: #77b3ff;
@@ -1014,6 +1025,180 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   max-width: var(--content-measure);
   margin: 0 auto;
   padding: var(--space-5) var(--space-4) var(--space-6);
+}
+
+/* ============================================================
+   Floating sort selector (issue #97)
+   One compact pill centered over the post list, carrying the sort FIELD
+   (Newest / Top score) and the DIRECTION that field runs in. It replaces the
+   old "Order" control in the settings popover - sort lived in two places,
+   and this is the one that is beside what it orders.
+   It is `position: sticky` inside `.content` (the scrolling pane), so it
+   starts in flow under the pane's top padding - clear of the first post -
+   and pins itself a hair below the tab bar once the list scrolls past it.
+   The pill is the only opaque part: the gutters either side stay
+   transparent, so the posts visibly travel UNDER it and it reads as
+   floating rather than as a second toolbar. `#sort-sentinel` is a
+   zero-height marker `app.js` observes to add `.is-stuck` (the elevation)
+   only once it is actually pinned - there is no scroll listener.
+   It sits inside `.content-inner`, whose width is fixed at
+   --content-measure, so adding it cannot change a card's box and cannot
+   re-lay-out the X embeds (the #86 constraint).
+   ============================================================ */
+.sort-sentinel {
+  height: 0;
+}
+
+.sort-bar {
+  position: sticky;
+  top: var(--space-3);
+  z-index: var(--z-sort-bar);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.sort-pill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  /* A pill: fully rounded, so it reads as a floating object rather than as a
+     panel docked to the top of the list. */
+  border-radius: 999px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+.sort-bar.is-stuck .sort-pill {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.sort-opt {
+  display: inline-flex;
+  min-width: 0;
+}
+/* Native radio drives selection + arrow-key navigation inside the
+   radiogroup; kept off-screen but focusable, exactly as `.seg-input` is. */
+.sort-opt-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.sort-opt-label,
+.sort-dir {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-height: 1.75rem;
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-small);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.sort-opt-label:hover,
+.sort-dir:hover {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+}
+.sort-opt-label:active,
+.sort-dir:active {
+  background: var(--color-border);
+}
+.sort-opt-input:checked + .sort-opt-label {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.sort-opt-input:focus-visible + .sort-opt-label,
+.sort-dir:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+/* Disabled "Top score" (nothing ranked): muted AND struck through with a
+   not-allowed cursor, never colour alone, and always paired with the
+   `.sort-note` sentence below the pill saying why. */
+.sort-opt-input:disabled + .sort-opt-label {
+  color: var(--color-text-disabled);
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
+.sort-opt-input:disabled + .sort-opt-label:hover {
+  background: transparent;
+  color: var(--color-text-disabled);
+}
+
+.sort-pill-divider {
+  flex: 0 0 auto;
+  width: 1px;
+  align-self: stretch;
+  margin: var(--space-1) var(--space-1);
+  background: var(--color-border);
+}
+
+.sort-dir-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: 0 0 auto;
+  transition: transform var(--motion-fast) var(--ease);
+}
+/* The glyph is drawn pointing DOWN (descending: newest / highest first) and
+   flipped for ascending, so the direction is carried by a shape as well as
+   by the label's words. */
+.sort-bar[data-direction="asc"] .sort-dir-icon {
+  transform: rotate(180deg);
+}
+.sort-dir-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The explanation for a disabled option. Visible text rather than a tooltip
+   alone: a disabled radio cannot take focus, so a `title` would be reachable
+   by pointer only. It is also the pill's `aria-describedby`, so entering the
+   group announces it. */
+.sort-note {
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+@media (max-width: 560px) {
+  .sort-opt-label,
+  .sort-dir {
+    padding: var(--space-1) var(--space-2);
+  }
+  .sort-pill-divider {
+    margin: var(--space-1) 0;
+  }
 }
 
 /* --- Read-state filter (segmented control) ---------------------------- */

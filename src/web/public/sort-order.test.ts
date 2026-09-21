@@ -3,11 +3,23 @@ import { describe, expect, it } from "vitest";
 // Plain browser JS, required directly (not compiled by tsc).
 const {
   DEFAULT_SORT_ORDER,
+  DEFAULT_SORT_DIRECTION,
   SORT_ORDERS,
+  SCORE_UNAVAILABLE_MESSAGE,
   isKnownSortOrder,
+  isKnownSortDirection,
   readSortOrder,
   writeSortOrder,
+  readSortDirection,
+  writeSortDirection,
   sortParam,
+  dirParam,
+  flipDirection,
+  sortKey,
+  directionLabel,
+  directionToggleLabel,
+  scoreOrderAvailable,
+  resolveSortOrder,
   formatScore,
   scoreBreakdown,
   describeScore,
@@ -228,5 +240,104 @@ describe("scoreBreakdown", () => {
     expect(scoreBreakdown(null)).toBeNull();
     expect(scoreBreakdown({})).toBeNull();
     expect(scoreBreakdown({ value: Number.NaN })).toBeNull();
+  });
+});
+
+describe("sort direction (issue #97)", () => {
+  it("defaults to descending, which is the only ordering that existed before it", () => {
+    expect(DEFAULT_SORT_DIRECTION).toBe("desc");
+    expect(readSortDirection(fakeStorage())).toBe("desc");
+  });
+
+  it("round-trips a known direction and ignores an unknown one", () => {
+    const storage = fakeStorage();
+    writeSortDirection(storage, "asc");
+    expect(readSortDirection(storage)).toBe("asc");
+    writeSortDirection(storage, "sideways");
+    expect(readSortDirection(storage)).toBe("asc");
+    expect(isKnownSortDirection("desc")).toBe(true);
+    expect(isKnownSortDirection("sideways")).toBe(false);
+  });
+
+  it("falls back to the default for a stored value it no longer offers", () => {
+    const storage = fakeStorage();
+    storage.setItem("xbo:sort-direction", "random");
+    expect(readSortDirection(storage)).toBe("desc");
+  });
+
+  it("survives storage that throws", () => {
+    expect(readSortDirection(throwingStorage())).toBe("desc");
+    expect(() => writeSortDirection(throwingStorage(), "asc")).not.toThrow();
+  });
+
+  it("maps a direction onto the API's dir parameter", () => {
+    expect(dirParam("asc")).toBe("asc");
+    expect(dirParam("desc")).toBe("desc");
+    expect(dirParam("nonsense")).toBe("desc");
+  });
+
+  it("flips to the other direction, from anything", () => {
+    expect(flipDirection("desc")).toBe("asc");
+    expect(flipDirection("asc")).toBe("desc");
+    expect(flipDirection("nonsense")).toBe("asc"); // i.e. flipped from the default
+  });
+
+  it("keys a persisted snapshot by the field AND the direction", () => {
+    // A snapshot keyed by the field alone would survive a direction flip and
+    // hydrate the list backwards.
+    expect(sortKey("recent", "desc")).toBe("recent:desc");
+    expect(sortKey("recent", "asc")).toBe("recent:asc");
+    expect(sortKey("score", "asc")).toBe("score:asc");
+    expect(sortKey("recent", "desc")).not.toBe(sortKey("recent", "asc"));
+    expect(sortKey("nonsense", "nonsense")).toBe("recent:desc");
+  });
+
+  it("names the direction in the FIELD's own words, never 'ascending'", () => {
+    expect(directionLabel("recent", "desc")).toBe("Newest first");
+    expect(directionLabel("recent", "asc")).toBe("Oldest first");
+    expect(directionLabel("score", "desc")).toBe("Highest first");
+    expect(directionLabel("score", "asc")).toBe("Lowest first");
+    expect(directionLabel("nonsense", "desc")).toBe("Newest first");
+  });
+
+  it("gives the toggle a name that opens with its visible label", () => {
+    // WCAG 2.5.3: the accessible name has to contain the visible one.
+    const name = directionToggleLabel("score", "desc");
+    expect(name.startsWith(directionLabel("score", "desc"))).toBe(true);
+    expect(name).toBe("Highest first. Switch to lowest first.");
+    expect(directionToggleLabel("recent", "asc")).toBe("Oldest first. Switch to newest first.");
+  });
+});
+
+describe("Top score availability", () => {
+  it("is offered once the ranking pass has stored at least one score", () => {
+    expect(scoreOrderAvailable({ scored: 1, total: 40 })).toBe(true);
+    expect(scoreOrderAvailable({ scored: 40, total: 40 })).toBe(true);
+  });
+
+  it("is withheld while nothing is ranked - sorting by it would do nothing", () => {
+    expect(scoreOrderAvailable({ scored: 0, total: 40 })).toBe(false);
+    expect(scoreOrderAvailable({ scored: 0, total: 0 })).toBe(false);
+  });
+
+  it("fails CLOSED when there is no readable state, like ranking.js", () => {
+    expect(scoreOrderAvailable(null)).toBe(false);
+    expect(scoreOrderAvailable(undefined)).toBe(false);
+    expect(scoreOrderAvailable({})).toBe(false);
+    expect(scoreOrderAvailable({ scored: "lots" })).toBe(false);
+  });
+
+  it("says why, in one sentence naming the control that fixes it", () => {
+    expect(SCORE_UNAVAILABLE_MESSAGE).toContain("Rank now");
+  });
+
+  it("resolves a stored 'score' back to recency while nothing is ranked", () => {
+    // The list must never be paged under an ordering whose control is
+    // disabled; the stored CHOICE is left alone, so it returns by itself.
+    expect(resolveSortOrder("score", { scored: 0, total: 9 })).toBe("recent");
+    expect(resolveSortOrder("score", null)).toBe("recent");
+    expect(resolveSortOrder("score", { scored: 3, total: 9 })).toBe("score");
+    expect(resolveSortOrder("recent", { scored: 3, total: 9 })).toBe("recent");
+    expect(resolveSortOrder("nonsense", { scored: 3, total: 9 })).toBe("recent");
   });
 });
