@@ -402,7 +402,9 @@
    * The chip IS focusable and opens the breakdown graph, so the swap has to
    * carry that state across: an open graph is closed (its numbers just
    * changed) and the keyboard is handed the replacement, never left on a
-   * detached node. A bookmark with no verdict simply ends up with no chip.
+   * detached node. A bookmark with no verdict gets the EMPTY badge back
+   * (issue #98) rather than no chip - which is also the swap the per-post run
+   * itself performs when it fills one in.
    */
   function patchScoreChip(bm, cardEl) {
     const right = cardEl.querySelector(".bookmark-actions-right");
@@ -413,7 +415,7 @@
       if (scoreDetailAnchor === existing) closeScoreDetail();
       existing.remove();
     }
-    const chip = renderScoreChip(bm);
+    const chip = renderScoreChip(bm, cardEl);
     // The chip leads the right-hand group, ahead of the delete button - the
     // same order `renderCard` builds.
     if (chip) right.insertBefore(chip, right.firstChild);
@@ -2261,7 +2263,7 @@
 
     const right = el("div", "bookmark-actions-group bookmark-actions-right");
 
-    const scoreChip = renderScoreChip(bm);
+    const scoreChip = renderScoreChip(bm, card);
     if (scoreChip) right.appendChild(scoreChip);
 
     const deleteBtn = el("button", "icon-btn delete-btn");
@@ -2510,8 +2512,9 @@
 
   /**
    * The ranking score (issue #62), as a compact rating beside the card's other
-   * controls - or nothing at all for a bookmark the paid ranking pass has never
-   * scored, which is not the same as a score of zero.
+   * controls - or, for a bookmark the paid pass has never scored, the EMPTY
+   * badge below (issue #98). Unranked is not a score of zero, so the two look
+   * and read as different things, never as a bad verdict.
    *
    * The number alone is an unexplained verdict, so the chip reveals the rubric
    * breakdown behind it: a small graph on hover, on keyboard focus and on tap.
@@ -2523,10 +2526,10 @@
    * (hence the popover's `aria-hidden`, and no `aria-expanded` claiming to
    * reveal something to AT).
    */
-  function renderScoreChip(bm) {
+  function renderScoreChip(bm, cardEl) {
     if (!window.XBOSortOrder) return null;
     const breakdown = window.XBOSortOrder.scoreBreakdown(bm.score);
-    if (breakdown === null) return null;
+    if (breakdown === null) return renderEmptyScoreChip(bm, cardEl);
 
     const chip = el("button", "score-chip");
     chip.type = "button";
@@ -2558,6 +2561,33 @@
       if (scoreDetailAnchor === chip) closeScoreDetail();
       else openScoreDetail(chip, breakdown);
     });
+    return chip;
+  }
+
+  /**
+   * The badge an UNRANKED post carries (issue #98): an explicit "no verdict
+   * yet, rank this one" affordance, and the entry point to the per-post run.
+   *
+   * It is deliberately NOT a zero, and must never read as one. Absent means
+   * never judged (`AGENTS.md`: an absent `bookmark_scores` row is "never
+   * ranked", which is also why `sort=score` files these last in BOTH
+   * directions), so the badge shows a dash, wears its own muted outline style
+   * rather than the filled chip's, and says so in its accessible name.
+   *
+   * Pressing it is the same paid decision as "Rank now", only narrower: it
+   * opens the same confirmation, which is what sends `{ confirm: true }`.
+   */
+  function renderEmptyScoreChip(bm, cardEl) {
+    const chip = el("button", "score-chip is-empty");
+    chip.type = "button";
+    chip.appendChild(gaugeIcon());
+    chip.appendChild(el("span", "score-chip-value", "\u2013"));
+    chip.setAttribute(
+      "aria-label",
+      "Not ranked yet. Rank this bookmark - a paid run you confirm first.",
+    );
+    chip.title = "Not ranked yet - rank this bookmark";
+    chip.addEventListener("click", () => openRankOneConfirm(bm, cardEl || chip.closest(".bookmark-card")));
     return chip;
   }
 
@@ -4549,7 +4579,11 @@
       return false;
     }
 
-    renderSyncProgress({ state: "running", messages: ["Starting sync…"] });
+    renderSyncProgress({
+      state: "running",
+      startedAt: new Date().toISOString(),
+      messages: ["Starting sync…"],
+    });
     try {
       const res = await fetch("/api/sync", { method: "POST" });
       if (!res.ok && res.status !== 409) {
@@ -4675,7 +4709,14 @@
     }
   }
 
-  const syncProgressEls = {
+  // ONE strip, two possible subjects (issue #98). A ranking run used to paint
+  // its progress inside the ranking popover, where it was invisible the moment
+  // the panel was dismissed - and where the owner had to know to look for it,
+  // in a different place from the sync they had watched a minute earlier. Both
+  // are one-at-a-time server jobs whose progress is their own log, and the
+  // server refuses to run them at once, so they share the strip under the
+  // filter tabs and `XBORanking.progressSource` decides which one it shows.
+  const progressEls = {
     root: syncProgressEl,
     text: syncProgressTextEl,
     details: syncProgressDetailsEl,
@@ -4684,17 +4725,56 @@
     dismiss: syncProgressDismissBtn,
   };
 
+  // The two statuses the strip chooses between. They are held here rather than
+  // read off `setupState` because several are OPTIMISTIC - "Starting sync…"
+  // exists before any server has confirmed anything, and an error raised
+  // before the request even left the browser has no server status at all.
+  let syncStatusView = null;
+  let rankStatusView = null;
+  /** Which job the strip is currently showing - drives retry and dismiss. */
+  let progressOwner = null;
+
+  function renderSharedProgress() {
+    progressOwner = ranking().progressSource(syncStatusView, rankStatusView);
+    const isRank = progressOwner === "rank";
+    if (syncProgressDismissBtn) {
+      syncProgressDismissBtn.setAttribute(
+        "aria-label",
+        isRank ? "Dismiss ranking status" : "Dismiss sync status",
+      );
+    }
+    if (isRank) renderProgressStrip(progressEls, rankStatusView, (s) => ranking().progressLine(s));
+    else renderProgressStrip(progressEls, syncStatusView, (s) => categorization().progressLine(s));
+  }
+
   function renderSyncProgress(status) {
-    renderProgressStrip(syncProgressEls, status, (s) => categorization().progressLine(s));
+    syncStatusView = status;
+    renderSharedProgress();
+  }
+
+  function renderRankProgress(status) {
+    rankStatusView = status;
+    renderSharedProgress();
   }
 
   function initSync() {
     if (syncBtn) syncBtn.addEventListener("click", () => startSync());
-    if (syncProgressRetryBtn) syncProgressRetryBtn.addEventListener("click", () => startSync());
+    // Both retries are a fresh START, never a resume - and a ranking retry is
+    // a fresh AUTHORIZATION, so it reopens the paid dialog rather than the run.
+    if (syncProgressRetryBtn) {
+      syncProgressRetryBtn.addEventListener("click", () => {
+        if (progressOwner === "rank") openRankConfirm();
+        else void startSync();
+      });
+    }
     if (syncProgressDismissBtn) {
       syncProgressDismissBtn.addEventListener("click", () => {
         syncProgressEl.hidden = true;
-        syncBtn.focus();
+        // The job's own top-bar icon, not the button inside its popover: that
+        // popover is normally closed by now, and focusing a hidden control
+        // silently strands focus on <body>.
+        const toggle = document.getElementById(progressOwner === "rank" ? "rank-toggle" : "sync-toggle");
+        if (toggle) toggle.focus();
       });
     }
   }
@@ -4733,29 +4813,35 @@
   const rankErrorEl = document.getElementById("rank-modal-error");
   const rankCancelBtn = document.getElementById("rank-cancel");
   const rankConfirmBtn = document.getElementById("rank-confirm");
-  const rankProgressEls = {
-    root: document.getElementById("rank-progress"),
-    text: document.getElementById("rank-progress-text"),
-    details: document.getElementById("rank-progress-details"),
-    log: document.getElementById("rank-progress-log"),
-    retry: document.getElementById("rank-progress-retry"),
-    dismiss: document.getElementById("rank-progress-dismiss"),
-  };
+  const rankDotEl = document.getElementById("rank-dot");
 
   let rankPollTimer = null;
+  /**
+   * The card whose empty badge opened the confirmation, or null for a
+   * whole-library run (issue #98). It is what makes the ONE dialog serve both
+   * scopes - and it is cleared on every close, so a dialog reopened from
+   * "Rank now" can never inherit a card's scope.
+   */
+  let rankOneTarget = null;
   const RANK_POLL_MS = 1500;
 
   // Inert defaults, like NO_CATEGORIZATION: a missing script must leave the
   // paid control OFF, never accidentally enabled.
   const NO_RANKING = {
     rankBlocker: () => "Ranking is unavailable in this viewer.",
+    singleRankBlocker: () => "Ranking is unavailable in this viewer.",
     blockerHeadline: (m) => m,
     blockerDetail: () => "",
     canRank: () => false,
     isRunning: () => false,
     coverageLine: () => "",
+    unrankedCount: () => 0,
+    hasUnranked: () => false,
     confirmCost: () => "This is a paid run, billed per input token.",
     confirmLabel: () => "Rank bookmarks",
+    confirmCostOne: () => "This is a paid run, billed per input token.",
+    confirmLabelOne: () => "Rank this bookmark",
+    progressSource: (sync) => (sync && sync.state && sync.state !== "idle" ? "sync" : null),
     progressLine: () => "",
   };
 
@@ -4774,12 +4860,23 @@
     const blocker = state ? ranking().rankBlocker(state) : "Ranking status is unavailable.";
 
     rankOpenBtn.classList.toggle("is-ranking", running);
-    // The progress strip lives inside the popover now, so the icon itself has
-    // to carry "a run is going" for an owner who closed the panel.
+    // The icon carries the run AND the backlog: a run outlives the popover
+    // being open, and the dot (issue #98) is how a sync that stored new,
+    // unranked bookmarks reaches an owner who is not looking at this panel.
+    // The dot itself is decorative - the same fact is in the icon's title and
+    // spelled out in full by the coverage line below.
+    const unranked = ranking().unrankedCount(state);
+    const showDot = !running && ranking().hasUnranked(state);
     const rankToggleBtn = document.getElementById("rank-toggle");
+    if (rankDotEl) rankDotEl.hidden = !showDot;
     if (rankToggleBtn) {
       rankToggleBtn.classList.toggle("is-ranking", running);
-      rankToggleBtn.title = running ? "Ranking in progress" : "Ranking";
+      rankToggleBtn.classList.toggle("has-unranked", showDot);
+      rankToggleBtn.title = running
+        ? "Ranking in progress"
+        : showDot
+          ? `Ranking - ${unranked} bookmark${unranked === 1 ? "" : "s"} unranked`
+          : "Ranking";
     }
     rankOpenBtn.disabled = running || blocker !== null;
     const label = rankOpenBtn.querySelector(".rank-btn-label");
@@ -4814,7 +4911,10 @@
     return !!rankModalEl && !rankModalEl.hidden;
   }
 
-  /** Open the paid confirmation. Nothing is spent until it is confirmed. */
+  /**
+   * Open the paid confirmation for a WHOLE-library run. Nothing is spent until
+   * it is confirmed.
+   */
   function openRankConfirm() {
     if (!rankModalEl) return;
     const state = rankState();
@@ -4822,11 +4922,39 @@
       updateRankControl();
       return;
     }
+    rankOneTarget = null;
+    showRankConfirm(ranking().confirmCost(state), ranking().confirmLabel(state));
+  }
+
+  /**
+   * Open the same confirmation for ONE post (issue #98's empty score badge).
+   *
+   * Same dialog, same `{ confirm: true }` discipline, only a narrower scope -
+   * a single bookmark is still a billed call, so it gets the whole gate rather
+   * than a shortcut. When ranking is blocked outright (no wiring, ranking off,
+   * or no key) there is nothing to confirm: the ranking panel is opened
+   * instead, because that is where the blocker is stated in full.
+   */
+  function openRankOneConfirm(bm, card) {
+    if (!rankModalEl) return;
+    const state = rankState();
+    if (ranking().singleRankBlocker(state) !== null) {
+      const rankPopover = popovers.find((p) => p.name === "ranking");
+      updateRankControl();
+      if (rankPopover) setPopoverOpen(rankPopover, true);
+      return;
+    }
+    rankOneTarget = { bm, card };
+    showRankConfirm(ranking().confirmCostOne(state), ranking().confirmLabelOne(state));
+  }
+
+  /** The dialog itself, once the scope has decided what it says. */
+  function showRankConfirm(costText, confirmText) {
     const rankPopover = popovers.find((p) => p.name === "ranking");
     if (rankPopover && isPopoverOpen(rankPopover)) setPopoverOpen(rankPopover, false, { returnFocus: false });
 
-    if (rankCostTextEl) rankCostTextEl.textContent = ranking().confirmCost(state);
-    if (rankConfirmBtn) rankConfirmBtn.textContent = ranking().confirmLabel(state);
+    if (rankCostTextEl) rankCostTextEl.textContent = costText;
+    if (rankConfirmBtn) rankConfirmBtn.textContent = confirmText;
     rankErrorEl.hidden = true;
     rankModalEl.hidden = false;
     rankBackdropEl.hidden = false;
@@ -4836,32 +4964,51 @@
 
   function closeRankConfirm(focusTarget) {
     if (!rankModalEl) return;
+    const target = rankOneTarget;
+    rankOneTarget = null;
     rankModalEl.hidden = true;
     rankBackdropEl.hidden = true;
+    // A one-post confirmation was opened FROM the card, so that is where focus
+    // belongs - but only while the badge is still on screen.
+    if (!focusTarget && target && target.card && target.card.isConnected && !target.card.hidden) {
+      const chip = target.card.querySelector(".score-chip");
+      if (chip) {
+        chip.focus();
+        return;
+      }
+    }
     // Focus goes back to a trigger the owner can actually see. "Rank now"
     // lives INSIDE the ranking popover, which opening the dialog closed, so it
     // is usually not focusable by the time we get here - focusing it then
     // would silently drop focus to <body> and strand a keyboard user. The
     // popover's own toggle is the visible thing that stands for it.
     const visible = (elm) => !!elm && !elm.disabled && elm.offsetParent !== null;
-    const target =
+    const fallback =
       focusTarget || (visible(rankOpenBtn) ? rankOpenBtn : document.getElementById("rank-toggle"));
-    if (target) target.focus();
+    if (fallback) fallback.focus();
   }
 
-  /** The authorization itself: the ONE place the viewer sends `confirm: true`. */
+  /**
+   * The authorization itself: the ONE place the viewer sends `confirm: true`,
+   * for either scope. A whole-library run is started and polled; a single post
+   * is one call, so it is awaited - but both report into the shared strip, and
+   * both carry the server's `reportRankerBilling` line in that report.
+   */
   async function confirmRank() {
+    const target = rankOneTarget;
     rankConfirmBtn.disabled = true;
     rankConfirmBtn.classList.add("is-loading");
     rankErrorEl.hidden = true;
+    const url = target ? `/api/bookmarks/${target.bm.id}/rank` : "/api/rank";
+    let body = null;
     try {
-      const res = await fetch("/api/rank", {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm: true }),
       });
+      body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
         throw new Error(body.error || "Could not start the ranking run.");
       }
     } catch (err) {
@@ -4873,12 +5020,41 @@
       rankConfirmBtn.classList.remove("is-loading");
     }
     closeRankConfirm();
-    renderRankProgress({ state: "running", messages: ["Starting the ranking run\u2026"] });
+    if (target) {
+      applyRankedOne(target, body);
+      return;
+    }
+    renderRankProgress({
+      state: "running",
+      startedAt: new Date().toISOString(),
+      messages: ["Starting the ranking run\u2026"],
+    });
     pollRank();
   }
 
-  function renderRankProgress(status) {
-    renderProgressStrip(rankProgressEls, status, (s) => ranking().progressLine(s));
+  /**
+   * Settle a finished one-post run (issue #98).
+   *
+   * The card's chip is patched IN PLACE - `patchScoreChip`, the same swap a
+   * whole run's re-page uses - so the post's mounted X embeds are never
+   * detached and reloaded. The run's own log lines (the billing line first)
+   * go into the shared strip exactly as a full run's do, so a paid call is
+   * never silent even at this size.
+   */
+  function applyRankedOne(target, body) {
+    const data = body || {};
+    target.bm.score = data.score || null;
+    patchScoreChip(target.bm, target.card);
+    if (data.ranking) {
+      if (setupState) setupState.ranking = data.ranking;
+      applySetupState();
+    }
+    renderRankProgress({
+      state: "done",
+      startedAt: new Date().toISOString(),
+      messages: data.messages || [],
+      summary: data.summary || null,
+    });
   }
 
   function pollRank() {
@@ -4937,15 +5113,8 @@
     rankCancelBtn.addEventListener("click", () => closeRankConfirm());
     rankBackdropEl.addEventListener("click", () => closeRankConfirm());
     rankConfirmBtn.addEventListener("click", () => void confirmRank());
-    // A retry is a fresh authorization, never a silent re-run.
-    if (rankProgressEls.retry) rankProgressEls.retry.addEventListener("click", openRankConfirm);
-    if (rankProgressEls.dismiss) {
-      rankProgressEls.dismiss.addEventListener("click", () => {
-        rankProgressEls.root.hidden = true;
-        const toggle = document.getElementById("sync-toggle");
-        if (toggle) toggle.focus();
-      });
-    }
+    // The run's progress (and its "Try again", which is a fresh authorization
+    // rather than a silent re-run) lives in the shared strip - see `initSync`.
     document.addEventListener("keydown", (e) => {
       if (!isRankOpen()) return;
       if (e.key === "Escape") {
@@ -5741,6 +5910,9 @@
   // state (an already-selected category suppresses it).
   void fetchSetup().then(() => {
     if (syncIsRunning()) pollSync();
+    // A ranking run started in another tab (or before a reload) owns the strip
+    // just as a sync does - it is the same one-at-a-time server job.
+    if (ranking().isRunning(rankState())) pollRank();
     // A run started in another tab (or before a reload) keeps reporting here.
     if (ranking().isRunning(rankState())) pollRank();
   });

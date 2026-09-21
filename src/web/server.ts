@@ -114,6 +114,10 @@ export const RANK_UNAVAILABLE_MESSAGE =
 export const RANK_CONFIRM_MESSAGE =
   'Ranking is PAID per token. Send { "confirm": true } to authorize a run.';
 
+/** Shown when ONE bookmark is ranked without the explicit paid confirmation. */
+export const RANK_ONE_CONFIRM_MESSAGE =
+  'Ranking is PAID per token. Send { "confirm": true } to authorize scoring this bookmark.';
+
 /** Shown when "Connect X" is pressed on a viewer with no login wiring. */
 export const X_LOGIN_UNAVAILABLE_MESSAGE =
   'Connecting to X is not available in this viewer. Run `node dist/index.js login` once instead.';
@@ -481,6 +485,63 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // The current (or last) ranking run's progress, plus the counts the Order
   // control's hint reads - so one poll refreshes both.
   app.get('/api/rank', async () => ({ ranking: rankingState() }));
+
+  // Rank ONE bookmark (issue #98): the card's empty score badge, which is the
+  // affordance an unranked post carries after a sync added it.
+  //
+  // Every paid-safety gate of POST /api/rank applies here unchanged and in the
+  // same order - `{ confirm: true }`, the opt-in + key (`ranking.blocker`,
+  // re-checked server-side), no racing a sync or a whole-library run - because
+  // a single call is still a call that is billed. What differs is only the
+  // SHAPE: one bookmark is one request, so this awaits the result and hands
+  // back the new score (plus the run's log lines, which carry
+  // `reportRankerBilling`'s price tag) instead of starting a pollable job.
+  app.post<{ Params: { id: string }; Body?: { confirm?: unknown } }>(
+    '/api/bookmarks/:id/rank',
+    async (req, reply) => {
+      if (!ranking) return reply.code(503).send({ error: RANK_UNAVAILABLE_MESSAGE });
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id)) return reply.code(400).send({ error: 'Invalid bookmark id.' });
+      if ((req.body ?? {}).confirm !== true) {
+        return reply.code(400).send({ error: RANK_ONE_CONFIRM_MESSAGE });
+      }
+      const blocker = ranking.blocker();
+      if (blocker) return reply.code(403).send({ error: blocker });
+      if (!db.getBookmarkById(id)) return reply.code(404).send({ error: 'Bookmark not found.' });
+      if (rankRunner?.isRunning()) {
+        return reply
+          .code(409)
+          .send({ error: 'A ranking run is in progress. Wait for it to finish, then try again.' });
+      }
+      if (syncRunner?.isRunning()) {
+        return reply.code(409).send({ error: 'A sync is running. Wait for it to finish, then rank.' });
+      }
+
+      const messages: string[] = [];
+      let summary;
+      try {
+        summary = await ranking.rankOne(id, (message) => {
+          const text = message.trim();
+          if (text) messages.push(text);
+        });
+      } catch (err) {
+        // Already redacted and actionable at its own boundary (the credential
+        // chain's sentence, or the SDK adapter's) - forwarded, not replaced.
+        const detail = err instanceof Error ? err.message.slice(0, MAX_ERROR_CHARS) : '';
+        return reply.code(502).send({ error: detail || 'Could not rank this bookmark.' });
+      }
+
+      const scored = db.getBookmarkScores([id]).get(id);
+      return {
+        summary,
+        messages,
+        score: scored
+          ? { value: scored.score, confidence: scored.confidence, dimensions: scored.dimensions }
+          : null,
+        ranking: rankingState(),
+      };
+    },
+  );
 
   // Run the one-time X OAuth consent. Like a sync it is started, not awaited:
   // it blocks on the owner approving a consent page in another tab, which no

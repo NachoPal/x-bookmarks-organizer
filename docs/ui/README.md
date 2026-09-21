@@ -311,3 +311,23 @@ from beside the sort pill to the viewport's bottom-right corner.
 | `104-scroll-top-corner-light.png` | **Scroll-to-top**, light, 1280px. Fixed to the viewport's bottom-right with a full `--space-5` of clearance on both edges. The sort pill is centred again - it no longer gives up its trailing gutter. |
 | `104-scroll-top-corner-narrow-dark.png` | **~400px, dark.** Same corner, same clearance; the pill is centred here too. |
 | `104-scroll-top-toast-narrow-light.png` | **~400px with a toast.** Below 640px the toast stacks ABOVE the button rather than beside it, so a near-full-width toast and the corner button never overlap. |
+
+## Issue #98 — one progress strip, the unranked dot, the per-post score badge
+
+Three ranking-UX changes. A ranking run's progress left the rank popover for the SAME strip a sync
+paints into, under the filter tabs. The ranking icon gained a blue dot whenever bookmarks carry no
+score - which is what a sync leaves behind - and the panel names the count. And an unranked card
+now shows a hollow badge that ranks that ONE post, through the same paid confirmation as a full
+run. Captured against the dev seed with a stub TypeSafe API: no real Jev call, nothing billed.
+
+| File | What it shows |
+| --- | --- |
+| `98-rank-progress-shared-strip-light.png` | **A ranking run's progress in the shared strip**, light, 1280px. The run's own log - the `reportRankerBilling` price tag first - under the filter tabs, exactly where a sync reports. The rank popover no longer has a strip at all. The icon's dot has cleared: the run scored everything. |
+| `98-rank-dot-popover-light.png` | **The unranked dot and count**, light. The blue dot sits on the ranking icon (30 of 92 unranked) and the panel states the same number. Two cards below show the hollow badge. |
+| `98-rank-dot-popover-dark.png` | **Same, dark.** The dot's ring is the bar's own surface on both themes, so it reads as a badge on the icon rather than part of the glyph. |
+| `98-empty-badge-dark.png` | **The hollow badge**, dark, 1280px. Dashed outline and a dash where a number would be - an absent score is "never ranked", never a zero, and it must not read as a bad verdict beside a real 5.7. |
+| `98-per-post-confirm-light.png` | **The one-post confirmation.** The same dialog as a full run, scoped: "1 bookmark would be scored now", and the button that spends restates it as "Rank this bookmark". Cancel holds focus. |
+| `98-badge-filled-and-strip-light.png` | **Right after that run.** The badge has filled in to 2.6 IN PLACE (no re-render, no embed reload) and its breakdown graph opened with the focus that carried across the swap; the panel's count dropped from 30 to 29. |
+| `98-rank-blocked-no-key-light.png` | **No `TYPESAFE_API_KEY`.** Pressing a hollow badge spends nothing and opens the ranking panel: "Rank now" disabled, the cause stated outright, the credential chain's list of places behind "Where to put the key". |
+| `98-rank-dot-narrow-dark.png` | **~500px, dark** (the narrowest this browser would render). The dot survives the two-row top bar. |
+| `98-empty-badge-narrow-dark.png` | **Same width, cards.** The action row is two rows here, and the badge - hollow or filled - sits on the second one beside Summarize. |

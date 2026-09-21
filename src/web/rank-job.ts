@@ -36,7 +36,7 @@ import { requireRankerCredentials, type Config } from '../config';
 import type { CredentialStore } from '../creds/resolve';
 import type { Database } from '../db/database';
 import { buildRanker as defaultBuildRanker, reportRankerBilling, type BuiltRanker } from '../rank/build';
-import { planRanking, rankBookmarks as defaultRankBookmarks } from '../rank/ranker';
+import { planRanking, rankBookmarks as defaultRankBookmarks, type RankSummary } from '../rank/ranker';
 import { buildRubric } from '../rank/rubric';
 import type { RankJob } from './rank';
 
@@ -57,6 +57,14 @@ export interface RankJobDeps {
  */
 export interface RankWiring {
   job: RankJob;
+  /**
+   * Score ONE bookmark (issue #98's per-post empty badge), through the very
+   * same pass - `buildRanker`'s paid gate, `reportRankerBilling`'s price tag,
+   * and `rankBookmarks` narrowed to a single id. It is one API call, so unlike
+   * a whole-library run it is awaited by the request that starts it rather
+   * than polled; every gate it passes through is unchanged.
+   */
+  rankOne: (bookmarkId: number, log: (message: string) => void) => Promise<RankSummary>;
   /**
    * Why a run cannot start right now - in practice the missing
    * `TYPESAFE_API_KEY`, since ranking is on by default - as the credential
@@ -82,6 +90,17 @@ export function createRankWiring(deps: RankJobDeps): RankWiring {
         { db, scorer, logger: log },
         { rubric, concurrency: config.ranker.concurrency },
       );
+    },
+
+    // Assembled from the SAME three pieces, in the same order, so the one-post
+    // path cannot drift from the whole-library one: refuse (inside
+    // `buildRanker`), announce the price, then score. The only difference is
+    // `bookmarkIds`, which NARROWS the normal selection - an already-scored id
+    // is still not a candidate, so this can never pay twice for one bookmark.
+    rankOne: async (bookmarkId, log) => {
+      const { scorer, rubric } = build(config, store);
+      reportRankerBilling(config, rubric, log);
+      return rank({ db, scorer, logger: log }, { rubric, concurrency: 1, bookmarkIds: [bookmarkId] });
     },
 
     blocker: () => {

@@ -9,11 +9,17 @@ import { describe, it, expect } from 'vitest';
 // Plain browser JS, required directly (not compiled by tsc).
 const ranking = require('./ranking.js') as {
   rankBlocker: (r: unknown) => string | null;
+  singleRankBlocker: (r: unknown) => string | null;
   canRank: (r: unknown) => boolean;
   isRunning: (r: unknown) => boolean;
   coverageLine: (r: unknown) => string;
+  unrankedCount: (r: unknown) => number;
+  hasUnranked: (r: unknown) => boolean;
   confirmCost: (r: unknown) => string;
   confirmLabel: (r: unknown) => string;
+  confirmCostOne: (r?: unknown) => string;
+  confirmLabelOne: (r?: unknown) => string;
+  progressSource: (sync: unknown, rank: unknown) => string | null;
   blockerHeadline: (m: unknown) => string;
   blockerDetail: (m: unknown) => string;
   progressLine: (s: unknown) => string;
@@ -79,15 +85,94 @@ describe('rankBlocker', () => {
 });
 
 describe('coverageLine', () => {
+  // Phrased around what is LEFT since issue #98: that is the number the icon's
+  // dot stands for, so the panel has to name the same one.
   it('describes the library at each stage', () => {
     expect(ranking.coverageLine(state({ total: 0, pending: 0 }))).toBe('Nothing is ranked yet.');
-    expect(ranking.coverageLine(state())).toBe('None of your 10 bookmarks are ranked.');
-    expect(ranking.coverageLine(state({ scored: 4, pending: 6 }))).toBe('4 of 10 bookmarks are ranked.');
+    expect(ranking.coverageLine(state())).toBe('10 of 10 bookmarks unranked.');
+    expect(ranking.coverageLine(state({ scored: 4, pending: 6 }))).toBe('6 of 10 bookmarks unranked.');
     expect(ranking.coverageLine(state({ scored: 10, pending: 0 }))).toBe('All 10 bookmarks are ranked.');
   });
 
   it('pluralizes a single bookmark', () => {
     expect(ranking.coverageLine(state({ total: 1, scored: 1, pending: 0 }))).toBe('All 1 bookmark are ranked.');
+  });
+});
+
+describe('the unranked notification (issue #98)', () => {
+  it('counts what carries no score at all - not what a run would re-score', () => {
+    // `pending` also picks up bookmarks scored under an OLDER rubric. Those
+    // have a verdict on screen, so they are not what "unranked" means here.
+    expect(ranking.unrankedCount(state({ scored: 4, pending: 10 }))).toBe(6);
+    expect(ranking.unrankedCount(state({ scored: 10, pending: 0 }))).toBe(0);
+  });
+
+  it('never goes negative on inconsistent counts', () => {
+    expect(ranking.unrankedCount(state({ total: 3, scored: 5 }))).toBe(0);
+  });
+
+  it('shows the dot only when something is unranked, and clears it when nothing is', () => {
+    expect(ranking.hasUnranked(state({ scored: 4 }))).toBe(true);
+    expect(ranking.hasUnranked(state({ scored: 10, pending: 0 }))).toBe(false);
+    expect(ranking.hasUnranked(state({ total: 0, pending: 0 }))).toBe(false);
+  });
+
+  it('shows the dot even when the key is missing - the panel says what to fix', () => {
+    expect(ranking.hasUnranked(state({ scored: 1, blocker: 'Missing credential: TYPESAFE_API_KEY' }))).toBe(
+      true,
+    );
+  });
+
+  it('shows no dot on a viewer that cannot rank at all - a dot invites an action', () => {
+    expect(ranking.hasUnranked(state({ scored: 1, available: false }))).toBe(false);
+    expect(ranking.hasUnranked(null)).toBe(false);
+  });
+});
+
+describe('the one-post confirmation (issue #98)', () => {
+  it('keeps every gate a whole run has, except "nothing to score"', () => {
+    // The card itself already answered that: an empty badge is only rendered
+    // for a bookmark with no verdict.
+    expect(ranking.singleRankBlocker(state({ pending: 0, scored: 10 }))).toBeNull();
+    expect(ranking.singleRankBlocker(state({ blocker: 'Missing credential: TYPESAFE_API_KEY' }))).toMatch(
+      /TYPESAFE_API_KEY/,
+    );
+    expect(ranking.singleRankBlocker(state({ available: false }))).toMatch(/not available/i);
+    expect(ranking.singleRankBlocker(null)).toMatch(/not available/i);
+  });
+
+  it('names the PRICE before the scope, exactly as the whole-run one does', () => {
+    const text = ranking.confirmCostOne();
+    expect(text).toMatch(/paid run/i);
+    expect(text).toMatch(/billed per input token/i);
+    expect(text.indexOf('paid run')).toBeLessThan(text.indexOf('1 bookmark'));
+    expect(ranking.confirmLabelOne()).toBe('Rank this bookmark');
+  });
+});
+
+describe('progressSource - which job owns the ONE shared strip (issue #98)', () => {
+  const running = (startedAt: string) => ({ state: 'running', startedAt, messages: [] });
+  const done = (startedAt: string) => ({ state: 'done', startedAt, messages: [] });
+
+  it('shows nothing when neither job has anything to report', () => {
+    expect(ranking.progressSource(null, null)).toBeNull();
+    expect(ranking.progressSource({ state: 'idle' }, { state: 'idle' })).toBeNull();
+  });
+
+  it('shows whichever job exists on its own', () => {
+    expect(ranking.progressSource(done('1'), null)).toBe('sync');
+    expect(ranking.progressSource(null, done('1'))).toBe('rank');
+    expect(ranking.progressSource({ state: 'idle' }, running('1'))).toBe('rank');
+  });
+
+  it('gives a RUNNING job the strip over a finished one, either way round', () => {
+    expect(ranking.progressSource(done('2'), running('1'))).toBe('rank');
+    expect(ranking.progressSource(running('1'), done('2'))).toBe('sync');
+  });
+
+  it('otherwise keeps the run the owner just watched - the most recent one', () => {
+    expect(ranking.progressSource(done('2024-01-01T00:00:00Z'), done('2024-01-02T00:00:00Z'))).toBe('rank');
+    expect(ranking.progressSource(done('2024-01-03T00:00:00Z'), done('2024-01-02T00:00:00Z'))).toBe('sync');
   });
 });
 
