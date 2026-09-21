@@ -65,6 +65,30 @@
   }
 
   /**
+   * Re-file a bookmark from `fromCategoryIds` to the single `toCategoryId`
+   * (issue #92) and return every node whose counters moved, so the caller
+   * patches exactly those rows.
+   *
+   * Two sequenced deltas, not one: the old chains lose the post and the new
+   * chain gains it, and an ancestor common to both is adjusted once in each
+   * direction - netting zero, which is correct, because a rolled-up count is
+   * DISTINCT bookmarks in the subtree and a post that never left that subtree
+   * was only ever counted once there.
+   */
+  function applyMoveDelta(index, fromCategoryIds, toCategoryId, unreadDelta) {
+    const removed = applyCountDelta(index, fromCategoryIds, -1, -unreadDelta);
+    const added = applyCountDelta(index, [toCategoryId], 1, unreadDelta);
+    const seen = new Set();
+    const updated = [];
+    for (const node of removed.concat(added)) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      updated.push(node);
+    }
+    return updated;
+  }
+
+  /**
    * Per-tab badge counts for one category's rolled-up counts (issue #72).
    * Read is derived (total - unread); favorite may be absent on old payloads.
    */
@@ -79,7 +103,14 @@
     };
   }
 
-  const api = { tabCounts, buildCategoryIndex, ancestorChainIds, affectedCategoryIds, applyCountDelta };
+  const api = {
+    tabCounts,
+    buildCategoryIndex,
+    ancestorChainIds,
+    affectedCategoryIds,
+    applyCountDelta,
+    applyMoveDelta,
+  };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

@@ -893,3 +893,83 @@ describe('Database category descriptions (issue #61)', () => {
     }
   });
 });
+
+describe('Database.setBookmarkCategory (issue #92)', () => {
+  let db: Database;
+  const when = '2024-02-01T00:00:00.000Z';
+  let ai: number;
+  let evals: number;
+  let design: number;
+  let bookmarkId: number;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    ai = db.getOrCreateCategory('AI', null, when).id;
+    evals = db.getOrCreateCategory('Evals', ai, when).id;
+    design = db.getOrCreateCategory('Design', null, when).id;
+    // Filed under THREE categories, the way the assignment pass may leave a
+    // multi-label bookmark - the case a move has to collapse.
+    db.storeCategorizedBatch([bookmark('1')], () => [ai, evals, design], when);
+    bookmarkId = db.getBookmarkByPostId('1')!.id;
+  });
+  afterEach(() => db.close());
+
+  const filedUnder = () =>
+    (db.getCategoryIdsForBookmarks([bookmarkId]).get(bookmarkId) ?? []).slice().sort();
+
+  it('replaces every membership with the single chosen category', () => {
+    expect(filedUnder()).toEqual([ai, evals, design].sort());
+    expect(db.setBookmarkCategory(bookmarkId, design)).toBe(true);
+    expect(filedUnder()).toEqual([design]);
+  });
+
+  it('is idempotent, and re-filing where it already is leaves exactly one row', () => {
+    db.setBookmarkCategory(bookmarkId, evals);
+    db.setBookmarkCategory(bookmarkId, evals);
+    expect(filedUnder()).toEqual([evals]);
+  });
+
+  it('moves the rolled-up counts from the source chain to the destination', () => {
+    expect(db.getCategoryBookmarkCounts(ai).total).toBe(1);
+    expect(db.getCategoryBookmarkCounts(design).total).toBe(1);
+    db.setBookmarkCategory(bookmarkId, design);
+    expect(db.getCategoryBookmarkCounts(ai).total).toBe(0);
+    expect(db.getCategoryBookmarkCounts(evals).total).toBe(0);
+    expect(db.getCategoryBookmarkCounts(design).total).toBe(1);
+  });
+
+  it('touches nothing else: read state, favorite and the post itself survive', () => {
+    db.markRead(bookmarkId, when);
+    db.setFavorite(bookmarkId, true);
+    db.setBookmarkCategory(bookmarkId, design);
+    const after = db.getBookmarkById(bookmarkId)!;
+    expect(after.read).toBe(true);
+    expect(after.favorite).toBe(true);
+    expect(after.text).toBe('text for 1');
+  });
+
+  it('leaves other bookmarks alone', () => {
+    db.storeCategorizedBatch([bookmark('2')], () => [ai], when);
+    const other = db.getBookmarkByPostId('2')!.id;
+    db.setBookmarkCategory(bookmarkId, design);
+    expect(db.getCategoryIdsForBookmarks([other]).get(other)).toEqual([ai]);
+  });
+
+  it('reports an unknown bookmark id without writing anything', () => {
+    expect(db.setBookmarkCategory(99999, design)).toBe(false);
+    expect(db.getCategoryBookmarkCounts(design).total).toBe(1);
+  });
+});
+
+describe('Database.getCategoryById (issue #92)', () => {
+  it('returns the node, or undefined for an id that does not exist', () => {
+    const db = new Database(':memory:');
+    try {
+      const ai = db.getOrCreateCategory('AI', null, '2024-01-01T00:00:00.000Z');
+      expect(db.getCategoryById(ai.id)?.name).toBe('AI');
+      expect(db.getCategoryById(4242)).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+});

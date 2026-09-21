@@ -215,6 +215,13 @@ prints which provider and model it resolved, or why summaries are disabled. Sync
 viewer needs the X credentials as described above; `serve` also prints how the next sync will be
 billed, before you press the button.
 
+**Correcting where a post lives** - the categories are the LLM's guess, so any post can be re-filed
+by hand from the viewer: drag the handle at the left of its action row onto a category in the
+sidebar (hovering a category opens it, so you can drill into nested ones mid-drag), or press the
+folder icon between the star and Summarize to pick a destination from a searchable tree. Either
+way the post is filed under **exactly** that one category - a move replaces its other categories
+rather than adding one - and the picker is fully keyboard-operable.
+
 **Re-fetch unreadable articles** (optional) - Summarize caches each bookmark's article fetch, and a
 link cached as unreadable stays that way even after the fetcher improves. This re-fetches every
 article cached without a body and, for each one that now has a body, drops just that bookmark's

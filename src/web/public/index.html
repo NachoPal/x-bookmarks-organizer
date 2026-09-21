@@ -632,6 +632,80 @@
       </div>
     </div>
 
+    <!-- Move a post to another category (issue #92). The keyboard-accessible
+         equivalent of dragging a card's handle onto the sidebar: the same
+         tree and the same search filter, minus the roots' reorder grips
+         (a sidebar-only affordance), plus single-select and a confirm. -->
+    <div id="move-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="move-modal"
+      class="reader-modal setup-modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="move-title"
+      aria-describedby="move-intro"
+    >
+      <div class="setup-panel move-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="move-title" class="setup-title">Move to a category</h2>
+            <p id="move-intro" class="setup-step-hint">
+              Pick one category. The post is filed there and removed from the categories it is in now.
+            </p>
+          </div>
+          <div class="reader-header-actions">
+            <button id="move-close" class="icon-btn reader-close" type="button" aria-label="Close without moving">
+              <span class="icon-x" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+        <div class="move-search">
+          <label class="visually-hidden" for="move-search-input">Filter categories by name</label>
+          <div class="search-field">
+            <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
+              <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            <input
+              id="move-search-input"
+              class="search-input"
+              type="search"
+              placeholder="Filter categories…"
+              autocomplete="off"
+              spellcheck="false"
+              aria-controls="move-tree"
+            />
+            <button
+              id="move-search-clear"
+              class="search-clear"
+              type="button"
+              aria-label="Clear category filter"
+              hidden
+            >
+              <span class="icon-x" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+        <div id="move-tree" class="move-tree"></div>
+        <div class="move-footer">
+          <p id="move-selection" class="move-selection" role="status" aria-live="polite"></p>
+          <p id="move-error" class="setup-error" hidden></p>
+          <div class="setup-footer move-actions">
+            <button id="move-cancel" class="btn btn-secondary" type="button">Cancel</button>
+            <button id="move-confirm" class="btn btn-primary" type="button" disabled>Move post</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- The chip that follows the pointer while a card is dragged onto the
+         tree (issue #92). Mounted on <body>, out of the cards: a bookmark
+         card carries `contain: layout` and the post-size `zoom`, either of
+         which would trap and rescale a fixed-position ghost. -->
+    <div id="move-ghost" class="move-ghost" hidden aria-hidden="true"></div>
+    <p id="move-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
+
     <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="false"></div>
 
     <div id="summary-backdrop" class="reader-backdrop" hidden></div>
@@ -683,6 +757,7 @@
     <script src="sort-order.js" defer></script>
     <script src="ranking.js" defer></script>
     <script src="breadcrumb.js" defer></script>
+    <script src="category-picker.js" defer></script>
     <script src="embed-theme.js" defer></script>
     <script src="categorization.js" defer></script>
     <script src="app.js" defer></script>

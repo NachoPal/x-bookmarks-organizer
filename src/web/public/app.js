@@ -39,6 +39,22 @@
   // for the button tooltip and the modal so the owner is told what to fix.
   let summaryUnavailableReason = SUMMARY_UNAVAILABLE_MESSAGE;
 
+  // ---- move a post to another category (issue #92) ------------------------
+  // Two entry points, ONE re-file: the card's drag handle dropped on a
+  // sidebar category, and the picker modal (the keyboard path).
+  const moveBackdropEl = document.getElementById("move-backdrop");
+  const moveModalEl = document.getElementById("move-modal");
+  const moveTreeEl = document.getElementById("move-tree");
+  const moveSearchInput = document.getElementById("move-search-input");
+  const moveSearchClear = document.getElementById("move-search-clear");
+  const moveSelectionEl = document.getElementById("move-selection");
+  const moveErrorEl = document.getElementById("move-error");
+  const moveConfirmBtn = document.getElementById("move-confirm");
+  const moveCancelBtn = document.getElementById("move-cancel");
+  const moveCloseBtn = document.getElementById("move-close");
+  const moveGhostEl = document.getElementById("move-ghost");
+  const moveAnnouncerEl = document.getElementById("move-announcer");
+
   let selectedCategoryId = null;
   let selectedButton = null;
   // Manual expand/collapse state (category id -> expanded), preserved across
@@ -1921,8 +1937,12 @@
     const actions = el("div", "bookmark-actions");
 
     const left = el("div", "bookmark-actions-group bookmark-actions-left");
+    // The drag handle leads the row, LEFT of the read chip (issue #92).
+    left.appendChild(renderDragHandle(bm, card));
     left.appendChild(renderPill(bm, card));
     left.appendChild(renderFavoriteButton(bm, card));
+    // "Move to a category", between Favorite and Summarize.
+    left.appendChild(renderMoveButton(bm, card));
 
     const summarizeBtn = el("button", "link-external summarize-link");
     summarizeBtn.type = "button";
@@ -2072,6 +2092,83 @@
     const label = favorite ? "Remove from favorites" : "Add to favorites";
     btn.setAttribute("aria-label", label);
     btn.title = label;
+  }
+
+  function gripIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-grip");
+    svg.innerHTML =
+      '<g fill="currentColor">' +
+      '<circle cx="7.5" cy="5" r="1.5"/><circle cx="12.5" cy="5" r="1.5"/>' +
+      '<circle cx="7.5" cy="10" r="1.5"/><circle cx="12.5" cy="10" r="1.5"/>' +
+      '<circle cx="7.5" cy="15" r="1.5"/><circle cx="12.5" cy="15" r="1.5"/></g>';
+    return svg;
+  }
+
+  /** Folder with an arrow entering it: "file this post somewhere else". */
+  function moveIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-move");
+    svg.innerHTML =
+      '<path d="M2.5 15.2V5.4a1 1 0 0 1 1-1h3.3l1.5 1.8h7.2a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-12a1 1 0 0 1-1-1z" ' +
+      'fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />' +
+      '<path d="M7.4 11h5M10.4 8.8l2.2 2.2-2.2 2.2" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />';
+    return svg;
+  }
+
+  function checkIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-check");
+    svg.innerHTML =
+      '<path d="M4.5 10.5l3.6 3.6 7.4-8" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" />';
+    return svg;
+  }
+
+  /**
+   * The card's drag handle (issue #92): press and drag it onto a category in
+   * the sidebar to re-file the post there.
+   *
+   * It is a real button, and pressing it (click, Enter or Space) opens the
+   * picker modal - the same destination the drag reaches. A focusable control
+   * that only answers to a pointer gesture would be a dead stop for the
+   * keyboard, and "drag me" is not a promise a keyboard can keep.
+   */
+  function renderDragHandle(bm, card) {
+    const handle = el("button", "icon-btn card-grip");
+    handle.type = "button";
+    handle.setAttribute("aria-label", "Move to another category");
+    handle.title = "Drag onto a category, or press to choose one";
+    handle.appendChild(gripIcon());
+    handle.addEventListener("pointerdown", (e) => startCardDrag(e, handle, bm, card));
+    handle.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      openMovePicker(bm, card, handle);
+    });
+    return handle;
+  }
+
+  /** "Move to a category" - the picker's own trigger, between Favorite and Summarize. */
+  function renderMoveButton(bm, card) {
+    const btn = el("button", "icon-btn move-btn");
+    btn.type = "button";
+    btn.setAttribute("aria-haspopup", "dialog");
+    btn.setAttribute("aria-label", "Move to a category");
+    btn.title = "Move to a category";
+    btn.appendChild(moveIcon());
+    btn.addEventListener("click", () => openMovePicker(bm, card, btn));
+    return btn;
   }
 
   function trashIcon() {
@@ -2587,20 +2684,62 @@
    * with by the length of an animation.
    */
   function dropCardFromView(bm, card) {
-    animateCardExit(card, () => {
-      card.hidden = true; // stays pooled and mounted: no reload if it reappears
-      const idx = currentViewBookmarks.indexOf(bm);
-      if (idx !== -1) currentViewBookmarks.splice(idx, 1);
-      pageOffset = Math.max(0, pageOffset - 1);
-      if (currentViewBookmarks.length > 0) {
-        updateTail(); // keep the "N shown" end-of-list marker in step
-      } else if (pageHasMore) {
-        // Emptied the visible view but more remain: pull the next batch in.
-        loadMore();
-      } else {
-        removeTail();
-        stateMessage(listEl, "empty", emptyFilterMessage());
-      }
+    animateCardExit(card, () => commitCardOut(bm, card));
+  }
+
+  /**
+   * The bookkeeping half of a card leaving the view, shared by every exit
+   * (read/favorite drop-out, and the re-file of issue #92) so the two
+   * animations differ only in their motion.
+   */
+  function commitCardOut(bm, card) {
+    card.hidden = true; // stays pooled and mounted: no reload if it reappears
+    const idx = currentViewBookmarks.indexOf(bm);
+    if (idx !== -1) currentViewBookmarks.splice(idx, 1);
+    pageOffset = Math.max(0, pageOffset - 1);
+    if (currentViewBookmarks.length > 0) {
+      updateTail(); // keep the "N shown" end-of-list marker in step
+    } else if (pageHasMore) {
+      // Emptied the visible view but more remain: pull the next batch in.
+      loadMore();
+    } else {
+      removeTail();
+      stateMessage(listEl, "empty", emptyFilterMessage());
+    }
+  }
+
+  /**
+   * A moved post leaves the view with ONLY the settling half of the exit
+   * above (issue #92, the owner's call): the cards below FLIP up to close the
+   * gap and the card itself simply goes - no sideways travel, no fade. A
+   * re-file is not a dismissal, so the card is not swept away; the list just
+   * closes over where it was.
+   *
+   * Same three load-bearing properties as `animateCardExit`: `commit` runs
+   * exactly once (so reduced motion and a browser without the Web Animations
+   * API both fall through to an instant hide), the card is hidden rather than
+   * detached (keeping it pooled with its mounted X embeds), and the FLIP
+   * delta is divided by the card's own `zoom`.
+   */
+  function reflowCardOut(bm, card) {
+    const commit = () => commitCardOut(bm, card);
+    if (reducedMotion.matches || typeof card.animate !== "function" || card.hidden) {
+      commit();
+      return;
+    }
+    const followers = cardsAfter(card);
+    const before = followers.map((other) => other.getBoundingClientRect().top);
+    commit(); // the gap opens on this frame; the cards below close it below
+    const collapse = motionMs("--motion-med", 200);
+    const ease = easeToken();
+    followers.forEach((other, i) => {
+      if (other.hidden) return;
+      const delta = (before[i] - other.getBoundingClientRect().top) / cardZoom(other);
+      if (Math.abs(delta) < 1) return;
+      other.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], {
+        duration: collapse,
+        easing: ease,
+      });
     });
   }
 
@@ -2805,12 +2944,636 @@
     }, UNDO_WINDOW_MS);
   }
 
+  // ---- move a post to another category (issue #92) ------------------------
+  // ONE re-file, two ways in: dragging the card's handle onto a sidebar
+  // category, and the picker modal (the keyboard-accessible equivalent, and
+  // the only path on a touch device with the drawer closed). "Move" is
+  // re-file, not add - the post ends up in exactly the chosen category.
+
+  /** The picker's pure half: the tree filter, the visible-item walk, the key contract. */
+  function picker() {
+    return window.XBOCategoryPicker;
+  }
+
+  function announceMove(message) {
+    if (moveAnnouncerEl) moveAnnouncerEl.textContent = message;
+  }
+
+  /**
+   * Keep every cached view consistent with a post that has just been re-filed
+   * from `fromIds` to `toId`.
+   *
+   * A cached view can be an ANCESTOR showing a rolled-up list, so membership
+   * is decided per subtree, not per direct category. A subtree the post left
+   * has it spliced out of its cached id lists (its position in the others is
+   * unchanged); a subtree it JOINED has its id lists dropped, because where
+   * the server's sort would place it is not knowable here. A subtree that
+   * both contained it before and contains it now is untouched.
+   *
+   * The pooled CARD is never released - the post still exists, and detaching
+   * it would reload its X embeds (issues #67, #89).
+   */
+  function syncCachedViewsOnMove(bm, fromIds, toId) {
+    if (!window.XBOTreeCounts) return;
+    const before = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, fromIds);
+    const after = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, [toId]);
+    for (const [categoryId, catCache] of viewCaches) {
+      const had = before.has(categoryId);
+      const has = after.has(categoryId);
+      if (had && !has) {
+        for (const entry of catCache.filters.values()) {
+          const idx = entry.ids.indexOf(bm.id);
+          if (idx === -1) continue;
+          entry.ids.splice(idx, 1);
+          entry.bmById.delete(bm.id);
+          entry.offset = Math.max(0, entry.offset - 1);
+        }
+      } else if (!had && has) {
+        catCache.filters.clear();
+      } else {
+        // Still filed in this subtree: only a bookmark copy no longer shared
+        // with the pool needs its category list refreshed.
+        for (const entry of catCache.filters.values()) {
+          const cached = entry.bmById.get(bm.id);
+          if (cached && cached !== bm) cached.categoryIds = [toId];
+        }
+      }
+    }
+  }
+
+  /**
+   * Re-file `bm` under exactly `targetId`, then settle everything the change
+   * touches WITHOUT reloading anything: the sidebar counters (source chain
+   * down, destination chain up, a shared ancestor netting zero), the cached
+   * views, the live view's own counts, and - when the post has left the
+   * category being browsed - the card itself, on the reflow above.
+   *
+   * Throws on failure so each entry point can report it in its own idiom
+   * (an inline message in the modal, a toast after a drag).
+   */
+  async function moveBookmarkToCategory(bm, card, targetId) {
+    const fromIds = (bm.categoryIds || []).slice();
+    const res = await fetch(`/api/bookmarks/${bm.id}/category`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ categoryId: targetId }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "Could not move that post.");
+
+    const target = categoryIndex.get(targetId);
+    const wasUnread = !bm.read;
+    const wasFavorite = Boolean(bm.favorite);
+
+    let leftView = false;
+    let joinedView = false;
+    if (window.XBOTreeCounts && selectedCategoryId != null) {
+      const before = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, fromIds);
+      const after = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, [targetId]);
+      leftView = before.has(selectedCategoryId) && !after.has(selectedCategoryId);
+      joinedView = !before.has(selectedCategoryId) && after.has(selectedCategoryId);
+    }
+
+    if (window.XBOTreeCounts) {
+      const updated = window.XBOTreeCounts.applyMoveDelta(
+        categoryIndex,
+        fromIds,
+        targetId,
+        wasUnread ? 1 : 0,
+      );
+      for (const node of updated) patchCategoryCountDom(node);
+      syncCacheCounts(updated);
+    }
+    syncCachedViewsOnMove(bm, fromIds, targetId);
+    bm.categoryIds = [targetId];
+
+    // The live view's own counts move with it, the same way the read toggle
+    // settles them before the card starts leaving.
+    if (leftView || joinedView) {
+      const sign = leftView ? -1 : 1;
+      categoryCounts.total = Math.max(0, categoryCounts.total + sign);
+      if (wasUnread) categoryCounts.unread = Math.max(0, categoryCounts.unread + sign);
+      if (wasFavorite) {
+        categoryCounts.favorite = Math.max(0, (categoryCounts.favorite || 0) + sign);
+      }
+      renderCountLine();
+    }
+    if (leftView) reflowCardOut(bm, card);
+
+    const where = target ? picker().pathLabel(target) : "another category";
+    announceMove(`Moved @${bm.authorUsername}’s post to ${where}.`);
+    showToast(`Moved to ${where}.`);
+  }
+
+  // ---- drag the handle onto a sidebar category ----------------------------
+  // Pointer events (not HTML5 drag-and-drop), the same idiom the roots'
+  // reorder grip uses: it works with a finger, it survives the cross-origin
+  // X embeds a card is full of, and it leaves the hover-expand timing here
+  // rather than in the browser's drag machinery.
+
+  /** How long a category must be hovered before it opens to show its children. */
+  const DRAG_EXPAND_MS = 420;
+  /** Distance from a scrollable edge that starts auto-scrolling, and the step. */
+  const DRAG_SCROLL_EDGE = 56;
+  const DRAG_SCROLL_STEP = 10;
+  /** Movement that turns a press into a drag rather than a click on the handle. */
+  const DRAG_START_SLOP = 4;
+
+  let cardDrag = null;
+
+  function setGhostLabel(bm, targetNode) {
+    if (!moveGhostEl) return;
+    moveGhostEl.replaceChildren();
+    if (targetNode) {
+      moveGhostEl.classList.add("is-over");
+      moveGhostEl.appendChild(el("span", "move-ghost-verb", "Move to"));
+      moveGhostEl.appendChild(el("span", "move-ghost-target", targetNode.name));
+    } else {
+      moveGhostEl.classList.remove("is-over");
+      moveGhostEl.appendChild(el("span", "move-ghost-verb", "Drop on a category"));
+      moveGhostEl.appendChild(el("span", "move-ghost-target", `@${bm.authorUsername}`));
+    }
+  }
+
+  function positionGhost(x, y) {
+    if (!moveGhostEl) return;
+    // transform-only so following the pointer never triggers layout.
+    moveGhostEl.style.transform = `translate3d(${x + 14}px, ${y + 14}px, 0)`;
+  }
+
+  function clearDropTarget(drag) {
+    if (drag.expandTimer) {
+      clearTimeout(drag.expandTimer);
+      drag.expandTimer = null;
+    }
+    if (drag.targetBtn) drag.targetBtn.classList.remove("is-drop-target");
+    drag.targetBtn = null;
+    drag.targetId = null;
+  }
+
+  /**
+   * Point the drag at whatever category is under the pointer, and start the
+   * hover-expand timer for a collapsed one. Expanding is delegated to the
+   * tree's own toggle, so drilling in is recursive for free: the revealed
+   * children are ordinary rows, and hovering one arms the same timer again.
+   */
+  function hoverTreeTarget(drag, x, y) {
+    const under = document.elementFromPoint(x, y);
+    const btn = under && under.closest ? under.closest(".tree-node") : null;
+    if (btn === drag.targetBtn) return;
+    clearDropTarget(drag);
+    if (!btn) {
+      setGhostLabel(drag.bm, null);
+      return;
+    }
+    drag.targetBtn = btn;
+    drag.targetId = Number(btn.dataset.categoryId);
+    btn.classList.add("is-drop-target");
+    setGhostLabel(drag.bm, categoryIndex.get(drag.targetId));
+    const row = btn.closest(".tree-row");
+    const toggle = row && row.querySelector(".tree-toggle");
+    if (!toggle || toggle.classList.contains("is-leaf")) return;
+    if (toggle.getAttribute("aria-expanded") === "true") return;
+    drag.expandTimer = setTimeout(() => {
+      drag.expandTimer = null;
+      toggle.click();
+    }, DRAG_EXPAND_MS);
+  }
+
+  /** Scroll the sidebar while the pointer rests near its top or bottom edge. */
+  function autoScrollSidebar(drag) {
+    const pane = treeEl.closest(".sidebar-inner");
+    if (!pane || pane.scrollHeight <= pane.clientHeight) return;
+    const rect = pane.getBoundingClientRect();
+    const { x, y } = drag.pointer;
+    if (x < rect.left || x > rect.right) return;
+    if (y > rect.top && y - rect.top < DRAG_SCROLL_EDGE) pane.scrollTop -= DRAG_SCROLL_STEP;
+    else if (y < rect.bottom && rect.bottom - y < DRAG_SCROLL_EDGE) pane.scrollTop += DRAG_SCROLL_STEP;
+  }
+
+  function startCardDrag(e, handle, bm, card) {
+    if (cardDrag) return;
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    try {
+      handle.setPointerCapture(e.pointerId);
+    } catch (_) {
+      /* no active pointer to capture (synthetic event); moves still reach the handle */
+    }
+    // The tree is the only drop target there is, so a closed drawer would
+    // make the gesture impossible: open it as the drag begins.
+    if (isCollapsed()) setCollapsed(false, { returnFocus: false });
+
+    const drag = {
+      bm,
+      card,
+      handle,
+      origin: { x: e.clientX, y: e.clientY },
+      pointer: { x: e.clientX, y: e.clientY },
+      started: false,
+      targetId: null,
+      targetBtn: null,
+      expandTimer: null,
+      raf: null,
+    };
+    cardDrag = drag;
+
+    const begin = () => {
+      drag.started = true;
+      card.classList.add("is-moving");
+      document.body.classList.add("is-card-dragging");
+      if (moveGhostEl) moveGhostEl.hidden = false;
+      setGhostLabel(bm, null);
+      positionGhost(drag.pointer.x, drag.pointer.y);
+      const tick = () => {
+        if (cardDrag !== drag) return;
+        autoScrollSidebar(drag);
+        drag.raf = window.requestAnimationFrame(tick);
+      };
+      drag.raf = window.requestAnimationFrame(tick);
+    };
+
+    const onMove = (ev) => {
+      drag.pointer = { x: ev.clientX, y: ev.clientY };
+      if (!drag.started) {
+        const far =
+          Math.abs(ev.clientX - drag.origin.x) > DRAG_START_SLOP ||
+          Math.abs(ev.clientY - drag.origin.y) > DRAG_START_SLOP;
+        if (!far) return;
+        begin();
+      }
+      positionGhost(ev.clientX, ev.clientY);
+      hoverTreeTarget(drag, ev.clientX, ev.clientY);
+    };
+
+    const finish = (ev, cancelled) => {
+      if (cardDrag !== drag) return;
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onCancel);
+      document.removeEventListener("keydown", onKey, true);
+      try {
+        if (ev) handle.releasePointerCapture(ev.pointerId);
+      } catch (_) {
+        /* capture already gone */
+      }
+      if (drag.raf != null) window.cancelAnimationFrame(drag.raf);
+      const targetId = drag.targetId;
+      clearDropTarget(drag);
+      card.classList.remove("is-moving");
+      document.body.classList.remove("is-card-dragging");
+      if (moveGhostEl) moveGhostEl.hidden = true;
+      const wasDrag = drag.started;
+      cardDrag = null;
+      if (cancelled) return;
+      // A press that never became a drag is a press: open the picker, so the
+      // handle is never a control that does nothing when you click it.
+      if (!wasDrag) {
+        openMovePicker(bm, card, handle);
+        return;
+      }
+      if (targetId == null) return;
+      moveBookmarkToCategory(bm, card, targetId).catch((err) => {
+        showToast(err.message || "Could not move that post.");
+      });
+    };
+
+    const onUp = (ev) => finish(ev, false);
+    const onCancel = (ev) => finish(ev, true);
+    const onKey = (ev) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(null, true);
+    };
+
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onCancel);
+    document.addEventListener("keydown", onKey, true);
+  }
+
+  // ---- the picker modal (the keyboard path) -------------------------------
+  // The sidebar's tree and search filter, minus the roots' reorder grips (a
+  // sidebar-only affordance, #82), plus single-select and a confirm. It is a
+  // real ARIA `tree`, so it owns that contract in full: arrow keys walk the
+  // visible rows, Right opens a node then steps into it, Left closes it then
+  // climbs out, Home/End jump, Enter/Space select.
+
+  let movePicker = null;
+
+  function isMovePickerOpen() {
+    return !!moveModalEl && !moveModalEl.hidden;
+  }
+
+  function openMovePicker(bm, card, triggerEl) {
+    if (!moveModalEl) return;
+    movePicker = {
+      bm,
+      card,
+      trigger: triggerEl,
+      selectedId: null,
+      focusedId: null,
+      expanded: new Set(),
+    };
+    // Open the path the post is filed under now, so the picker starts where
+    // the owner is rather than at a wall of collapsed roots.
+    const current = (bm.categoryIds || [])[0];
+    if (current != null && window.XBOCategoryPicker) {
+      for (const id of picker().ancestorIds(categoryIndex, current)) movePicker.expanded.add(id);
+      if (categoryIndex.has(current)) movePicker.focusedId = current;
+    }
+    moveSearchInput.value = "";
+    moveSearchClear.hidden = true;
+    moveErrorEl.hidden = true;
+    moveErrorEl.textContent = "";
+    renderMoveTree();
+    updateMoveSelection();
+    moveBackdropEl.hidden = false;
+    moveModalEl.hidden = false;
+    moveSearchInput.focus();
+    document.addEventListener("keydown", onMoveModalKeydown);
+  }
+
+  function closeMovePicker(fallbackEl) {
+    if (!isMovePickerOpen()) return;
+    moveModalEl.hidden = true;
+    moveBackdropEl.hidden = true;
+    document.removeEventListener("keydown", onMoveModalKeydown);
+    const trigger = movePicker && movePicker.trigger;
+    movePicker = null;
+    returnFocusFromPicker(trigger, fallbackEl);
+  }
+
+  /**
+   * Hand the keyboard back on the way out. Normally that is the control the
+   * picker was opened from - but a post that has just LEFT the open category
+   * has a HIDDEN card (it stays pooled, mounted and hidden, never detached),
+   * and focusing a control inside a hidden subtree is a silent no-op that
+   * would strand focus on <body>. So the destination in the sidebar takes it
+   * instead, which is also where the post just went.
+   */
+  function returnFocusFromPicker(trigger, fallbackEl) {
+    if (trigger && trigger.isConnected) {
+      trigger.focus();
+      if (document.activeElement === trigger) return;
+    }
+    if (fallbackEl && fallbackEl.isConnected) fallbackEl.focus();
+  }
+
+  function moveSearchQuery() {
+    return moveSearchInput ? moveSearchInput.value.trim() : "";
+  }
+
+  /** The roots the picker is showing: the whole tree, or the search's pruned copy. */
+  function moveVisibleRoots() {
+    const query = moveSearchQuery().toLowerCase();
+    return query ? picker().filterTree(treeRoots, query) : treeRoots;
+  }
+
+  /** While searching every surviving branch is forced open, exactly as the sidebar does. */
+  function moveIsExpanded(node) {
+    if (moveSearchQuery().length > 0) return true;
+    return movePicker.expanded.has(node.id);
+  }
+
+  function moveItems() {
+    return picker().visibleItems(moveVisibleRoots(), moveIsExpanded);
+  }
+
+  function renderMoveTree() {
+    if (!movePicker) return;
+    const raw = moveSearchQuery();
+    if (treeRoots.length === 0) {
+      stateMessage(moveTreeEl, "empty", "No categories yet. Sync your bookmarks first.");
+      return;
+    }
+    const roots = moveVisibleRoots();
+    if (roots.length === 0) {
+      stateMessage(moveTreeEl, "empty", `No categories match “${raw}”.`);
+      return;
+    }
+    const items = moveItems();
+    if (!items.some((i) => i.id === movePicker.focusedId)) {
+      movePicker.focusedId = items.length ? items[0].id : null;
+    }
+    const list = el("ul", "move-tree-list");
+    list.setAttribute("role", "tree");
+    list.setAttribute("aria-label", "Categories");
+    buildMoveNodes(roots, list, 1, raw.toLowerCase());
+    moveTreeEl.replaceChildren(list);
+  }
+
+  function buildMoveNodes(nodes, parentList, level, query) {
+    for (const node of nodes) {
+      const hasChildren = !!(node.children && node.children.length);
+      const expanded = hasChildren && moveIsExpanded(node);
+      const selected = movePicker.selectedId === node.id;
+
+      const li = el("li", "move-item");
+      li.setAttribute("role", "treeitem");
+      li.setAttribute("aria-level", String(level));
+      // Named explicitly: the nested group lives INSIDE this treeitem, so
+      // without this its accessible name would swallow its whole subtree.
+      li.setAttribute("aria-label", node.name);
+      li.setAttribute("aria-selected", String(selected));
+      if (hasChildren) li.setAttribute("aria-expanded", String(expanded));
+      li.dataset.categoryId = String(node.id);
+      li.tabIndex = node.id === movePicker.focusedId ? 0 : -1;
+
+      const row = el("div", "move-row");
+      if (selected) row.classList.add("is-selected");
+      const chev = el("span", hasChildren ? "move-chev" : "move-chev is-leaf");
+      chev.setAttribute("aria-hidden", "true");
+      if (hasChildren) chev.textContent = "▶";
+      row.appendChild(chev);
+      const label = el("span", "move-label");
+      appendHighlighted(label, node.name, query);
+      row.appendChild(label);
+      // The selection is carried by a mark as well as the tint, never by
+      // color alone.
+      const mark = el("span", "move-check");
+      mark.setAttribute("aria-hidden", "true");
+      if (selected) mark.appendChild(checkIcon());
+      row.appendChild(mark);
+      li.appendChild(row);
+
+      if (hasChildren) {
+        const group = el("ul", "move-group");
+        group.setAttribute("role", "group");
+        buildMoveNodes(node.children, group, level + 1, query);
+        group.hidden = !expanded;
+        li.appendChild(group);
+      }
+      parentList.appendChild(li);
+    }
+  }
+
+  function focusMoveItem(id) {
+    if (!movePicker) return;
+    movePicker.focusedId = id;
+    moveTreeEl.querySelectorAll('[role="treeitem"]').forEach((node) => {
+      node.tabIndex = Number(node.dataset.categoryId) === id ? 0 : -1;
+    });
+    const target = moveTreeEl.querySelector(`[role="treeitem"][data-category-id="${id}"]`);
+    if (target) target.focus();
+  }
+
+  function setMoveExpanded(id, open) {
+    if (!movePicker) return;
+    if (open) movePicker.expanded.add(id);
+    else movePicker.expanded.delete(id);
+    renderMoveTree();
+    focusMoveItem(id);
+  }
+
+  function selectMoveCategory(id) {
+    if (!movePicker) return;
+    movePicker.selectedId = id;
+    movePicker.focusedId = id;
+    moveErrorEl.hidden = true;
+    renderMoveTree();
+    updateMoveSelection();
+    focusMoveItem(id);
+  }
+
+  /** The chosen destination in prose, plus whether confirming would do anything. */
+  function updateMoveSelection() {
+    if (!movePicker) return;
+    const node = movePicker.selectedId != null ? categoryIndex.get(movePicker.selectedId) : null;
+    const noop = picker().isNoOp(movePicker.selectedId, movePicker.bm.categoryIds);
+    moveConfirmBtn.disabled = noop;
+    if (!node) {
+      moveSelectionEl.textContent = "No category chosen yet.";
+    } else if (noop) {
+      moveSelectionEl.textContent = `This post is already filed under ${picker().pathLabel(node)}.`;
+    } else {
+      moveSelectionEl.textContent = `Move to ${picker().pathLabel(node)}.`;
+    }
+  }
+
+  async function confirmMove() {
+    if (!movePicker || movePicker.selectedId == null) return;
+    const { bm, card, selectedId } = movePicker;
+    moveConfirmBtn.disabled = true;
+    moveConfirmBtn.classList.add("is-loading");
+    moveErrorEl.hidden = true;
+    try {
+      await moveBookmarkToCategory(bm, card, selectedId);
+    } catch (err) {
+      moveErrorEl.textContent = err.message || "Could not move that post.";
+      moveErrorEl.hidden = false;
+      moveConfirmBtn.disabled = false;
+      moveConfirmBtn.classList.remove("is-loading");
+      return;
+    }
+    moveConfirmBtn.classList.remove("is-loading");
+    closeMovePicker(treeEl.querySelector(`[data-category-id="${selectedId}"]`));
+  }
+
+  function onMoveTreeKeydown(e) {
+    if (!movePicker) return;
+    const li = e.target.closest ? e.target.closest('[role="treeitem"]') : null;
+    if (!li) return;
+    const id = Number(li.dataset.categoryId);
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      selectMoveCategory(id);
+      return;
+    }
+    const items = moveItems();
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      // A search force-expands every surviving branch, so there is nothing
+      // to open or close while one is running - only the walk applies.
+      if (moveSearchQuery().length > 0) return;
+      const action = picker().lateralTarget(items, id, e.key, (node) => node.parentId);
+      if (!action) return;
+      e.preventDefault();
+      if (action.action === "focus") focusMoveItem(action.id);
+      else setMoveExpanded(action.id, action.action === "expand");
+      return;
+    }
+    const target = picker().focusTarget(items, id, e.key);
+    if (!target) return;
+    e.preventDefault();
+    focusMoveItem(target.id);
+  }
+
+  function onMoveTreeClick(e) {
+    if (!movePicker) return;
+    const li = e.target.closest ? e.target.closest('[role="treeitem"]') : null;
+    if (!li) return;
+    const id = Number(li.dataset.categoryId);
+    if (e.target.closest(".move-chev")) {
+      const expanded = li.getAttribute("aria-expanded");
+      if (expanded === null) return; // a leaf: its chevron column is a spacer
+      if (moveSearchQuery().length > 0) return;
+      setMoveExpanded(id, expanded !== "true");
+      return;
+    }
+    selectMoveCategory(id);
+  }
+
+  function onMoveModalKeydown(e) {
+    if (!isMovePickerOpen()) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      // Escape in the search field clears the query first, exactly as the
+      // sidebar's own filter does; a second press leaves the dialog.
+      if (document.activeElement === moveSearchInput && moveSearchInput.value.length > 0) {
+        moveSearchInput.value = "";
+        moveSearchClear.hidden = true;
+        renderMoveTree();
+        return;
+      }
+      closeMovePicker();
+      return;
+    }
+    trapModalFocus(moveModalEl, e);
+  }
+
+  function initMovePicker() {
+    if (!moveModalEl) return;
+    moveCloseBtn.addEventListener("click", closeMovePicker);
+    moveCancelBtn.addEventListener("click", closeMovePicker);
+    moveBackdropEl.addEventListener("click", closeMovePicker);
+    moveConfirmBtn.addEventListener("click", () => void confirmMove());
+    moveTreeEl.addEventListener("click", onMoveTreeClick);
+    moveTreeEl.addEventListener("keydown", onMoveTreeKeydown);
+    moveSearchInput.addEventListener("input", () => {
+      moveSearchClear.hidden = moveSearchInput.value.trim().length === 0;
+      renderMoveTree();
+    });
+    moveSearchClear.addEventListener("click", () => {
+      moveSearchInput.value = "";
+      moveSearchClear.hidden = true;
+      renderMoveTree();
+      moveSearchInput.focus();
+    });
+    // ArrowDown from the search field steps into the tree, so the whole
+    // picker is reachable without hunting for a tab stop.
+    moveSearchInput.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowDown") return;
+      const items = moveItems();
+      if (items.length === 0) return;
+      e.preventDefault();
+      focusMoveItem(movePicker && movePicker.focusedId != null ? movePicker.focusedId : items[0].id);
+    });
+  }
+
   /** Tab/Shift+Tab wraps within `modalEl` while it is open (a real modal). Shared by every modal. */
   function trapModalFocus(modalEl, e) {
     if (e.key !== "Tab") return;
-    const focusable = modalEl.querySelectorAll(
-      'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    );
+    // Fields count, and an element that is `hidden` (or otherwise unrendered)
+    // does NOT: focusing one is a no-op, which would strand the wrap on a
+    // control the owner can neither see nor leave.
+    const focusable = Array.from(
+      modalEl.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]),' +
+          ' textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((node) => !node.hidden && node.offsetParent !== null);
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
@@ -4429,6 +5192,7 @@
   initSetup();
   initReset();
   initRanking();
+  initMovePicker();
   void restoreLastView();
   window.addEventListener("pagehide", persistViewSnapshot);
   document.addEventListener("visibilitychange", () => {
