@@ -45,11 +45,16 @@ function ensurePath(segments) {
 }
 
 // A deliberately deep (4-level) taxonomy with long titles to stress the layout.
+// The one 4-level branch is deliberate: it is what makes the top bar's
+// breadcrumb collapse its middle into the "…" overflow, so that control can be
+// exercised on the seed at all.
 const TAXONOMY = {
   'Software Engineering': {
     'Programming Languages': {
       'TypeScript & JavaScript': {},
-      'Rust Systems Programming': {},
+      'Rust Systems Programming': {
+        'Async Runtimes & Tokio': {},
+      },
       'Python for Data & Scripting': {},
     },
     'Distributed Systems': {

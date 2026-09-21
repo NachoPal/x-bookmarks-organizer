@@ -91,6 +91,9 @@
 
         <div class="topbar-center">
           <h1 id="content-title" class="topbar-title"><button type="button" class="topbar-prompt" data-open-categories aria-controls="sidebar">Select a category</button></h1>
+          <!-- The collapsed "…" crumb's menu. A sibling of the title, not a
+               child: the title clips its overflow to stay on one line. -->
+          <div id="crumb-menu" class="crumb-menu" role="menu" aria-label="Parent categories" hidden></div>
         </div>
 
         <div class="topbar-right">
@@ -134,6 +137,74 @@
               />
             </svg>
           </button>
+
+          <div class="settings-anchor">
+            <button
+              id="rank-toggle"
+              class="icon-btn rank-toggle"
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="rank-panel"
+              aria-label="Open ranking"
+            >
+              <svg class="icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 16.5V4.2" />
+                  <path d="M2.8 7.4L6 4.2l3.2 3.2" />
+                  <path d="M14 3.5v12.3" />
+                  <path d="M17.2 12.6L14 15.8l-3.2-3.2" />
+                </g>
+              </svg>
+            </button>
+
+            <div
+              id="rank-panel"
+              class="settings-panel rank-panel"
+              role="dialog"
+              aria-labelledby="rank-panel-title"
+              hidden
+            >
+              <h2 id="rank-panel-title" class="settings-panel-title">Ranking</h2>
+              <p id="rank-coverage" class="rank-note">Loading…</p>
+              <button id="rank-open" class="btn btn-primary rank-btn" type="button">
+                <span class="rank-btn-label">Rank now</span>
+              </button>
+              <div id="rank-blocker" class="rank-blocker" hidden>
+                <p id="rank-blocker-headline" class="rank-blocker-headline"></p>
+                <details id="rank-blocker-more" class="rank-blocker-more" hidden>
+                  <summary class="rank-blocker-summary">Where to put the key</summary>
+                  <p id="rank-blocker-detail" class="rank-blocker-detail"></p>
+                </details>
+              </div>
+              <p class="rank-note">
+                Scoring is paid per token. A run always asks you to confirm the cost first.
+              </p>
+
+              <div id="rank-progress" class="sync-progress panel-progress" role="status" aria-live="polite" hidden>
+                <span id="rank-progress-icon" class="sync-progress-icon" aria-hidden="true"></span>
+                <div class="sync-progress-body">
+                  <p id="rank-progress-text" class="sync-progress-text"></p>
+                  <details id="rank-progress-details" class="sync-progress-details" hidden>
+                    <summary class="sync-progress-summary">Details</summary>
+                    <ol id="rank-progress-log" class="sync-progress-log"></ol>
+                  </details>
+                </div>
+                <button id="rank-progress-retry" class="btn btn-secondary sync-progress-btn" type="button" hidden>
+                  Try again
+                </button>
+                <button
+                  id="rank-progress-dismiss"
+                  class="icon-btn sync-progress-dismiss"
+                  type="button"
+                  aria-label="Dismiss ranking status"
+                  hidden
+                >
+                  <span class="icon-x" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+          </div>
 
           <div class="settings-anchor">
             <button
@@ -183,15 +254,6 @@
                             </svg>
                             <span class="sync-btn-label">Sync</span>
                           </button>
-              <div class="sync-rank">
-                <h3 class="sync-subheading">Ranking</h3>
-                <p id="rank-coverage" class="sync-rank-note">Loading…</p>
-                <button id="rank-open" class="btn btn-secondary rank-btn" type="button">
-                  <span class="rank-btn-label">Rank now</span>
-                </button>
-                <p id="rank-blocker" class="sync-rank-blocker" hidden></p>
-              </div>
-
               <div class="sync-reset">
                 <p class="sync-reset-note">Start over from an empty library. Your X sign-in is kept.</p>
                 <button id="reset-open" class="btn btn-danger" type="button">Reset library</button>
@@ -279,7 +341,7 @@
                 </div>
                 <p id="sort-order-hint" class="settings-hint">
                   Top score needs the ranking pass, which is paid per token. Start a run from
-                  &ldquo;Rank now&rdquo; in the sync panel.
+                  &ldquo;Rank now&rdquo; in the ranking panel.
                 </p>
               </div>
 
@@ -394,29 +456,6 @@
             class="icon-btn sync-progress-dismiss"
             type="button"
             aria-label="Dismiss sync status"
-            hidden
-          >
-            <span class="icon-x" aria-hidden="true"></span>
-          </button>
-        </div>
-
-        <div id="rank-progress" class="sync-progress" role="status" aria-live="polite" hidden>
-          <span id="rank-progress-icon" class="sync-progress-icon" aria-hidden="true"></span>
-          <div class="sync-progress-body">
-            <p id="rank-progress-text" class="sync-progress-text"></p>
-            <details id="rank-progress-details" class="sync-progress-details" hidden>
-              <summary class="sync-progress-summary">Details</summary>
-              <ol id="rank-progress-log" class="sync-progress-log"></ol>
-            </details>
-          </div>
-          <button id="rank-progress-retry" class="btn btn-secondary sync-progress-btn" type="button" hidden>
-            Try again
-          </button>
-          <button
-            id="rank-progress-dismiss"
-            class="icon-btn sync-progress-dismiss"
-            type="button"
-            aria-label="Dismiss ranking status"
             hidden
           >
             <span class="icon-x" aria-hidden="true"></span>
@@ -635,6 +674,8 @@
     <script src="view-persist.js" defer></script>
     <script src="sort-order.js" defer></script>
     <script src="ranking.js" defer></script>
+    <script src="breadcrumb.js" defer></script>
+    <script src="embed-theme.js" defer></script>
     <script src="categorization.js" defer></script>
     <script src="app.js" defer></script>
   </body>

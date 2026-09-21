@@ -20,13 +20,15 @@ export interface BuiltRanker {
 }
 
 /**
- * Construct the ranker, refusing first if it is not opted into or cannot
+ * Construct the ranker, refusing first if ranking is turned off or cannot
  * authenticate.
  *
- * `requireRankerCredentials` runs BEFORE anything is constructed, and it checks
- * the opt-in before the key, so neither a leftover `TYPESAFE_API_KEY` nor a
- * typo'd `XBOOKMARKS_RANKER` can produce a billable run. The key's value is
- * handed straight to the client and never logged.
+ * `requireRankerCredentials` runs BEFORE anything is constructed. Ranking is
+ * enabled by default (issue #80), so in practice the gate here is the resolved
+ * `TYPESAFE_API_KEY`; constructing a ranker is still not spending, and every
+ * caller announces its billing (and, in the app, asks for an explicit
+ * confirmation) before a call is made. The key's value is handed straight to
+ * the client and never logged.
  */
 export function buildRanker(config: Config, store: CredentialStore): BuiltRanker {
   const apiKey = requireRankerCredentials(config, store);
@@ -55,5 +57,5 @@ export function reportRankerBilling(config: Config, rubric: Rubric, log: Log): v
       `${rubric.dimensions.length} question(s) per bookmark in one request each; ` +
       'input tokens are billed, output tokens are free.',
   );
-  log('Unset XBOOKMARKS_RANKER to leave ranking off. Nothing else in the tool uses it.');
+  log('Set XBOOKMARKS_RANKER=off to disable ranking. Nothing else in the tool uses it.');
 }

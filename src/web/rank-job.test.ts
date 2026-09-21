@@ -89,39 +89,36 @@ describe('createRankWiring', () => {
   afterEach(() => db.close());
 
   describe('paid-safety gates', () => {
-    it('refuses when ranking is not opted into, even with a key present', async () => {
-      // The whole point of checking the opt-in FIRST: a TYPESAFE_API_KEY left
-      // over from a categorization experiment must never make a run billable.
+    it('refuses when ranking is explicitly turned off, even with a key present', async () => {
       const w = wiring({
-        config: loadConfig({}),
+        config: loadConfig({ XBOOKMARKS_RANKER: 'off' }),
         store: fakeStore({ TYPESAFE_API_KEY: 'left-over-from-something-else' }),
       });
-      expect(w.blocker()).toMatch(/Ranking is off/);
-      await expect(w.job(() => {})).rejects.toThrow(/Ranking is off/);
+      expect(w.blocker()).toMatch(/Ranking is turned off/);
+      await expect(w.job(() => {})).rejects.toThrow(/Ranking is turned off/);
       expect(scorer.states).toHaveLength(0);
     });
 
-    it('refuses when ranking is on but the key does not resolve', async () => {
-      const w = wiring({
-        config: loadConfig({ XBOOKMARKS_RANKER: 'typesafe' }),
-        store: fakeStore({}),
-      });
-      expect(w.blocker()).toMatch(/TYPESAFE_API_KEY/);
+    it('is KEY-gated by default: no key, no run, and the blocker says exactly that', async () => {
+      // Issue #80: with ranking on by default the one gate the owner meets is
+      // the key, so the blocker the panel renders must lead with that cause.
+      const w = wiring({ config: loadConfig({}), store: fakeStore({}) });
+      expect(w.blocker()).toMatch(/^TypeSafe API key missing/);
       await expect(w.job(() => {})).rejects.toThrow(/TYPESAFE_API_KEY/);
       expect(scorer.states).toHaveLength(0);
     });
 
-    it('treats an unrecognized ranker value as off, never as an opt-in', async () => {
+    it('keeps the default (on) for an unrecognized ranker value', () => {
       const w = wiring({
         config: loadConfig({ XBOOKMARKS_RANKER: 'typesafe-ish' }),
         store: fakeStore({ TYPESAFE_API_KEY: 'k' }),
       });
-      expect(w.blocker()).toMatch(/Ranking is off/);
+      expect(w.blocker()).toBeNull();
       expect(scorer.states).toHaveLength(0);
     });
 
-    it('reports no blocker once ranking is opted into and the key resolves', () => {
-      expect(wiring().blocker()).toBeNull();
+    it('reports no blocker on a default environment once the key resolves', () => {
+      expect(wiring({ config: loadConfig({}) }).blocker()).toBeNull();
     });
 
     it('announces how the run is billed BEFORE scoring anything', async () => {

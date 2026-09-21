@@ -11,9 +11,10 @@
  * PAID-SAFETY, and it is the same set of gates the CLI has, in the same order:
  *
  *  1. `requireRankerCredentials` (inside `buildRanker`) refuses unless ranking
- *     is opted into via `XBOOKMARKS_RANKER=typesafe` AND `TYPESAFE_API_KEY`
- *     resolves - the OPT-IN first, so a key left over from a categorization
- *     experiment can never make a run billable on its own.
+ *     is enabled (it is by default - `XBOOKMARKS_RANKER=off` turns it off) AND
+ *     `TYPESAFE_API_KEY` resolves. The KEY is what gates a run in practice, and
+ *     a resolvable key on its own still spends nothing: it only makes the
+ *     button offerable, and gate 3 stands between it and any call.
  *  2. `reportRankerBilling` announces the price tag BEFORE the first call, into
  *     the same progress stream, so the run says what it costs while it runs.
  *  3. The route (`POST /api/rank`) additionally requires an explicit
@@ -23,11 +24,9 @@
  *     click away.
  *
  * Unlike the sync job, no app setting is layered onto the config: the ranker's
- * knobs (`XBOOKMARKS_RANKER*`) are deliberately NOT in the settings panel, so
- * turning ranking on stays an explicit act the owner performs on the server
- * once - gate 1 above. A stray env var therefore cannot start a run by itself
- * either; it only makes the button offerable, and gate 3 still stands between
- * it and any spend.
+ * knobs (`XBOOKMARKS_RANKER*`) are deliberately NOT in the settings panel. A
+ * stray env var cannot start a run by itself either; it only decides whether
+ * the button exists, and gate 3 still stands between it and any spend.
  *
  * `buildRanker` and `rank` are the offline test seams (mirroring
  * `SyncJobDeps.ingest`): a test drives the real wiring with a fake scorer, so
@@ -59,9 +58,11 @@ export interface RankJobDeps {
 export interface RankWiring {
   job: RankJob;
   /**
-   * Why a run cannot start right now - ranking off, or the key missing - as
-   * the credential chain's own actionable sentence, or null when it can. Only
-   * a key's PRESENCE is ever consulted; its value is never read out (`AGENTS.md`).
+   * Why a run cannot start right now - in practice the missing
+   * `TYPESAFE_API_KEY`, since ranking is on by default - as the credential
+   * chain's own actionable sentence (led by `TYPESAFE_API_KEY_MISSING`), or
+   * null when it can. Only a key's PRESENCE is ever consulted; its value is
+   * never read out (`AGENTS.md`).
    */
   blocker: () => string | null;
   /** How many bookmarks a run would score right now. A pure DB read - no API call. */

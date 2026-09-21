@@ -54,11 +54,15 @@ export interface Config {
   /** Tuning for the TypeSafe categorizer. Inert unless it is the selected one. */
   typesafe: TypeSafeConfig;
   /**
-   * The opt-in bookmark ranking pass (env: XBOOKMARKS_RANKER, issue #62).
-   * `off` by default, and `off` means the `rank` command refuses to run at all:
-   * ranking is PAID per token, so it takes an explicit choice AND a resolved
-   * TYPESAFE_API_KEY before any call is made. Nothing else in the tool reads
-   * this - ingestion, categorization, summaries and browsing are untouched.
+   * The bookmark ranking pass (env: XBOOKMARKS_RANKER, issues #62/#80).
+   * `typesafe` by DEFAULT: ranking is available without the owner exporting
+   * anything, and the one thing that decides whether it can actually run is
+   * whether TYPESAFE_API_KEY resolves. Set `off` to disable it outright.
+   * Enabled is NOT the same as spending: ranking is PAID per token, and every
+   * run still announces its billing, while the in-app trigger additionally
+   * refuses without an explicit paid confirmation (`POST /api/rank`'s
+   * `{ confirm: true }`). Nothing else in the tool reads this - ingestion,
+   * categorization, summaries and browsing are untouched.
    */
   ranker: RankerConfig;
   /**
@@ -72,7 +76,7 @@ export interface Config {
   evalCategorizers: EvalCategorizersId;
 }
 
-/** The ranking implementations the owner can choose between. `off` is the default. */
+/** The ranking implementations the owner can choose between. `typesafe` is the default. */
 export const RANKER_IDS = ['off', 'typesafe'] as const;
 export type RankerId = (typeof RANKER_IDS)[number];
 
@@ -158,7 +162,7 @@ const DEFAULT_TYPESAFE_CONFIDENCE = 0.55;
 const DEFAULT_TYPESAFE_MULTILABEL = 0.6;
 const DEFAULT_TYPESAFE_MAX_LABELS = 3;
 const DEFAULT_TYPESAFE_CONCURRENCY = 8;
-const DEFAULT_RANKER: RankerId = 'off';
+const DEFAULT_RANKER: RankerId = 'typesafe';
 const DEFAULT_RANKER_CONCURRENCY = 6;
 const DEFAULT_EVAL_CATEGORIZERS: EvalCategorizersId = 'off';
 
@@ -249,9 +253,13 @@ function categorizerFromEnv(env: NodeJS.ProcessEnv): CategorizerId {
 }
 
 /**
- * The ranker choice from the environment. An unrecognized value is treated as
- * `off`, never as an opt-in: the failure mode of a typo must be "no ranking",
- * not "unexpected spend".
+ * The ranker choice from the environment. Ranking is ON by default (issue #80),
+ * so the owner never has to export anything to reach the in-app "Rank now" -
+ * the gate that decides whether a run is possible is the TYPESAFE_API_KEY, and
+ * the gate that decides whether money is spent is the explicit confirmation in
+ * front of every run. An unrecognized value therefore falls back to the default
+ * rather than silently disabling the feature; only `off` turns it off, and no
+ * value of this variable can start a run or spend anything on its own.
  */
 function rankerFromEnv(env: NodeJS.ProcessEnv): RankerConfig {
   const raw = env.XBOOKMARKS_RANKER?.trim();
@@ -363,30 +371,45 @@ export function requireTypeSafeCredentials(store: CredentialStore): string {
 }
 
 /**
- * Assert the ranking pass is BOTH opted into and able to authenticate, before
- * anything can spend money (issue #62).
+ * The single sentence the viewer shows when ranking is available but has no
+ * key. It leads the thrown message so the in-app blocker reads as one clear
+ * cause before the (longer) list of places a secret can come from.
+ */
+export const TYPESAFE_API_KEY_MISSING =
+  'TypeSafe API key missing - add your key to enable ranking.';
+
+/**
+ * Assert the ranking pass is enabled and able to authenticate, before anything
+ * can spend money (issues #62, #80).
  *
- * Two independent gates, and the order matters: an owner who never asked for
- * ranking is told that first, so a stale `TYPESAFE_API_KEY` left in the
- * environment from a categorization experiment can never turn `rank` into a
- * paid run on its own. Only the key's PRESENCE is ever checked here; its value
- * is returned to the caller and never logged (`AGENTS.md`).
+ * Ranking is on by DEFAULT now, so in practice this is one gate: does
+ * `TYPESAFE_API_KEY` resolve. The `off` branch remains for an owner who turned
+ * the feature off explicitly, and is still checked first so that message wins
+ * over a key complaint. Only the key's PRESENCE is ever checked here; its
+ * value is returned to the caller and never logged (`AGENTS.md`).
+ *
+ * Being enabled is NOT authorization to spend: `reportRankerBilling` announces
+ * the per-token price on every run, and the in-app trigger additionally
+ * requires the explicit `{ confirm: true }` from a dialog that names the cost
+ * (issue #80). Those, not the default, are what keep the no-silent-spend rule.
  */
 export function requireRankerCredentials(config: Config, store: CredentialStore): string {
   if (config.ranker.id !== 'typesafe') {
     throw new Error(
-      'Ranking is off. It is PAID per token, so it never runs unless you ask for it:\n' +
-        'set XBOOKMARKS_RANKER=typesafe to score bookmarks with the TypeSafe/Jev API.\n' +
-        'Everything else - syncing, categorizing, summaries, browsing - is unaffected.',
+      'Ranking is turned off (XBOOKMARKS_RANKER=off).\n' +
+        'Unset that variable - or set XBOOKMARKS_RANKER=typesafe - to score bookmarks\n' +
+        'with the TypeSafe/Jev API. Everything else - syncing, categorizing, summaries,\n' +
+        'browsing - is unaffected either way.',
     );
   }
   const resolved = store.get(TYPESAFE_API_KEY);
   if (!resolved.value) {
     throw new Error(
-      `${missingCredentialMessage([TYPESAFE_API_KEY])}\n\n` +
-        'XBOOKMARKS_RANKER=typesafe scores bookmarks through the TypeSafe/Jev API, which\n' +
-        'is PAID per token. Unset XBOOKMARKS_RANKER to leave ranking off; nothing else in\n' +
-        'the tool needs this key.',
+      `${TYPESAFE_API_KEY_MISSING}\n\n` +
+        `${missingCredentialMessage([TYPESAFE_API_KEY])}\n\n` +
+        'Ranking scores bookmarks through the TypeSafe/Jev API, which is PAID per token;\n' +
+        'a run still asks you to confirm the cost first. Nothing else in the tool needs\n' +
+        'this key, and set XBOOKMARKS_RANKER=off to hide ranking entirely.',
     );
   }
   return resolved.value;

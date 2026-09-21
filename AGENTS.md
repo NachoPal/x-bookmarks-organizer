@@ -190,14 +190,24 @@ children need `min-width: 0`) so counts never overflow.
 
 The **top bar** (issues #53/#37/#42/#65) is one sticky row in three flex regions: the animated
 categories-menu toggle (left), the selected category's title + counts on ONE line (center), and
-`search | theme | sync | settings gear` (right). The category-colors toggle now lives beside the sidebar's "Categories" heading, and the last-synced time + Sync button live in the sync popover (the icon left of the gear; same panel style as settings), not the bar or tab row. The read-state filter LEFT this bar in #65 - it
+`search | theme | ranking | sync | settings gear` (right). The category-colors toggle now lives beside the sidebar's "Categories" heading, and the last-synced time + Sync button live in the sync popover (the icon left of the gear; same panel style as settings), not the bar or tab row. The read-state filter LEFT this bar in #65 - it
 is now the tab bar below (see next paragraph). There is no explanatory blurb and no second header
 inside the content pane - `#content-title`/`#content-count` live in the bar. Equal `flex: 1 1 0`
 flanks are what centers the middle region; the center is `flex: 0 1 auto` with
 `min-width: 0`, and `.topbar-right` carries a `min-width: min-content` floor so the controls are
 never squeezed. The title's ancestor crumb is a separate span capped at `max-width: 40%` (and
 hidden under 560px) so a deep path ellipsizes the CRUMB, never the leaf - weighting `flex-shrink`
-instead was tried and still clipped the leaf while the crumb had room left to give. Under 560px the bar drops the counts and the crumb.
+instead was tried and still clipped the leaf while the crumb had room left to give. Under 560px the bar drops the counts and the crumb, and every popover there spans the viewport's gutters (`position: fixed`) instead of anchoring to its own icon, which stopped fitting once ranking's icon was no longer the rightmost.
+
+The title is a **clickable breadcrumb**: every segment selects that category through
+`selectCategoryById`, which drives the SIDEBAR's own button (expanding its ancestors first) rather
+than duplicating selection - the tree button is what owns `aria-current`. Which segments show is
+decided in the pure `breadcrumb.js` (`XBOBreadcrumb`): a path of up to 3 renders inline, a deeper
+one collapses its middle into ONE `…` control whose hidden ancestors it hands back, and `app.js`
+opens those in `#crumb-menu` (a `role="menu"` with arrow keys, Home/End, and Escape returning focus
+to the `…`). The menu is a SIBLING of `#content-title`, never a child: the title clips its overflow
+to stay on one line and would clip the popover with it. Everything except the open category lives
+inside `.topbar-crumb`, so the cap and the <=560px hide still apply and the leaf always survives.
 
 The **filter tab bar** (issue #65) is a row of four tabs - Unread / Read / All / Favorites -
 directly under the top bar, inside `.main-column` (a flex column holding the toolbar above the
@@ -314,6 +324,10 @@ order math lives in `root-order.js` (`XBORootOrder`).
 
 The category tree renders with every node - including
 roots - collapsed by default until the owner expands it or a search match forces ancestors open.
+Indentation is two tokens, not a literal: `--tree-grip-width` (the drag handle's column, roots
+only) and `--tree-indent` (the per-level step). A root's first level of children clears the grip
+column FIRST and then takes the step, because without that a subtree started left of its own
+root's chevron and read as a sibling.
 
 The per-root tree tint (`tree-color.js`) has a paired on/off toggle, persisted in localStorage
 (`readColorEnabled`/`writeColorEnabled`, default **off** - a plain tree - since issue #30) via a
@@ -342,6 +356,27 @@ shared between `app.js` and `read-toggle.test.ts` the same way `tree-counts.js` 
 "Open on X" control was removed in the same change as redundant: the official X embed (and, when it
 can't render, its `renderEmbed` text+link fallback "View this post on X") already opens the post on
 X, so every card keeps a working click-to-X path without a dedicated button.
+
+**The posts follow the light/dark toggle live.** An X embed is a cross-origin iframe whose theme is
+fixed when `createTweet` is called and has no API to change afterwards, so `applyTheme` cannot
+re-theme it - it has to build it again. `mountEmbed` stamps each slot with the theme it was built
+at (`data-embed-theme`), and a debounced `rethemeVisibleEmbeds` rebuilds only the cards ON SCREEN
+whose stamp is stale; a hidden pooled card keeps its stamp until `paintViewCards` reveals it, which
+re-themes it then (so nothing is ever shown in the wrong theme, and the pool's dozens of off-screen
+widgets are not re-fetched for nobody). A slot showing the text+link FALLBACK is only re-stamped,
+never rebuilt: it is the viewer's own markup, and re-running a `createTweet` that already failed is
+pure cost. The slot holds its finished height (`min-height`) while the new embed loads so the
+column does not collapse to the skeleton and yank the scroll position, and `renderEmbed` stamps a
+generation on the slot so a superseded in-flight call cannot drop a stale fallback on the embed
+that replaced it. Nothing else about the card - its shell, read/favorite state, `order`, or any
+cache entry - is touched.
+
+Dark mode used to show four **white corners** behind a post: X draws its card rounded inside a
+SQUARE iframe whose document canvas is light, and that canvas is cross-origin, so it can only be
+CLIPPED. `--radius-embed` (12px, X's own radius) plus `overflow: hidden` on the embed host and the
+iframe is that clip; a surface-colored background underneath covers the same corners for an embed
+that renders transparent. Do not "fix" this by setting a background ON the iframe - the document
+inside paints over it.
 
 Each embed slot (`renderEmbed` in `app.js`) shows a skeleton + spinner immediately and reveals
 only the finished result: it renders into a hidden host and swaps to the embed when
@@ -581,10 +616,20 @@ authenticates when there is something to read.
 
 ## Jev ranking pass (`XBOOKMARKS_RANKER`, issue #62)
 
-An OPTIONAL, PAID, off-by-default pass that scores each stored bookmark for learning value with
-TypeSafe/Jev `Score` questions over `BookmarkContent` (below) - the consumer that structure was
-built for. Additive end to end: nothing in ingestion, categorization, summaries or browsing reads
-it, and with it off the library and the viewer are byte-identical to before.
+A PAID pass that scores each stored bookmark for learning value with TypeSafe/Jev `Score`
+questions over `BookmarkContent` (below) - the consumer that structure was built for. Additive end
+to end: nothing in ingestion, categorization, summaries or browsing reads it, and with it off the
+library and the viewer are byte-identical to before.
+
+**It is ON by default (`typesafe`) and gated by the KEY, not by an env opt-in.** `DEFAULT_RANKER`
+is `typesafe`, an unrecognized `XBOOKMARKS_RANKER` keeps that default, and only an explicit
+`XBOOKMARKS_RANKER=off` disables the feature. What decides whether a run is POSSIBLE is whether
+`TYPESAFE_API_KEY` resolves: without it `rank` refuses and the in-app control is disabled, showing
+`TYPESAFE_API_KEY_MISSING` (`src/config.ts`) as the blocker's leading sentence - which is why that
+constant leads the thrown message. **No-silent-spend is unchanged, and is now carried entirely by
+the gates that follow, never by the default:** `rank` only runs when invoked, `reportRankerBilling`
+announces the per-token price on every run, and the in-app run additionally requires the explicit
+paid confirmation below. A resolvable key makes the button offerable and nothing more.
 
 `src/rank/` is split the way `src/categorize/typesafe/` is, and for the same reason: `rubric.ts` is
 PURE (the questions, their levels, the weights, and the weighted combination - no SDK, no DB, no
@@ -595,10 +640,12 @@ redacted. `ranker.ts` orchestrates (concurrency, resume, the summary), `build.ts
 gate. Whole rubric = ONE `systemOne` call per bookmark: TypeSafe answers questions in parallel
 against one shared state, which is what makes a decomposed rubric affordable.
 
-Paid safety, and the ORDER matters: `requireRankerCredentials` checks the OPT-IN before the key, so
-a `TYPESAFE_API_KEY` left over from a categorization experiment can never turn `rank` into a paid
-run on its own; an unrecognized `XBOOKMARKS_RANKER` value is `off`, never an opt-in. `rank
---dry-run` reports the size of a run while making no call.
+Paid safety: `requireRankerCredentials` still checks the `off` switch before the key (so an owner
+who disabled ranking is told that, not that their key is missing), but with the default on, the
+real gate is the key. A `TYPESAFE_API_KEY` left over from a categorization experiment cannot spend
+anything by itself - it only makes `rank` runnable and the button pressable, and both still
+announce and/or confirm before a call. `rank --dry-run` reports the size of a run while making no
+call.
 
 Storage is `bookmark_scores` (`src/db/schema.ts`), keyed by bookmark: normalized 0..1 `score`, the
 model's own `confidence`, the per-dimension breakdown as JSON (read tolerantly - a blob this build
@@ -633,10 +680,13 @@ one careless click away, NOT that in-app ranking is forbidden. **The contract is
 trigger is allowed, and it carries every gate the CLI has plus one the CLI does not need.** Four
 gates, and all four are load-bearing:
 
-1. **Opt-in, then key** - `requireRankerCredentials`, in that order, exactly as `rank` does. The
-   server-side wiring (`src/web/rank-job.ts`'s `createRankWiring`) is the only place that decides,
-   and the SAME check is surfaced up front as `blocker` so the control explains itself instead of
-   failing on press. Never re-derive this rule in the route or the client.
+1. **The key** - `requireRankerCredentials`, exactly as `rank` does (it checks the `off` switch
+   first, then the key). The server-side wiring (`src/web/rank-job.ts`'s `createRankWiring`) is the
+   only place that decides, and the SAME check is surfaced up front as `blocker` so the control
+   explains itself instead of failing on press. Never re-derive this rule in the route or the
+   client. The client splits that blocker with `XBORanking.blockerHeadline`/`blockerDetail`: the
+   CAUSE is stated next to the disabled button, the credential chain's list of places a secret can
+   live waits behind a disclosure.
 2. **An explicit paid confirmation.** `POST /api/rank` refuses without `{ confirm: true }` (400),
    and the viewer sends it from ONE place: a confirm dialog that names the price before the scope
    and whose primary button restates the count. This is the in-app equivalent of deliberately
@@ -664,8 +714,13 @@ no reload. A viewer built without the wiring degrades with 503, keeping `buildSe
 tests. Frontend rules live in `src/web/public/ranking.js` (`XBORanking`, pure + unit-tested), which
 fails CLOSED: no state means no button.
 
-The ranker's knobs stay OUT of the settings panel on purpose - turning ranking on remains an
-explicit server-side act, which is gate 1. Tests are offline end to end (`rank-job.test.ts`,
+The ranker's knobs stay OUT of the settings panel on purpose: what turns a run into a bill is the
+confirmation, and burying a paid feature's switch among post-size and sort preferences would invite
+exactly the careless click gate 2 exists to stop. The control lives in its OWN top-bar popover
+(`#rank-toggle` / `#rank-panel`, an up/down-arrows icon immediately LEFT of the sync icon), not in
+the sync panel - ranking is not part of syncing, and the run's progress strip moved there with it.
+The icon itself carries the running state (`.rank-toggle.is-ranking`), since a run outlives the
+popover being open. Tests are offline end to end (`rank-job.test.ts`,
 `rank-api.test.ts`, `ranking.test.ts`); never let one reach `api.typesafe.ai`, and never make a real
 Jev call to validate a change here.
 
