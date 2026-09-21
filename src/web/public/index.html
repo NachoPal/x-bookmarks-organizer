@@ -28,6 +28,13 @@
             return null; // private mode / blocked storage
           }
         }
+        // Until the first paint is done, nothing may ANIMATE into the state
+        // this block applies: #104 made the saved sidebar state land before
+        // the paint, but the `.viewer` grid transition (and the drawer's own
+        // transform) still played once on load, so every refresh showed the
+        // sidebar sliding into place. `app.js` clears this attribute after
+        // the first frame, and only owner-triggered toggles animate.
+        document.documentElement.setAttribute("data-preboot", "1");
         var theme = read("xbo:theme");
         if (theme === "light" || theme === "dark") {
           document.documentElement.setAttribute("data-theme", theme);
@@ -866,6 +873,7 @@
     <script src="ranking.js" defer></script>
     <script src="breadcrumb.js" defer></script>
     <script src="category-picker.js" defer></script>
+    <script src="card-drag.js" defer></script>
     <script src="embed-theme.js" defer></script>
     <script src="categorization.js" defer></script>
     <script src="app.js" defer></script>

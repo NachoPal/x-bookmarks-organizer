@@ -206,7 +206,14 @@ of truth - and `preboot.test.ts` pulls the script out of `index.html` and EXECUT
 modules, so a key typo or a flipped default fails a test rather than shipping. Anything that only
 styles content fetched later (`--post-scale`, which sizes `.bookmark-card`) does NOT belong here:
 there is nothing on screen yet for it to flash. Put new visible-at-load state in this block, not
-just in `app.js`.
+just in `app.js`. **It also suppresses MOTION for that first frame** (issue #100): it sets
+`data-preboot` on `<html>`, a blanket `transition: none !important; animation: none !important`
+in `styles.css`, which `app.js` clears after two `requestAnimationFrame`s (scheduled FIRST in its
+IIFE, so a later throw cannot leave the page motionless). Applying the state before the paint was
+not enough on its own - the `.viewer` grid track and the drawer's transform still animated INTO it
+on every reload. A phone reload that will restore a category also closes the drawer up front in
+`restoreLastView` (`silent`, before `loadTree`) rather than letting `selectCategory`'s
+auto-dismiss play the whole close once the tree has loaded.
 
 The **top bar** (issues #53/#37/#42/#65) is one sticky row in three flex regions: the animated
 categories-menu toggle (left), the selected category's title + counts on ONE line (center), and
@@ -217,7 +224,7 @@ flanks are what centers the middle region; the center is `flex: 0 1 auto` with
 `min-width: 0`, and `.topbar-right` carries a `min-width: min-content` floor so the controls are
 never squeezed. The title's ancestor crumb is a separate span capped at `max-width: 40%` (and
 hidden under 560px) so a deep path ellipsizes the CRUMB, never the leaf - weighting `flex-shrink`
-instead was tried and still clipped the leaf while the crumb had room left to give. Under 560px the bar drops the counts and the crumb, and every popover there spans the viewport's gutters (`position: fixed`) instead of anchoring to its own icon, which stopped fitting once ranking's icon was no longer the rightmost.
+instead was tried and still clipped the leaf while the crumb had room left to give. **Under 560px the bar is TWO rows** (issue #100): the icon controls keep the top row and `.topbar-center` takes a full-width second one (`order: 1; flex: 1 0 100%`), because six icons left ~110px for the title on a 390px phone. `--header-height` is REDEFINED in that media query rather than letting the bar grow on its own - the fixed drawer, its scrim, the first-run scrim and every popover hang off `--header-offset`, so the bar's real height has to stay the value they read. The crumb is no longer dropped there (it has its own row now; the 40% cap still saves the leaf). Every popover at that width spans the viewport's gutters (`position: fixed`) instead of anchoring to its own icon, which stopped fitting once ranking's icon was no longer the rightmost.
 
 The title is a **clickable breadcrumb**: every segment selects that category through
 `selectCategoryById`, which drives the SIDEBAR's own button (expanding its ancestors first) rather
@@ -279,7 +286,11 @@ zero frames over 20ms in either direction, and the embed's width identical on ev
 both properties if you touch this. (Animatable grid tracks: Firefox 66+, Chrome/Edge 107+,
 Safari 16.1+; the track count never changes, which is what keeps the two lists interpolable.)
 At `<=820px` it remains the FIXED overlay drawer with its scrim and auto-dismiss-on-pick, sliding on
-transform; the viewer never moves and never resizes.
+transform; the viewer never moves and never resizes. There it is the FULL viewport width since
+issue #100 (`width: 100%`, overriding the base `min(88vw, var(--sidebar-width))`): a nested
+category name in a ~272px panel wrapped over three or four lines beside its counts. The scrim is
+unchanged (covered while open, and what fades the content back in), and every way OUT is still
+above the drawer - the bar's toggle, Escape, and picking a category.
 **The column's right edge is drag-resizable** (issue #99): `#sidebar-resizer` is a real ARIA window
 splitter (`role="separator"`, focusable, arrow keys / PageUp-Down / Home-End, `aria-valuenow` in
 pixels) that writes `--sidebar-width` onto `:root`. Because that is the ONE token the wide track,
@@ -476,6 +487,15 @@ shared between `app.js` and `read-toggle.test.ts` the same way `tree-counts.js` 
 can't render, its `renderEmbed` text+link fallback "View this post on X") already opens the post on
 X, so every card keeps a working click-to-X path without a dedicated button.
 
+**Under 560px that action row wraps to TWO rows** (issue #100): the compact controls plus the bin
+on the top row (the bin pushed right by `margin-left: auto`), Summarize + the score chip on a
+second line. `.bookmark-actions-left`/`-right` become `display: contents` so `.bookmark-actions`
+lays their children out directly (`order` cannot reach across a nested flex container), and the
+break is the container's own `::after` - a `flex: 0 0 100%` item whose HEIGHT is the row gap, which
+is why the row gap itself is 0. That block is declared at the very END of `styles.css` on purpose:
+every rule it overrides is a single-class selector further down the file, so source order is what
+decides, and the same block placed up with the top bar's responsive rules lost to them silently.
+
 **The posts follow the light/dark toggle live, and ONE EMBED PER THEME** (issues #89, #90). An X
 embed is a cross-origin iframe whose theme is fixed when `createTweet` is called and has no API to
 change afterwards, so `applyTheme` cannot re-theme it. #89 rebuilt it; that reloaded the widget on
@@ -551,7 +571,11 @@ and `openMovePicker` (the `.move-btn`, between Favorite and Summarize); both end
   and hover-expand timing stays in `app.js`. Expanding a hovered category is delegated to the
   tree's OWN toggle, which is what makes drilling in recursive for free. The grip also OPENS THE
   PICKER on a press that never became a drag (and on Enter/Space): a focusable control that only
-  answers to a pointer gesture would be a dead stop for the keyboard.
+  answers to a pointer gesture would be a dead stop for the keyboard. **Which of the two gestures
+  happened is the pure `card-drag.js`** (`XBOCardDrag.passedSlop` / `gestureOutcome`), and the
+  drawer is opened in `begin()` - once the press HAS become a drag and needs the tree as a drop
+  target - never at `pointerdown`. Opening it up front was issue #100's bug: on a phone a tap on
+  the grip opened the picker AND the sidebar behind it.
 - **The picker is the accessible equivalent** and a real ARIA `tree`, so it owns that contract in
   full (arrow keys walk the VISIBLE rows, Right opens then steps in, Left closes then climbs out,
   Home/End, Enter/Space select). Its pure half is `src/web/public/category-picker.js`

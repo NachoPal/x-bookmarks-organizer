@@ -266,6 +266,22 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
+/* The saved state must APPEAR, not animate into place, on a reload.
+   `#xbo-preboot` applies the sidebar/theme/width state before the first
+   paint (issue #104), but the transitions those properties carry still ran
+   once on load - the `.viewer` grid track and the narrow drawer's transform
+   both did - so every refresh played an open/close the owner never asked
+   for. This suppresses motion for exactly that first frame; `app.js` drops
+   the attribute after it, leaving owner-triggered toggles fully animated.
+   `!important` because it has to beat every component rule at once, and a
+   blanket disable is the only thing that cannot miss one. */
+:root[data-preboot] *,
+:root[data-preboot] *::before,
+:root[data-preboot] *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -745,6 +761,19 @@ body:not([data-sidebar="collapsed"]) .sidebar-backdrop {
 body:not([data-sidebar="collapsed"]) .sidebar {
   transform: translateX(0);
   box-shadow: var(--shadow-lg);
+}
+/* On a phone the drawer takes the WHOLE viewport (issue #100). A nested
+   category name in a ~272px panel wrapped onto three or four lines beside its
+   counts, which is unreadable and made the tree twice as tall as it needed to
+   be; at full width the same name fits on one. The scrim stays exactly as it
+   was - it is covered while the drawer is open, and it is what fades the
+   content back in on the way out. The ways OUT are unchanged and all still
+   above the drawer: the top bar's toggle (the bar is not covered), Escape,
+   and picking a category, which auto-dismisses. */
+@media (max-width: 820px) {
+  .sidebar {
+    width: 100%;
+  }
 }
 
 @media (min-width: 821px) {
@@ -1523,10 +1552,35 @@ body[data-resizing="sidebar"] {
 }
 
 @media (max-width: 560px) {
-  /* Counts are still one tap away in the tree's badges, and the ancestor
-     crumb would cost the leaf most of the line it has left. */
-  .topbar-crumb {
-    display: none;
+  /* --- The bar becomes TWO rows (issue #100) ---------------------------
+     Six icon controls leave barely 110px for the title at 390px, which is
+     not a title - it was "Reader Vi…". The controls keep the top row and
+     the category's breadcrumb drops to a full-width row of its own
+     beneath them.
+     `--header-height` is redefined rather than letting the bar grow on its
+     own: the fixed drawer, its scrim, the first-run scrim and every
+     popover at this width all hang off `--header-offset`, so the bar's
+     real height has to stay the value they read. */
+  :root {
+    --header-height: 4.5rem;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    align-content: center;
+    row-gap: var(--space-1);
+  }
+  /* Last in the visual order, on a line of its own; the two flanks keep
+     their default order and share the line above it. */
+  .topbar-center {
+    order: 1;
+    flex: 1 0 100%;
+    justify-content: flex-start;
+  }
+  /* The ancestor crumb is BACK at this width. #65 dropped it because it
+     cost the leaf most of the one line they shared - and they no longer
+     share one. The 40% cap still guarantees the leaf survives. */
+  .topbar-title {
+    width: 100%;
   }
   /* A popover anchored to its own icon runs off the edge once the icon is not
      the rightmost one (the ranking icon, issue #89). At this width they span
@@ -4020,5 +4074,70 @@ body.is-card-dragging .tree-node {
   .move-btn,
   .move-row {
     transition: none;
+  }
+}
+
+/* ============================================================
+   Two-row card action row on a phone (issue #100)
+
+   Declared here, at the END, on purpose: every rule it overrides
+   (`.bookmark-actions-group`'s `display: flex`, `.bookmark-actions`'s
+   `justify-content`) is a single-class selector further down the file, so
+   source order is what decides - the same block placed up with the top bar's
+   responsive rules lost to them silently.
+   ============================================================ */
+@media (max-width: 560px) {
+  /* --- The card's action row becomes TWO rows (issue #100) -------------
+     At 390px the single row overflowed and wrapped wherever it happened to
+     run out, stranding the bin at the BOTTOM-LEFT under the read chip. It
+     now wraps deliberately: the compact controls plus the bin on the top
+     row (the bin pushed to its right edge), and Summarize + the score chip
+     on a second line of their own.
+     The two groups become `display: contents` so their children are
+     laid out by `.bookmark-actions` itself - `order` cannot reach across a
+     nested flex container - and the break between the rows is the
+     container's own `::after`, a full-width item that carries the row's
+     gap in its height. That keeps the markup identical at every width. */
+  .bookmark-actions {
+    /* `space-between` was for two groups; with the children flattened it
+       would spread the top row's controls apart instead. The bin's own
+       `margin-left: auto` is what keeps it on the right. */
+    justify-content: flex-start;
+    /* Column gap unchanged from the one-row layout - the post-size `zoom`
+       shrinks it too, and it is what keeps the 8px minimum between two
+       25px targets. The ROW gap is 0 because the break below carries it. */
+    gap: 0 var(--space-3);
+  }
+  .bookmark-actions-left,
+  .bookmark-actions-right {
+    display: contents;
+  }
+  .card-grip {
+    order: 1;
+  }
+  .read-pill {
+    order: 2;
+  }
+  .fav-btn {
+    order: 3;
+  }
+  .move-btn {
+    order: 4;
+  }
+  .delete-btn {
+    order: 5;
+    margin-left: auto;
+  }
+  .bookmark-actions::after {
+    content: "";
+    order: 6;
+    flex: 0 0 100%;
+    height: var(--space-2);
+  }
+  .summarize-link {
+    order: 7;
+  }
+  .score-chip {
+    order: 8;
   }
 }
