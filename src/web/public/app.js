@@ -40,7 +40,7 @@
   let selectedButton = null;
   // Manual expand/collapse state (category id -> expanded), preserved across
   // sidebar refreshes so mark-read never resets the user's browsing context.
-  let expansionState = new Map();
+  const expansionState = new Map();
   // Full category tree (roots) kept in memory so the search filter can
   // re-render from source without re-fetching.
   let treeRoots = [];
@@ -159,12 +159,11 @@
     const pooled = cardPool.get(row.id);
     if (pooled) {
       if (pooled.bm !== row) {
-        const changed = pooled.bm.read !== row.read || Boolean(pooled.bm.favorite) !== Boolean(row.favorite);
-        pooled.bm.read = row.read;
-        pooled.bm.readAt = row.readAt;
-        pooled.bm.favorite = row.favorite;
-        if (row.hasSummary) pooled.bm.hasSummary = true;
-        if (changed) patchCardControls(pooled.bm, pooled.card);
+        // The fold itself is pure and lives in `filter-cache.js`; all that is
+        // left here is repainting whatever it says actually moved.
+        const changed = window.XBOFilterCache.foldServerRow(pooled.bm, row);
+        if (changed.controls) patchCardControls(pooled.bm, pooled.card);
+        if (changed.score) patchScoreChip(pooled.bm, pooled.card);
       }
       return pooled;
     }
@@ -355,6 +354,30 @@
     if (oldPill) oldPill.replaceWith(renderPill(bm, cardEl));
     const oldStar = cardEl.querySelector(".fav-btn");
     if (oldStar) oldStar.replaceWith(renderFavoriteButton(bm, cardEl));
+  }
+
+  /**
+   * Put a pooled card's score chip in step with its bookmark's current
+   * verdict (issue #91).
+   *
+   * A ranking run writes scores and nothing else, so a card pooled BEFORE the
+   * run is correct in every other respect and only its chip is out of date -
+   * which is why this replaces the chip in place rather than re-rendering the
+   * card. Re-rendering would detach the card's mounted X embed and reload it,
+   * the very thing the pool exists to prevent.
+   *
+   * The chip is read-only and never focusable, so swapping it strands no
+   * focus; a bookmark with no verdict simply ends up with no chip.
+   */
+  function patchScoreChip(bm, cardEl) {
+    const right = cardEl.querySelector(".bookmark-actions-right");
+    if (!right) return;
+    const existing = right.querySelector(".score-chip");
+    if (existing) existing.remove();
+    const chip = renderScoreChip(bm);
+    // The chip leads the right-hand group, ahead of the delete button - the
+    // same order `renderCard` builds.
+    if (chip) right.insertBefore(chip, right.firstChild);
   }
 
   /** Permanently remove a deleted bookmark from every cached view and the pool. */
@@ -721,7 +744,9 @@
     clearPersistedViews();
     viewCaches = new Map();
     cacheOrder = [];
-    releaseOrphanPanes();
+    // The POOL is deliberately kept: re-paging only re-sequences the cards it
+    // already holds (`paintViewCards` sets `order` and LRU-evicts the cold
+    // ones), so no loaded post - and no mounted X embed - reloads.
     if (selectedCategoryId != null) void fetchAndRenderFirstPage();
   }
 
@@ -1021,7 +1046,7 @@
     let data;
     try {
       data = await getJSON("/api/tree");
-    } catch (err) {
+    } catch (_err) {
       stateMessage(treeEl, "error", "Could not load categories. Is the server running?");
       return;
     }
@@ -1680,7 +1705,7 @@
     let data;
     try {
       data = await fetchPage(0);
-    } catch (err) {
+    } catch (_err) {
       if (seq !== requestSeq) return; // a newer view took over
       currentViewBookmarks = [];
       clearTabCounts();
@@ -1730,7 +1755,7 @@
     let data;
     try {
       data = await fetchPage(pageOffset);
-    } catch (err) {
+    } catch (_err) {
       if (seq === requestSeq) {
         pageLoading = false;
         showLoadMoreError(); // surface an inline error with an explicit Retry
@@ -2304,7 +2329,7 @@
       } else {
         renderCountLine();
       }
-    } catch (err) {
+    } catch (_err) {
       if (pillBtn) {
         pillBtn.classList.remove("is-loading");
         pillBtn.disabled = false;
@@ -2361,7 +2386,7 @@
       }
 
       renderCountLine();
-    } catch (err) {
+    } catch (_err) {
       if (starBtn) {
         starBtn.classList.remove("is-loading");
         starBtn.disabled = false;
@@ -2472,7 +2497,7 @@
         } else if (res.status !== 404) {
           throw new Error(`Request failed (${res.status})`);
         }
-      } catch (err) {
+      } catch (_err) {
         // Deletion failed server-side: restore the card so nothing silently
         // vanishes, and let the owner know so they can retry.
         restore();
@@ -2828,8 +2853,6 @@
   // which prerequisites are in place. Everything below renders from it.
   let setupState = null;
   let syncPollTimer = null;
-  // Set once the owner dismisses the guided flow, so a poll does not reopen it.
-  let setupDismissed = false;
 
   const SYNC_POLL_MS = 1200;
   const SYNC_DONE_DISMISS_MS = 8000;
@@ -3286,7 +3309,9 @@
     clearPersistedViews();
     viewCaches = new Map();
     cacheOrder = [];
-    releaseOrphanPanes();
+    // The pool is kept, exactly as a sort change keeps it: the re-paged rows
+    // carry the new scores, and `poolPost` folds them into the cards already
+    // on screen rather than rebuilding (and reloading) them.
     await fetchSetup();
     if (selectedCategoryId != null) await fetchAndRenderFirstPage();
   }
@@ -3607,7 +3632,6 @@
 
   function closeSetup() {
     if (!isSetupOpen()) return;
-    setupDismissed = true;
     setupModalEl.hidden = true;
     setupBackdropEl.hidden = true;
     stopSetupPolling();
