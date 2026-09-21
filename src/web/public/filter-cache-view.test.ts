@@ -91,7 +91,7 @@ async function boot() {
     }
     return json({});
   };
-  for (const f of ["tree-counts.js", "read-toggle.js", "filter-cache.js", "theme.js", "post-scale.js", "sidebar-state.js", "tree-color.js", "categorization.js", "app.js"]) {
+  for (const f of ["tree-counts.js", "read-toggle.js", "filter-cache.js", "theme.js", "embed-theme.js", "post-scale.js", "sidebar-state.js", "tree-color.js", "categorization.js", "app.js"]) {
     w.eval(read(f));
   }
   await new Promise((r) => setTimeout(r, 50));

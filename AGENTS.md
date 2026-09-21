@@ -249,6 +249,12 @@ category" button) open it through the same `setCollapsed`.
 and its scrim hang off - keep them on that token. `--z-header` sits ABOVE `--z-sidebar` so the
 settings popover, which is a child of the bar, is not painted over by the drawer.
 
+Every popover's primary action - Sync and Reset library (sync panel) and Rank now (rank panel) -
+is cut to ONE size through the shared `.panel-action` class and `--panel-action-width`/`-height`
+(issue #90); they sit in three different panels, so without that they drift apart again. The
+settings panel's Save is centred, with its status stacked under it rather than beside it, so a long
+"why it failed" message cannot pull the button off centre.
+
 The **settings popover** (gear, issue #37) holds the post-size control plus the theme and
 category-color switches. Post size resizes the POST, not the app's chrome - scaling the viewer's own
 text was the first cut and is what browser zoom already does. It is one `--post-scale` multiplier
@@ -357,19 +363,27 @@ shared between `app.js` and `read-toggle.test.ts` the same way `tree-counts.js` 
 can't render, its `renderEmbed` text+link fallback "View this post on X") already opens the post on
 X, so every card keeps a working click-to-X path without a dedicated button.
 
-**The posts follow the light/dark toggle live.** An X embed is a cross-origin iframe whose theme is
-fixed when `createTweet` is called and has no API to change afterwards, so `applyTheme` cannot
-re-theme it - it has to build it again. `mountEmbed` stamps each slot with the theme it was built
-at (`data-embed-theme`), and a debounced `rethemeVisibleEmbeds` rebuilds only the cards ON SCREEN
-whose stamp is stale; a hidden pooled card keeps its stamp until `paintViewCards` reveals it, which
-re-themes it then (so nothing is ever shown in the wrong theme, and the pool's dozens of off-screen
-widgets are not re-fetched for nobody). A slot showing the text+link FALLBACK is only re-stamped,
-never rebuilt: it is the viewer's own markup, and re-running a `createTweet` that already failed is
-pure cost. The slot holds its finished height (`min-height`) while the new embed loads so the
-column does not collapse to the skeleton and yank the scroll position, and `renderEmbed` stamps a
-generation on the slot so a superseded in-flight call cannot drop a stale fallback on the embed
-that replaced it. Nothing else about the card - its shell, read/favorite state, `order`, or any
-cache entry - is touched.
+**The posts follow the light/dark toggle live, and ONE EMBED PER THEME** (issues #89, #90). An X
+embed is a cross-origin iframe whose theme is fixed when `createTweet` is called and has no API to
+change afterwards, so `applyTheme` cannot re-theme it. #89 rebuilt it; that reloaded the widget on
+EVERY toggle, including a toggle back to a theme already seen. A post therefore now holds one
+embed per theme, as `.embed-variant` children of its one `.embed-slot`: exactly one visible, the
+other hidden but still MOUNTED (detaching an iframe and re-attaching it reloads it, the same reason
+the #67 pool never moves a card). So the first time a post is shown in a theme its variant is built
+and loads; every toggle back to a theme already seen just reveals the variant that is there -
+instant, no `createTweet`, no spinner. `rethemeVisibleEmbeds` carries out the pure
+`XBOEmbedTheme.rethemeAction` decision (`skip` | `reveal` | `build`) per card; a HIDDEN pooled card
+is skipped until `paintViewCards` reveals it, which re-themes it then, so nothing is ever shown in
+the wrong theme and dozens of off-screen widgets are not built for nobody. A variant that settled
+on the text+link FALLBACK serves ANY theme (viewer markup, already on the tokens - re-running a
+`createTweet` that already failed is pure cost), but only as a last resort: an exact theme match
+always wins. Memory is bounded by a SECOND LRU beside the post pool, over
+`XBOEmbedTheme.variantKey(postId, theme)` and capped at `MAX_POOLED_EMBEDS`
+(`touchVariantPool` in `app.js`, reusing `XBOFilterCache.touchPool`): every card's VISIBLE variant
+is protected, so only a cold SPARE is ever released, and dropping the post itself
+(`dropFromPool`) releases both. Only a BUILD reserves the slot's height (`min-height`) while it
+loads; a reveal needs none. Nothing else about the card - its shell, read/favorite state, `order`,
+or any cache entry - is per-theme or touched by a toggle.
 
 Dark mode used to show four **white corners** behind a post: X draws its card rounded inside a
 SQUARE iframe whose document canvas is light, and that canvas is cross-origin, so it can only be

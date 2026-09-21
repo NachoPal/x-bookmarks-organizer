@@ -57,6 +57,14 @@
   --space-5: 1.5rem;
   --space-6: 2rem;
 
+  /* The one size every popover's primary action is cut to (issue #90): Sync,
+     Reset library and Rank now sit in three different panels and used to be
+     three different sizes. The width is the widest of their labels ("Reset
+     library") plus the padding, so the shortest ("Sync", which also carries an
+     icon) is padded out to match rather than any of them being truncated. */
+  --panel-action-height: 2.25rem;
+  --panel-action-width: 9.5rem;
+
   /* Radii */
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -1611,6 +1619,24 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 .embed-slot > * {
   width: 100%;
 }
+/* One embed per theme the post has been shown under (issue #90): X fixes a
+   widget's theme at creation, so the toggle switches which variant is VISIBLE
+   instead of rebuilding the iframe - the hidden one stays mounted (detaching
+   an iframe reloads it) so toggling back is instant. `display` is set here, so
+   the UA's `[hidden]` rule has to be restated or the hidden variant would show
+   alongside the visible one. */
+.embed-variant {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.embed-variant[hidden] {
+  display: none;
+}
+.embed-variant > * {
+  width: 100%;
+}
 /* Contain the official X embed so its iframe never overflows the card, and
    center it (its own intrinsic width is often narrower than the slot).
 
@@ -2365,8 +2391,11 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   min-width: 0;
   border-bottom: 0;
 }
-.sync-btn {
-  min-height: 2.25rem;
+/* A popover's primary action. Sizing only - each button keeps its own variant
+   (primary / danger) and its own behavior; see `--panel-action-width`. */
+.panel-action {
+  min-height: var(--panel-action-height);
+  min-width: var(--panel-action-width);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-small);
 }
@@ -2570,10 +2599,16 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   color: var(--color-text);
   font-size: var(--text-small);
 }
+/* Save is the panel's one primary action, so it is centred rather than left
+   against the edge of a column of full-width fields (issue #90). The status
+   ("Saved", or why it failed) stacks UNDER it: beside it, a long message would
+   pull the button off centre, and an error that wraps would pull it further.
+   A column keeps the button put whatever the status says. */
 .settings-actions {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 .settings-save {
   min-height: 2.25rem;
@@ -2583,6 +2618,11 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 .settings-save-status {
   color: var(--color-text-muted);
   font-size: var(--text-small);
+  text-align: center;
+}
+/* No status yet: the flex gap alone would leave a dead row under the button. */
+.settings-save-status:empty {
+  display: none;
 }
 .settings-save-status[data-state="error"] {
   color: var(--color-danger);
