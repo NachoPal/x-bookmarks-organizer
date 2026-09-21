@@ -7,6 +7,17 @@
  * when it is opened.
  */
 (function () {
+  // Let the page animate again. `#xbo-preboot` suppresses every transition
+  // and animation so the state it applies before the first paint APPEARS
+  // rather than sliding into place; two frames is what it takes for that
+  // paint to have happened. Scheduled first, so nothing below can leave the
+  // page permanently motionless by throwing.
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      document.documentElement.removeAttribute("data-preboot");
+    });
+  });
+
   const treeEl = document.getElementById("tree");
   // Host of the card pool plus ONE view pane (`listEl`: loading/empty/error
   // states, sentinel, end marker). Until the first category is opened
@@ -519,9 +530,18 @@
    * empty "Select a category" state - never an error.
    */
   async function restoreLastView() {
+    const saved = window.XBOViewPersist && window.XBOViewPersist.readSelection(window.localStorage);
+    // On a phone, restoring a category auto-dismisses the drawer anyway
+    // (`selectCategory` does it) - but only once the tree has loaded, which
+    // meant every reload with a saved selection played the whole close
+    // animation. Decide it here instead, before the first frame, so the
+    // drawer simply starts closed. `silent` so the owner's own preference is
+    // untouched: a load with nothing to restore still opens it.
+    if (saved && saved.categoryId != null && drawerQuery.matches && !isCollapsed()) {
+      setCollapsed(true, { silent: true, moveFocus: false });
+    }
     await loadTree();
     try {
-      const saved = window.XBOViewPersist && window.XBOViewPersist.readSelection(window.localStorage);
       if (saved && selectedCategoryId == null) {
         activeFilter = saved.filter;
         renderFilterTabs();
@@ -3581,8 +3601,13 @@
   /** Distance from a scrollable edge that starts auto-scrolling, and the step. */
   const DRAG_SCROLL_EDGE = 56;
   const DRAG_SCROLL_STEP = 10;
-  /** Movement that turns a press into a drag rather than a click on the handle. */
-  const DRAG_START_SLOP = 4;
+  /**
+   * Which of the handle's two gestures happened - press or drag - is decided
+   * in the pure `card-drag.js`, because it is what gates BOTH destinations:
+   * a drag needs the sidebar tree as a drop target, a press opens the picker
+   * (which brings its own tree) and must leave the drawer alone.
+   */
+  const cardGesture = () => window.XBOCardDrag;
 
   let cardDrag = null;
 
@@ -3665,10 +3690,6 @@
     } catch (_) {
       /* no active pointer to capture (synthetic event); moves still reach the handle */
     }
-    // The tree is the only drop target there is, so a closed drawer would
-    // make the gesture impossible: open it as the drag begins.
-    if (isCollapsed()) setCollapsed(false, { returnFocus: false });
-
     const drag = {
       bm,
       card,
@@ -3685,6 +3706,13 @@
 
     const begin = () => {
       drag.started = true;
+      // The tree is the only drop target there is, so a closed drawer would
+      // make the gesture impossible: open it the moment the press becomes a
+      // DRAG. Opening it at pointerdown instead - before the gesture had
+      // declared itself - is what made a tap on the handle open the sidebar
+      // behind the picker modal on a phone (issue #100). `moveFocus: false`
+      // because focus belongs to the pointer for the rest of the gesture.
+      if (isCollapsed()) setCollapsed(false, { moveFocus: false });
       card.classList.add("is-moving");
       document.body.classList.add("is-card-dragging");
       if (moveGhostEl) moveGhostEl.hidden = false;
@@ -3701,10 +3729,7 @@
     const onMove = (ev) => {
       drag.pointer = { x: ev.clientX, y: ev.clientY };
       if (!drag.started) {
-        const far =
-          Math.abs(ev.clientX - drag.origin.x) > DRAG_START_SLOP ||
-          Math.abs(ev.clientY - drag.origin.y) > DRAG_START_SLOP;
-        if (!far) return;
+        if (!cardGesture().passedSlop(drag.origin, drag.pointer)) return;
         begin();
       }
       positionGhost(ev.clientX, ev.clientY);
@@ -3728,16 +3753,19 @@
       card.classList.remove("is-moving");
       document.body.classList.remove("is-card-dragging");
       if (moveGhostEl) moveGhostEl.hidden = true;
-      const wasDrag = drag.started;
+      const outcome = cardGesture().gestureOutcome({
+        started: drag.started,
+        cancelled,
+        targetId,
+      });
       cardDrag = null;
-      if (cancelled) return;
       // A press that never became a drag is a press: open the picker, so the
       // handle is never a control that does nothing when you click it.
-      if (!wasDrag) {
+      if (outcome === "picker") {
         openMovePicker(bm, card, handle);
         return;
       }
-      if (targetId == null) return;
+      if (outcome !== "move") return;
       moveBookmarkToCategory(bm, card, targetId).catch((err) => {
         showToast(err.message || "Could not move that post.");
       });

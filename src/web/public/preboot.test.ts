@@ -107,6 +107,19 @@ describe("pre-paint state application (issue #104)", () => {
     expect(runPreboot(stored).bodyAttrs["data-sidebar"]).toBe("collapsed");
   });
 
+  it("suppresses motion for the first frame, so the saved state appears rather than animating", () => {
+    // The regression this guards: #104 made the sidebar state land before the
+    // paint, but the `.viewer` grid transition still played once on load, so
+    // every refresh showed the drawer sliding into place. The attribute is
+    // what `styles.css` keys that suppression off; `app.js` drops it after
+    // the first frame.
+    for (const stored of [{}, { [SIDEBAR_KEY]: "0" }]) {
+      expect(runPreboot(stored).htmlAttrs["data-preboot"]).toBe("1");
+    }
+    // Even with storage blocked: the suppression must not depend on a read.
+    expect(runPreboot({}, { throwing: true }).htmlAttrs["data-preboot"]).toBe("1");
+  });
+
   it("applies a stored theme to <html> so it never paints the other one first", () => {
     for (const theme of ["light", "dark"]) {
       const stored = { [THEME_KEY]: theme };
