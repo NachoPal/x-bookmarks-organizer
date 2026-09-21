@@ -65,19 +65,25 @@
   }
 
   /**
-   * Re-file a bookmark from `fromCategoryIds` to the single `toCategoryId`
-   * (issue #92) and return every node whose counters moved, so the caller
-   * patches exactly those rows.
+   * Re-file a bookmark from `fromCategoryIds` to `toCategoryIds` (issue #92)
+   * and return every node whose counters moved, so the caller patches exactly
+   * those rows. The target is normally the single category a move picks; it
+   * accepts a LIST because undoing a move (issue #99) restores whatever
+   * membership the post had before, which for a multi-labelled post is more
+   * than one category.
    *
    * Two sequenced deltas, not one: the old chains lose the post and the new
    * chain gains it, and an ancestor common to both is adjusted once in each
    * direction - netting zero, which is correct, because a rolled-up count is
    * DISTINCT bookmarks in the subtree and a post that never left that subtree
-   * was only ever counted once there.
+   * was only ever counted once there. Being two symmetric deltas is also what
+   * makes the operation reversible: applying it back the other way lands every
+   * counter exactly where it started.
    */
-  function applyMoveDelta(index, fromCategoryIds, toCategoryId, unreadDelta) {
+  function applyMoveDelta(index, fromCategoryIds, toCategoryIds, unreadDelta) {
+    const targets = Array.isArray(toCategoryIds) ? toCategoryIds : [toCategoryIds];
     const removed = applyCountDelta(index, fromCategoryIds, -1, -unreadDelta);
-    const added = applyCountDelta(index, [toCategoryId], 1, unreadDelta);
+    const added = applyCountDelta(index, targets, 1, unreadDelta);
     const seen = new Set();
     const updated = [];
     for (const node of removed.concat(added)) {

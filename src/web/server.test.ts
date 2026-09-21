@@ -1046,4 +1046,41 @@ describe('PUT /api/bookmarks/:id/category (issue #92)', () => {
     expect(res.json().bookmark.read).toBe(true);
     expect(res.json().bookmark.favorite).toBe(true);
   });
+
+  // The list form is what the move toast's Undo re-files with (issue #99):
+  // a move is replace-all, so putting a multi-labelled post back the way it
+  // was needs every category it had, not just the first.
+  describe('restoring a prior membership (issue #99)', () => {
+    it('re-files under several categories at once', async () => {
+      await move(id, { categoryId: ai });
+      const res = await move(id, { categoryIds: [evals, design] });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().categoryIds).toEqual([evals, design]);
+      expect(db.getCategoryIdsForBookmarks([id]).get(id)!.sort()).toEqual(
+        [evals, design].sort(),
+      );
+      expect(db.getCategoryBookmarkCounts(ai).total).toBe(1); // Evals rolls up into AI
+    });
+
+    it('round-trips a move: undo lands exactly where it started', async () => {
+      const before = db.getCategoryIdsForBookmarks([id]).get(id)!.slice().sort();
+      await move(id, { categoryId: ai });
+      await move(id, { categoryIds: before });
+      expect(db.getCategoryIdsForBookmarks([id]).get(id)!.sort()).toEqual(before);
+      expect(db.getCategoryBookmarkCounts(design).total).toBe(1);
+    });
+
+    it('rejects an empty or malformed list and changes nothing', async () => {
+      expect((await move(id, { categoryIds: [] })).statusCode).toBe(400);
+      expect((await move(id, { categoryIds: [evals, 'AI'] })).statusCode).toBe(400);
+      expect((await move(id, { categoryIds: [evals, 9999] })).statusCode).toBe(400);
+      expect(db.getCategoryIdsForBookmarks([id]).get(id)!.sort()).toEqual(
+        [evals, design].sort(),
+      );
+    });
+
+    it('404s for an unknown bookmark before it writes anything', async () => {
+      expect((await move(4242, { categoryIds: [ai] })).statusCode).toBe(404);
+    });
+  });
 });

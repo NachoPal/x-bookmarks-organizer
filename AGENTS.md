@@ -266,7 +266,19 @@ zero frames over 20ms in either direction, and the embed's width identical on ev
 both properties if you touch this. (Animatable grid tracks: Firefox 66+, Chrome/Edge 107+,
 Safari 16.1+; the track count never changes, which is what keeps the two lists interpolable.)
 At `<=820px` it remains the FIXED overlay drawer with its scrim and auto-dismiss-on-pick, sliding on
-transform; the viewer never moves and never resizes. A
+transform; the viewer never moves and never resizes.
+**The column's right edge is drag-resizable** (issue #99): `#sidebar-resizer` is a real ARIA window
+splitter (`role="separator"`, focusable, arrow keys / PageUp-Down / Home-End, `aria-valuenow` in
+pixels) that writes `--sidebar-width` onto `:root`. Because that is the ONE token the wide track,
+the narrow drawer's `min(88vw, …)` and `.sidebar-inner` all hang off, both modes and the #86
+open/close interpolation follow it with no extra wiring. Bounds + guarded persistence are the pure
+`sidebar-width.js` (`XBOSidebarWidth`); the ceiling is chosen so the viewer column still fits
+`--content-measure` on a laptop, which is what keeps a resize from re-laying-out the X embeds.
+During a drag `body[data-resizing="sidebar"]` suppresses the grid transition (the column must track
+the pointer, not ease after it) and the width is persisted ONCE on pointerup, not per frame. The
+splitter sits INSIDE the sidebar's padding and `.sidebar-inner` is inset by
+`--sidebar-resizer-width`, so it covers no tree row and no scrollbar. Hidden at `<=820px`: an
+overlay drawer has no second column to hand width back to. A
 closed drawer gets `inert` from JS (not just an off-screen transform) so it leaves the tab order.
 The empty-state prompts (`[data-open-categories]`: the landing card and the top-bar "Select a
 category" button) open it through the same `setCollapsed`.
@@ -274,11 +286,13 @@ category" button) open it through the same `setCollapsed`.
 and its scrim hang off - keep them on that token. `--z-header` sits ABOVE `--z-sidebar` so the
 settings popover, which is a child of the bar, is not painted over by the drawer.
 
-Every popover's primary action - Sync and Reset library (sync panel) and Rank now (rank panel) -
-is cut to ONE size through the shared `.panel-action` class and `--panel-action-width`/`-height`
-(issue #90); they sit in three different panels, so without that they drift apart again. The
-settings panel's Save is centred, with its status stacked under it rather than beside it, so a long
-"why it failed" message cannot pull the button off centre.
+Every popover's primary action - Sync and Reset library (sync panel), Rank now (rank panel) and
+the settings panel's Save - is cut to ONE size through the shared `.panel-action` class (issues
+#90, #99); they sit in three different panels, so without that they drift apart again. Since #99
+that size is the PANEL's width (`width: 100%`), which is why there is no longer a
+`--panel-action-width` to keep in step with the longest label - only `--panel-action-height`
+remains. Save's status still stacks UNDER it rather than beside it, so a long "why it failed"
+message cannot squeeze the button.
 
 The **settings popover** (gear, issue #37) holds the post-size control plus the theme and
 category-color switches. It no longer holds the list's Order - that moved out to the floating sort
@@ -389,9 +403,12 @@ observed to silently desync from the attribute in an automated test session, so 
 icon/visual swap in this viewer should prefer a CSS attribute selector over JS-driven `hidden`/
 `style.display`.
 
-**A card leaving the live view slides out** (#95): marking a post read in the Unread tab (or
-un-starring one in Favorites) animates the card right while fading, and only then do the posts
-below FLIP up to close the gap - `animateCardExit`/`dropCardFromView` in `app.js`. `transform` and
+**A card leaving the live view slides out** (#95), and since #99 the slide has a MEANING:
+`XBOReadToggle.readExitDirection` sends a post marked read RIGHT (towards the Read tab, which sits
+to the right of Unread) and a post marked unread LEFT, back the way it came; `exitTranslate` signs
+the travel. Un-starring in Favorites has no neighbouring tab to move towards and keeps the default
+rightward dismissal. Either way the card fades, and only then do the posts below FLIP up to close
+the gap - `animateCardExit`/`dropCardFromView` in `app.js`. `transform` and
 `opacity` only; the gap is closed with a FLIP, never by animating a layout property. Three things
 are load-bearing. The card is HIDDEN, never detached, so it stays pooled with its mounted X embeds
 (issues #67, #89) - the animation only borrows it on the way out and releases its fill once it is
@@ -464,15 +481,30 @@ To iterate on the viewer without the owner's private DB, seed a throwaway one an
 (`scripts/seed-dev-db.js` builds a deep sample taxonomy; `data/*.db` is gitignored - never commit
 real data).
 
-## Manual move to another category (issue #92)
+## Manual move to another category (issues #92, #99)
 
 The owner can re-file ONE post by hand, two ways into ONE action. **"Move" is re-file, not add**
-(the owner's decision on #92): `Database.setBookmarkCategory` DELETEs every
-`bookmark_categories` row for the bookmark and INSERTs the single chosen one in one transaction,
+(the owner's decision on #92): `Database.setBookmarkCategories` DELETEs every
+`bookmark_categories` row for the bookmark and INSERTs the chosen ones in one transaction,
 so a post that the assignment pass multi-labelled collapses to exactly the category picked.
 `PUT /api/bookmarks/:id/category` `{ categoryId }` validates the TARGET (400 for an unknown or
 malformed id - a bad request) separately from the BOOKMARK (404), and needs nothing but `db`, so
 it is fully live on a `buildServer(db)` with no sync/rank wiring.
+
+Because the write is replace-all, the ONLY thing that can put a multi-labelled post back is a
+snapshot of its membership taken BEFORE it - which is what makes the move toast's **Undo** (issue
+#99) work. `XBOMoveUndo` (`move-undo.js`, pure) takes that snapshot off the `categoryIds` every
+listed bookmark already carries, decides whether Undo is worth offering (a post filed nowhere has
+no prior state; a move that changed nothing has nothing to undo) and owns the toast's dwell time.
+Undo is then the SAME re-file run backwards, not a second path: `refileBookmark` takes a LIST of
+targets, the route's `{ categoryIds: [...] }` form is that list, and `applyMoveDelta` is symmetric,
+so every rolled-up counter lands exactly where it started. `restoreCardToView` is the mirror of
+`commitCardOut` (the card was hidden, never detached, so it is still pooled with its mounted
+embeds) and only reinstates a card the open TAB still accepts. The toast's second action, **View**,
+is `revealBookmark`: it falls back to the All tab when the open one excludes the post, drives
+`loadMore` up to `REVEAL_MAX_PAGES` to reach it, then focuses the card and rings it
+(`.bookmark-card.is-located`) - focus first, because a ring is the second channel, never the only
+one.
 
 The two surfaces are `app.js`'s `startCardDrag` (the card's `.card-grip`, LEFT of the read chip)
 and `openMovePicker` (the `.move-btn`, between Favorite and Summarize); both end in
@@ -837,6 +869,18 @@ A disabled radio cannot take focus, so the explanation is not a tooltip alone: `
 it as visible text AND is the radiogroup's `aria-describedby`, with a `title` for the pointer.
 `applySetupState` re-runs this on every `/api/setup` read, which is how a finished rank run and a
 reset both keep it in sync with no extra wiring.
+
+**Scroll-to-top** (issue #99) is `#scroll-top`, one round button inside `.scroll-top-anchor` - a
+zero-height `position: sticky` row that is a SIBLING of `.content-inner`, never a child: that block
+is fixed at `--content-measure`, so a button inside it would sit at the post column's edge instead
+of the pane's, and anything that changed that block's box would re-lay-out every X embed (the #86
+constraint). A zero-height row changes nothing about the flow the cards are in. When it shows is
+the pure `XBOScrollTop.nextVisible`, which carries TWO thresholds (`SHOW_AT`/`HIDE_AT`): one
+boundary makes the button flicker on and off while the list is nudged around it. On a wide viewport
+it floats in the gutter clear of the sort pill; at `<=560px` there is no gutter to share, so the
+pill gives up its TRAILING one (`.sort-bar { padding-right }`, unconditional so the pill never
+re-wraps mid-scroll) and rides that much left of centre - reserving on both sides to keep it
+centred made it narrow enough to wrap onto two lines.
 
 **Changing the sort is a CONTENT-only refresh** - that was the visible glitch. `repageForSort`
 calls `fetchAndRenderFirstPage({ sameCategory: true })`: the `sameCategory` flag keeps the posts on

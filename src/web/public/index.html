@@ -69,6 +69,20 @@
           <p class="state state-loading" role="status">Loading categories…</p>
         </div>
       </div>
+      <!-- The drag-resizable right edge (issue #99). A real ARIA window
+           splitter: focusable, arrow keys resize, Home/End go to the bounds,
+           and `aria-valuenow` reports the width in pixels. Hidden at <=820px,
+           where the sidebar is a near-full-width overlay drawer with nothing
+           to give back. -->
+      <div
+        id="sidebar-resizer"
+        class="sidebar-resizer"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-controls="sidebar"
+        aria-label="Resize categories sidebar"
+      ></div>
     </nav>
     <div id="viewer" class="viewer">
       <header class="topbar">
@@ -332,7 +346,7 @@
                 ></div>
                 <p id="settings-categorization-note" class="settings-note" hidden></p>
                 <div class="settings-actions">
-                  <button id="settings-save" class="btn btn-primary settings-save" type="button">
+                  <button id="settings-save" class="btn btn-primary panel-action" type="button">
                     Save
                   </button>
                   <span id="settings-save-status" class="settings-save-status" role="status"></span>
@@ -440,6 +454,25 @@
         </div>
 
         <main id="bookmarks" class="content" aria-label="Bookmarks" tabindex="-1">
+          <!-- Scroll-to-top (issue #99). A zero-height sticky anchor pinned to
+               the top of the scrolling pane, so the button floats at the
+               pane's top-RIGHT - in the gutter beside the centered post
+               column, clear of the sticky sort pill. -->
+          <div class="scroll-top-anchor">
+            <button id="scroll-top" class="scroll-top" type="button" hidden>
+              <svg class="icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path
+                  d="M10 16V5m0 0 4.5 4.5M10 5 5.5 9.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <span class="visually-hidden">Back to the first post</span>
+            </button>
+          </div>
           <div class="content-inner">
             <!-- Sticky sort selector (issue #97). It starts below the content
                  pane's top padding, clear of the first post, and pins itself
@@ -779,6 +812,9 @@
     <script src="tree-counts.js" defer></script>
     <script src="root-order.js" defer></script>
     <script src="read-toggle.js" defer></script>
+    <script src="sidebar-width.js" defer></script>
+    <script src="scroll-top.js" defer></script>
+    <script src="move-undo.js" defer></script>
     <script src="filter-cache.js" defer></script>
     <script src="view-persist.js" defer></script>
     <script src="sort-order.js" defer></script>

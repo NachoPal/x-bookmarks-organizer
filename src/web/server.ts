@@ -645,34 +645,49 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     },
   );
 
-  // Re-file a bookmark under exactly ONE category (issue #92): the manual
-  // move the owner performs by dragging a card onto the sidebar tree, or
-  // through the card's category picker. "Move" is re-file, not add (the
+  // Re-file a bookmark under exactly the given categories (issue #92): the
+  // manual move the owner performs by dragging a card onto the sidebar tree,
+  // or through the card's category picker. "Move" is re-file, not add (the
   // owner's decision on #92), so the post's other memberships go with it.
   //
-  // The target is validated here rather than in the DB method: an unknown or
+  // A move sends one `categoryId`. `categoryIds` (a list) is the SAME
+  // operation with more than one target, and exists for one caller: the move
+  // toast's Undo (issue #99), which restores whatever membership the post had
+  // before - for a multi-labelled post, several categories. Undo is therefore
+  // the same re-file run backwards, not a second, differently-behaved route.
+  //
+  // Each target is validated here rather than in the DB method: an unknown or
   // malformed category id is a bad REQUEST (400), while an unknown bookmark
   // is a missing row (404). Needs nothing but `db`, so it is fully available
   // on a `buildServer(db)` built without the sync/rank wiring.
-  app.put<{ Params: { id: string }; Body?: { categoryId?: unknown } }>(
+  app.put<{ Params: { id: string }; Body?: { categoryId?: unknown; categoryIds?: unknown } }>(
     '/api/bookmarks/:id/category',
     async (req, reply) => {
       const id = Number.parseInt(req.params.id, 10);
       if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
-      const categoryId = req.body?.categoryId;
-      if (!Number.isInteger(categoryId)) {
-        return reply
-          .code(400)
-          .send({ error: 'Body must be { "categoryId": <category id> }.' });
+      const raw = req.body?.categoryIds !== undefined ? req.body.categoryIds : req.body?.categoryId;
+      const requested = Array.isArray(raw) ? raw : [raw];
+      if (requested.length === 0 || !requested.every((value) => Number.isInteger(value))) {
+        return reply.code(400).send({
+          error: 'Body must be { "categoryId": <category id> } or { "categoryIds": [<category id>, …] }.',
+        });
       }
-      const category = db.getCategoryById(categoryId as number);
-      if (!category) {
-        return reply.code(400).send({ error: `Unknown category id ${categoryId}.` });
+      const categories = [];
+      for (const categoryId of requested as number[]) {
+        const category = db.getCategoryById(categoryId);
+        if (!category) {
+          return reply.code(400).send({ error: `Unknown category id ${categoryId}.` });
+        }
+        categories.push(category);
       }
-      if (!db.setBookmarkCategory(id, category.id)) {
+      if (!db.setBookmarkCategories(id, categories.map((c) => c.id))) {
         return reply.code(404).send({ error: 'bookmark not found' });
       }
-      return { bookmark: db.getBookmarkById(id), categoryIds: [category.id], category };
+      return {
+        bookmark: db.getBookmarkById(id),
+        categoryIds: categories.map((c) => c.id),
+        category: categories[0],
+      };
     },
   );
 

@@ -651,6 +651,139 @@
     });
   }
 
+  // ---- resizing the sidebar (issue #99) ----------------------------------
+  // The column's right edge is a real ARIA window splitter: drag it, or focus
+  // it and use the arrow keys. What it sets is `--sidebar-width` on `:root`,
+  // which is the ONE token the track, the overlay drawer and `.sidebar-inner`
+  // all hang off - so both modes follow it and the #86 open/close animation is
+  // untouched (it interpolates to whatever the token currently says).
+  //
+  // The bounds and the guarded persistence are `sidebar-width.js`; everything
+  // here is the gesture and the ARIA values.
+
+  const resizerEl = document.getElementById("sidebar-resizer");
+  const sidebarInnerEl = sidebarEl ? sidebarEl.querySelector(".sidebar-inner") : null;
+  let sidebarWidth = window.XBOSidebarWidth
+    ? window.XBOSidebarWidth.readWidth(window.localStorage)
+    : null;
+
+  /**
+   * The width in force right now. With nothing persisted that is whatever the
+   * stylesheet's `clamp()` resolved to, which is read off `.sidebar-inner` -
+   * it is absolutely positioned at a width derived from the token, so it
+   * reports a real number even while the track is animating (or collapsed to
+   * zero) and the token itself would only read back as the unresolved
+   * `clamp(...)` expression.
+   */
+  function currentSidebarWidth() {
+    if (sidebarWidth !== null) return sidebarWidth;
+    if (!sidebarInnerEl || !window.XBOSidebarWidth) return null;
+    const strip = resizerEl ? resizerEl.getBoundingClientRect().width : 0;
+    return window.XBOSidebarWidth.clampWidth(
+      sidebarInnerEl.getBoundingClientRect().width + strip,
+    );
+  }
+
+  function syncResizerValues() {
+    if (!resizerEl || !window.XBOSidebarWidth) return;
+    resizerEl.setAttribute("aria-valuemin", String(window.XBOSidebarWidth.MIN_SIDEBAR_WIDTH));
+    resizerEl.setAttribute("aria-valuemax", String(window.XBOSidebarWidth.MAX_SIDEBAR_WIDTH));
+    const now = currentSidebarWidth();
+    if (now === null) return;
+    resizerEl.setAttribute("aria-valuenow", String(now));
+    resizerEl.setAttribute("aria-valuetext", `${now} pixels wide`);
+  }
+
+  /** Apply a width to the token; `persist` is false for every drag frame. */
+  function applySidebarWidth(px, persist) {
+    if (!window.XBOSidebarWidth) return;
+    const value = window.XBOSidebarWidth.clampWidth(px);
+    if (value === null) return;
+    sidebarWidth = value;
+    document.documentElement.style.setProperty("--sidebar-width", `${value}px`);
+    if (persist) window.XBOSidebarWidth.writeWidth(window.localStorage, value);
+    syncResizerValues();
+  }
+
+  function initSidebarResizer() {
+    if (!resizerEl || !window.XBOSidebarWidth) return;
+    // Restore the persisted width before anything measures the column.
+    if (sidebarWidth !== null) {
+      document.documentElement.style.setProperty("--sidebar-width", `${sidebarWidth}px`);
+    }
+    syncResizerValues();
+
+    let dragPointer = null;
+    resizerEl.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      dragPointer = e.pointerId;
+      resizerEl.setPointerCapture(dragPointer);
+      // Suppresses the grid's own transition for the duration: the column has
+      // to track the pointer exactly, not ease after it.
+      bodyEl.setAttribute("data-resizing", "sidebar");
+      e.preventDefault();
+    });
+    resizerEl.addEventListener("pointermove", (e) => {
+      if (dragPointer === null || e.pointerId !== dragPointer) return;
+      // The sidebar is flush with the viewport's left edge, so the pointer's
+      // x IS the width being asked for.
+      applySidebarWidth(e.clientX, false);
+    });
+    const endDrag = (e) => {
+      if (dragPointer === null || (e && e.pointerId !== dragPointer)) return;
+      if (resizerEl.hasPointerCapture(dragPointer)) {
+        resizerEl.releasePointerCapture(dragPointer);
+      }
+      dragPointer = null;
+      bodyEl.removeAttribute("data-resizing");
+      // Persisted once, at the end: a drag would otherwise write on every
+      // frame of itself.
+      if (sidebarWidth !== null) {
+        window.XBOSidebarWidth.writeWidth(window.localStorage, sidebarWidth);
+      }
+    };
+    resizerEl.addEventListener("pointerup", endDrag);
+    resizerEl.addEventListener("pointercancel", endDrag);
+
+    resizerEl.addEventListener("keydown", (e) => {
+      const next = window.XBOSidebarWidth.stepWidth(currentSidebarWidth(), e.key);
+      if (next === null) return;
+      e.preventDefault();
+      applySidebarWidth(next, true);
+    });
+  }
+
+  // ---- scroll back to the first post (issue #99) --------------------------
+  // A floating control at the top-right of the scrolling pane, offered only
+  // once the list has actually been scrolled. The two thresholds that decide
+  // that (and the hysteresis between them, so it does not flicker) are the
+  // pure `XBOScrollTop`.
+
+  const scrollTopBtn = document.getElementById("scroll-top");
+
+  function initScrollTop() {
+    if (!scrollTopBtn || !contentEl || !window.XBOScrollTop) return;
+    let visible = false;
+    const update = () => {
+      const next = window.XBOScrollTop.nextVisible(contentEl.scrollTop, visible);
+      if (next === visible) return;
+      visible = next;
+      scrollTopBtn.hidden = !visible;
+    };
+    contentEl.addEventListener("scroll", update, { passive: true });
+    update();
+
+    scrollTopBtn.addEventListener("click", () => {
+      // Focus moves first: the button hides itself the moment the pane is
+      // back near the top, and focus must not fall off it onto <body>.
+      contentEl.focus({ preventScroll: true });
+      contentEl.scrollTo({
+        top: 0,
+        behavior: window.XBOScrollTop.scrollBehavior(reducedMotion.matches),
+      });
+    });
+  }
+
   // ---- top-bar popovers: ranking + sync + settings (issues #37, #71, #89) ---
   // Icon buttons in the bar's right region, each opening a panel anchored
   // under it, in the bar's own order. Settings holds post size, order and
@@ -2689,20 +2822,24 @@
     return widgetsReadyPromise;
   }
 
-  // ---- leaving the live view (#95) ---------------------------------
+  // ---- leaving the live view (#95, #99) -----------------------------
   // Marking a post read in the Unread tab used to make it disappear on the
   // spot and the next post jump up into its place. It is now a movement with
-  // a direction: the card slides out to the RIGHT while fading, and only then
-  // do the posts below travel up to close the gap. `transform` and `opacity`
-  // only, on both halves - the gap is closed with a FLIP, never by animating
-  // a layout property.
+  // a direction, and since issue #99 the direction MEANS something: the
+  // Unread and Read tabs sit side by side in that order, so a post marked
+  // read slides RIGHT - towards the tab it is joining - and a post marked
+  // unread slides LEFT, back the way it came. Either way it fades, and only
+  // then do the posts below travel up to close the gap. `transform` and
+  // `opacity` only, on both halves - the gap is closed with a FLIP, never by
+  // animating a layout property. Which way is the pure
+  // `XBOReadToggle.readExitDirection`; this half is the animation.
 
   const reducedMotion =
     typeof window.matchMedia === "function"
       ? window.matchMedia("(prefers-reduced-motion: reduce)")
       : { matches: false };
 
-  /** How far right the card travels, as a share of its own width. */
+  /** How far the card travels, as a share of its own width. */
   const EXIT_SLIDE_DISTANCE = "22%";
   /** Leaving accelerates away (the arrival back uses the token layer's ease). */
   const EXIT_EASE = "cubic-bezier(0.4, 0, 1, 1)";
@@ -2765,17 +2902,18 @@
    * reloading (issues #67, #89). The animation only borrows it on the way out,
    * and the fill is released once it is hidden so a later reveal is clean.
    */
-  function animateCardExit(card, commit) {
+  function animateCardExit(card, commit, direction) {
     if (reducedMotion.matches || typeof card.animate !== "function" || card.hidden) {
       commit();
       return;
     }
     const followers = cardsAfter(card);
     const before = followers.map((other) => other.getBoundingClientRect().top);
+    const travel = window.XBOReadToggle.exitTranslate(direction || "right", EXIT_SLIDE_DISTANCE);
     const slide = card.animate(
       [
         { transform: "translateX(0)", opacity: 1 },
-        { transform: `translateX(${EXIT_SLIDE_DISTANCE})`, opacity: 0 },
+        { transform: travel, opacity: 0 },
       ],
       { duration: motionMs("--motion-slow", 260), easing: EXIT_EASE, fill: "forwards" },
     );
@@ -2814,8 +2952,8 @@
    * starts, so a tab badge never lags the sidebar counter it has to agree
    * with by the length of an animation.
    */
-  function dropCardFromView(bm, card) {
-    animateCardExit(card, () => commitCardOut(bm, card));
+  function dropCardFromView(bm, card, direction) {
+    animateCardExit(card, () => commitCardOut(bm, card), direction);
   }
 
   /**
@@ -2914,7 +3052,9 @@
       const dropsOut =
         (activeFilter === "unread" && bm.read) || (activeFilter === "read" && !bm.read);
       renderCountLine();
-      if (dropsOut) dropCardFromView(bm, card);
+      // Direction-aware (#99): towards Read on the way in, back towards
+      // Unread on the way out.
+      if (dropsOut) dropCardFromView(bm, card, window.XBOReadToggle.readExitDirection(bm.read));
     } catch (_err) {
       if (pillBtn) {
         pillBtn.classList.remove("is-loading");
@@ -2982,21 +3122,40 @@
   const UNDO_WINDOW_MS = 6000;
   const toastContainerEl = document.getElementById("toast-container");
 
-  function showToast(message, actionLabel, onAction) {
+  /** How long a toast that only reports something stays on screen. */
+  const TOAST_MS = 4000;
+
+  /**
+   * A bottom toast, optionally offering actions (issue #99 gave the move its
+   * second one, so this takes a LIST rather than a single label/handler).
+   *
+   * `opts.duration` is how long it stays; `0` means it is owned by the caller
+   * (the safe-delete toast, which its own undo-window timer removes). Every
+   * action closes the toast before running, so a slow handler cannot leave a
+   * dismissed toast on screen.
+   */
+  function showToast(message, opts) {
+    const options = opts || {};
+    const actions = options.actions || [];
     const toast = el("div", "toast");
     toast.setAttribute("role", "status");
     toast.appendChild(el("span", "toast-msg", message));
-    if (actionLabel && onAction) {
-      const actionBtn = el("button", "btn btn-ghost toast-action", actionLabel);
-      actionBtn.type = "button";
-      actionBtn.addEventListener("click", () => {
-        toast.remove();
-        onAction();
-      });
-      toast.appendChild(actionBtn);
+    if (actions.length > 0) {
+      const row = el("span", "toast-actions");
+      for (const action of actions) {
+        const actionBtn = el("button", "btn btn-ghost toast-action", action.label);
+        actionBtn.type = "button";
+        actionBtn.addEventListener("click", () => {
+          toast.remove();
+          action.onClick();
+        });
+        row.appendChild(actionBtn);
+      }
+      toast.appendChild(row);
     }
     toastContainerEl.appendChild(toast);
-    if (!onAction) setTimeout(() => toast.remove(), 4000);
+    const duration = options.duration === undefined ? TOAST_MS : options.duration;
+    if (duration > 0) setTimeout(() => toast.remove(), duration);
     return toast;
   }
 
@@ -3043,15 +3202,22 @@
     }
 
     let undone = false;
-    const toast = showToast(
-      `Deleted @${bm.authorUsername}’s post.`,
-      "Undo",
-      () => {
-        undone = true;
-        clearTimeout(timer);
-        restore();
-      },
-    );
+    const toast = showToast(`Deleted @${bm.authorUsername}’s post.`, {
+      // Owned by the undo-window timer below, not by a dwell time: the toast
+      // must be on screen for exactly as long as the delete can still be
+      // taken back.
+      duration: 0,
+      actions: [
+        {
+          label: "Undo",
+          onClick: () => {
+            undone = true;
+            clearTimeout(timer);
+            restore();
+          },
+        },
+      ],
+    });
 
     const timer = setTimeout(async () => {
       if (undone) return;
@@ -3104,10 +3270,10 @@
    * The pooled CARD is never released - the post still exists, and detaching
    * it would reload its X embeds (issues #67, #89).
    */
-  function syncCachedViewsOnMove(bm, fromIds, toId) {
+  function syncCachedViewsOnMove(bm, fromIds, toIds) {
     if (!window.XBOTreeCounts) return;
     const before = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, fromIds);
-    const after = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, [toId]);
+    const after = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, toIds);
     for (const [categoryId, catCache] of viewCaches) {
       const had = before.has(categoryId);
       const has = after.has(categoryId);
@@ -3126,33 +3292,43 @@
         // with the pool needs its category list refreshed.
         for (const entry of catCache.filters.values()) {
           const cached = entry.bmById.get(bm.id);
-          if (cached && cached !== bm) cached.categoryIds = [toId];
+          if (cached && cached !== bm) cached.categoryIds = toIds.slice();
         }
       }
     }
   }
 
   /**
-   * Re-file `bm` under exactly `targetId`, then settle everything the change
-   * touches WITHOUT reloading anything: the sidebar counters (source chain
-   * down, destination chain up, a shared ancestor netting zero), the cached
-   * views, the live view's own counts, and - when the post has left the
-   * category being browsed - the card itself, on the reflow above.
+   * Re-file `bm` under exactly `targetIds`, then settle everything the change
+   * touches WITHOUT reloading anything: the sidebar counters (source chains
+   * down, destination chains up, a shared ancestor netting zero), the cached
+   * views, the live view's own counts, and the card itself - out of the view
+   * on the reflow above when the post has left the category being browsed,
+   * back INTO it when an undo brings it home again.
+   *
+   * A move always passes one id. The list is what makes the operation
+   * reversible (issue #99): a post the assignment pass multi-labelled had
+   * several memberships before the move collapsed them, and Undo restores
+   * exactly those - the same re-file run backwards, not a second code path.
    *
    * Throws on failure so each entry point can report it in its own idiom
    * (an inline message in the modal, a toast after a drag).
    */
-  async function moveBookmarkToCategory(bm, card, targetId) {
+  async function refileBookmark(bm, card, targetIds, opts) {
+    const options = opts || {};
     const fromIds = (bm.categoryIds || []).slice();
+    // Where the card sits in the view it may be about to leave, captured
+    // before anything moves so an Undo can put it back where it was rather
+    // than at the end of the list.
+    const viewIndex = currentViewBookmarks.indexOf(bm);
     const res = await fetch(`/api/bookmarks/${bm.id}/category`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ categoryId: targetId }),
+      body: JSON.stringify({ categoryIds: targetIds }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || "Could not move that post.");
 
-    const target = categoryIndex.get(targetId);
     const wasUnread = !bm.read;
     const wasFavorite = Boolean(bm.favorite);
 
@@ -3160,7 +3336,7 @@
     let joinedView = false;
     if (window.XBOTreeCounts && selectedCategoryId != null) {
       const before = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, fromIds);
-      const after = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, [targetId]);
+      const after = window.XBOTreeCounts.affectedCategoryIds(categoryIndex, targetIds);
       leftView = before.has(selectedCategoryId) && !after.has(selectedCategoryId);
       joinedView = !before.has(selectedCategoryId) && after.has(selectedCategoryId);
     }
@@ -3169,14 +3345,14 @@
       const updated = window.XBOTreeCounts.applyMoveDelta(
         categoryIndex,
         fromIds,
-        targetId,
+        targetIds,
         wasUnread ? 1 : 0,
       );
       for (const node of updated) patchCategoryCountDom(node);
       syncCacheCounts(updated);
     }
-    syncCachedViewsOnMove(bm, fromIds, targetId);
-    bm.categoryIds = [targetId];
+    syncCachedViewsOnMove(bm, fromIds, targetIds);
+    bm.categoryIds = targetIds.slice();
 
     // The live view's own counts move with it, the same way the read toggle
     // settles them before the card starts leaving.
@@ -3190,10 +3366,152 @@
       renderCountLine();
     }
     if (leftView) reflowCardOut(bm, card);
+    else if (joinedView) restoreCardToView(bm, card, options.restoreIndex);
 
-    const where = target ? picker().pathLabel(target) : "another category";
+    return { fromIds, viewIndex, leftView, joinedView };
+  }
+
+  /**
+   * Put a card back into the open view - the settling half of an Undo, and
+   * the mirror of `commitCardOut`.
+   *
+   * The card was hidden, never detached (issues #67, #89), so it is still
+   * pooled with its mounted X embeds: reinstating it is a matter of the view's
+   * id list and a repaint, and its post never reloads. It is only reinstated
+   * when it genuinely belongs on screen - the open TAB still has to accept it,
+   * which category membership alone does not decide.
+   */
+  function restoreCardToView(bm, card, index) {
+    if (!card || !window.XBOFilterCache.survivesFilter(activeFilter, bm)) return;
+    if (currentViewBookmarks.indexOf(bm) === -1) {
+      // The view may have emptied out behind this post; the empty-state
+      // message has to go before a card can be shown again.
+      const emptyMsg = listEl.querySelector(":scope > .state-empty");
+      if (emptyMsg) emptyMsg.remove();
+      const at =
+        Number.isInteger(index) && index >= 0 && index <= currentViewBookmarks.length
+          ? index
+          : currentViewBookmarks.length;
+      currentViewBookmarks.splice(at, 0, bm);
+      pageOffset += 1;
+    }
+    paintViewCards();
+    updateTail();
+  }
+
+  /** How a category reads in a sentence ("Reading › Essays"), or a fallback. */
+  function whereLabel(categoryIds) {
+    const node = categoryIds.length === 1 ? categoryIndex.get(categoryIds[0]) : null;
+    if (node) return picker().pathLabel(node);
+    return categoryIds.length > 1 ? "its previous categories" : "another category";
+  }
+
+  /**
+   * The manual move, with the toast that makes it reversible (issue #99).
+   *
+   * The toast carries BOTH follow-ups a move leaves open - "that was wrong"
+   * (Undo) and "where did it go?" (View) - and stays long enough to read and
+   * choose between them. Undo re-files the post to the membership snapshot
+   * taken before the write; a post that was filed nowhere has no prior state
+   * to restore, so it is simply not offered.
+   */
+  async function moveBookmarkToCategory(bm, card, targetId) {
+    const snapshot = window.XBOMoveUndo.snapshotMove(bm, [targetId]);
+    const result = await refileBookmark(bm, card, [targetId]);
+
+    const where = whereLabel([targetId]);
     announceMove(`Moved @${bm.authorUsername}’s post to ${where}.`);
-    showToast(`Moved to ${where}.`);
+
+    const actions = [];
+    if (window.XBOMoveUndo.canUndo(snapshot)) {
+      actions.push({
+        label: "Undo",
+        onClick: () => {
+          undoMove(bm, card, snapshot, result.viewIndex);
+        },
+      });
+    }
+    actions.push({ label: "View", onClick: () => void revealBookmark(bm, targetId) });
+    showToast(`Moved to ${where}.`, {
+      duration: window.XBOMoveUndo.MOVE_UNDO_MS,
+      actions,
+    });
+  }
+
+  /** Re-file the post back to the membership the move overwrote. */
+  async function undoMove(bm, card, snapshot, restoreIndex) {
+    const back = window.XBOMoveUndo.undoTargets(snapshot);
+    try {
+      await refileBookmark(bm, card, back, { restoreIndex });
+    } catch (err) {
+      showToast(err.message || "Could not undo that move.");
+      return;
+    }
+    const where = whereLabel(back);
+    announceMove(`Moved @${bm.authorUsername}’s post back to ${where}.`);
+    showToast(`Moved back to ${where}.`);
+  }
+
+  /**
+   * Jump to a post in the category it was just moved to: select that
+   * category, page far enough to reach the post, then scroll it into view
+   * and focus it.
+   *
+   * Two things it has to get out of the way first. The open TAB may exclude
+   * the post (a read post while Unread is showing), so the tab falls back to
+   * All; and the post may be several pages down under the current ordering,
+   * so the loader is driven directly rather than waiting for a scroll to
+   * reach the sentinel. The walk is bounded - a post that is a hundred pages
+   * deep is not worth fetching the library for, and the category is open
+   * either way.
+   */
+  const REVEAL_MAX_PAGES = 10;
+
+  async function revealBookmark(bm, categoryId) {
+    if (!window.XBOFilterCache.survivesFilter(activeFilter, bm)) {
+      if (selectedCategoryId != null) saveCurrentViewToCache();
+      activeFilter = "all";
+      renderFilterTabs();
+      persistSelection();
+    }
+    await selectCategoryById(categoryId);
+
+    for (let i = 0; i < REVEAL_MAX_PAGES; i += 1) {
+      if (currentViewBookmarks.some((other) => other.id === bm.id)) break;
+      if (!pageHasMore) break;
+      await loadMore();
+    }
+
+    const pooled = cardPool.get(bm.id);
+    if (!pooled || pooled.card.hidden) {
+      announceMove(`@${bm.authorUsername}’s post is further down this category.`);
+      return;
+    }
+    locateCard(pooled.card);
+  }
+
+  /**
+   * Bring a card to the owner's attention: focus it (so a screen reader lands
+   * on the post rather than on wherever the toast's button was) and ring it
+   * briefly. The scroll is the platform's own, so `prefers-reduced-motion`
+   * turns the travel off without turning the jump off.
+   */
+  function locateCard(card) {
+    card.tabIndex = -1;
+    card.focus({ preventScroll: true });
+    card.scrollIntoView({
+      block: "center",
+      behavior: window.XBOScrollTop.scrollBehavior(reducedMotion.matches),
+    });
+    card.classList.remove("is-located");
+    // Restart the ring even if the same card is located twice in a row.
+    void card.offsetWidth;
+    card.classList.add("is-located");
+    card.addEventListener(
+      "animationend",
+      () => card.classList.remove("is-located"),
+      { once: true },
+    );
   }
 
   // ---- drag the handle onto a sidebar category ----------------------------
@@ -5310,6 +5628,8 @@
 
   // ---- init --------------------------------------------------------------
   initSidebar();
+  initSidebarResizer();
+  initScrollTop();
   initCrumbMenu();
   initScoreDetail();
   initSettingsPanel();
