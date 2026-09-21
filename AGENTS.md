@@ -693,11 +693,30 @@ Surface: `score` on every listed bookmark (a pure cache read in `toViewerBookmar
 ranking was never run), `?sort=score` on `/api/categories/:id/bookmarks` (server-side, because
 paging is), a `ranking` block on `/api/setup` (`scored`/`total`, plus what the in-app trigger needs
 - see issue #80 below), and in the viewer an **Order** segmented control in the settings popover
-plus a read-only `.score-chip` on each ranked card.
+plus a `.score-chip` on each ranked card.
 `src/web/public/sort-order.js` (`XBOSortOrder`) is the pure, unit-tested half (guarded persistence,
-the query param, the rating/tooltip formatting) in the same style as `post-scale.js`. Changing the
+the query param, the rating/breakdown formatting) in the same style as `post-scale.js`. Changing the
 order DROPS every cached view (`viewCaches`) wholesale - they were paged under the old order - the
 same way a completed sync does.
+
+The chip **draws** the rubric breakdown rather than stating it in a native `title`: one shared
+`#score-detail` popover (a meter per question, `renderScoreDetail`/`positionScoreDetail` in
+`app.js`), fed by the pure `XBOSortOrder.scoreBreakdown`. Four things are load-bearing. The popover
+is mounted on `<body>`, never inside a card - `.bookmark-card` carries both `contain: layout` and
+the post-size `zoom`, either of which would trap and rescale it - and is positioned in JS from the
+chip's own rect, flipping above and clamping into the gutters. The chip is a real `<button>`
+because hover is neither a keyboard nor a touch gesture; it opens on mouse `pointerenter` (guarded
+on `pointerType`, or a tap would open and instantly re-toggle shut), on `:focus-visible` (plain
+focus would fight the click's own toggle) and on click. Its `aria-label` still carries the WHOLE
+verdict in prose and the popover is `aria-hidden`, so the graph is a drawing of what a screen
+reader already heard - not a second, differently-worded source of the same numbers. And bar LENGTH
+is the only magnitude channel: every bar wears one accent hue, because shading by value too would
+encode the same number twice. `patchScoreChip` now has focus to carry across the swap (issue #91's
+in-place chip replacement), so it closes an open popover and re-focuses the replacement.
+
+`scripts/seed-dev-db.js` writes deterministic fake `bookmark_scores` rows (two thirds of the seed;
+the rest deliberately unranked) so the chip, its graph and the Top score order can be exercised
+with no paid Jev run.
 
 Tests are entirely offline and must stay that way: `client.test.ts` drives the REAL SDK through its
 injectable `Fetch`, `integration.test.ts` runs the REAL ranker against a local `http` server

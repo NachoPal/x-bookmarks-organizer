@@ -253,3 +253,23 @@ dataset, never real bookmarks.
 | `batch2-rank-panel-dark.png` | **Ranking panel**, opened from its own top-bar icon left of sync. Holds "Rank now" and the run's progress; with no `TYPESAFE_API_KEY` the button is disabled and the panel names the cause, with the credential chain's how-to behind a disclosure. |
 | `batch2-rank-panel-narrow-400-dark.png` | **~400px.** The popover spans the viewport gutters rather than running off the edge (its icon is no longer the rightmost one). |
 | `batch2-sidebar-indent-light.png` | **Tree indentation.** Children clear the root's drag handle and then step in again, so nesting reads clearly at every depth. |
+
+## Viewer batch 5 — score-chip breakdown graph, Order verified
+
+The ranking score chip's native browser tooltip is replaced by a styled popover that DRAWS the
+rubric breakdown: a meter per question (bar length carries the magnitude, so every bar wears the
+same accent hue), the overall score as the hero figure and the model's confidence under it. It
+opens on hover, on keyboard focus and on tap, and dismisses on mouseleave, blur, Escape (focus
+returns to the chip) or a click outside. The chip's `aria-label` still carries the whole verdict in
+prose, so the graph is a drawing of what a screen reader already hears.
+
+The same pass re-verified the Settings "Order" control end to end after PR #93 removed the dead
+`releaseOrphanPanes` call that used to throw in its handler. Seeded scores only - never a real
+paid Jev run.
+
+| File | What it shows |
+| --- | --- |
+| `score-chip-graph-light.png` | **Hover graph**, light, 1280px. Flipped ABOVE its chip because the chip sits low in the viewport. A 4-question breakdown: `relevance` is opt-in, and an absent answer is omitted rather than drawn as a zero. |
+| `score-chip-graph-dark.png` | **Hover graph**, dark. Same tokens; the meter track is a lighter step of the bar's own hue in both themes. |
+| `score-chip-graph-narrow-dark.png` | **~400px.** The popover is clamped into the viewport's gutters instead of running off the edge, and the page still has no horizontal scroll. |
+| `score-order-top-score.png` | **Order → Top score.** The list re-pages from the top in descending score (7.8, 7.6, 7.5, 7.3 …); unranked bookmarks sort LAST and render no chip at all - never a zero. |
