@@ -1562,25 +1562,37 @@ body[data-resizing="sidebar"] {
      popover at this width all hang off `--header-offset`, so the bar's
      real height has to stay the value they read. */
   :root {
-    --header-height: 4.5rem;
+    --header-height: 6rem;
   }
+  /* Breathing room: the icons hugged the screen edges, the top most of all.
+     The top padding stacks on the safe-area inset, and the side gutters
+     clear the left/right insets in landscape. */
   .topbar {
     flex-wrap: wrap;
     align-content: center;
-    row-gap: var(--space-1);
+    row-gap: var(--space-2);
+    padding-top: calc(env(safe-area-inset-top, 0px) + var(--space-2));
+    padding-bottom: var(--space-1);
+    padding-left: max(var(--space-4), env(safe-area-inset-left, 0px));
+    padding-right: max(var(--space-4), env(safe-area-inset-right, 0px));
   }
   /* Last in the visual order, on a line of its own; the two flanks keep
      their default order and share the line above it. */
   .topbar-center {
     order: 1;
     flex: 1 0 100%;
-    justify-content: flex-start;
+    justify-content: center;
+    /* Thin rule between the icon row and the title row, edge to edge. */
+    margin-inline: calc(-1 * var(--space-4));
+    padding: var(--space-2) var(--space-4) 0;
+    border-top: 1px solid var(--color-border);
   }
   /* The ancestor crumb is BACK at this width. #65 dropped it because it
      cost the leaf most of the one line they shared - and they no longer
      share one. The 40% cap still guarantees the leaf survives. */
   .topbar-title {
     width: 100%;
+    justify-content: center;
   }
   /* A popover anchored to its own icon runs off the edge once the icon is not
      the rightmost one (the ranking icon, issue #89). At this width they span
@@ -4092,7 +4104,7 @@ body.is-card-dragging .tree-node {
      run out, stranding the bin at the BOTTOM-LEFT under the read chip. It
      now wraps deliberately: the compact controls plus the bin on the top
      row (the bin pushed to its right edge), and Summarize + the score chip
-     on a second line of their own.
+     on a second line of their own (score chip first, then Summarize).
      The two groups become `display: contents` so their children are
      laid out by `.bookmark-actions` itself - `order` cannot reach across a
      nested flex container - and the break between the rows is the
@@ -4134,10 +4146,10 @@ body.is-card-dragging .tree-node {
     flex: 0 0 100%;
     height: var(--space-2);
   }
-  .summarize-link {
+  .score-chip {
     order: 7;
   }
-  .score-chip {
+  .summarize-link {
     order: 8;
   }
 }
