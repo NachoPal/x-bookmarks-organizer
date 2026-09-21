@@ -15,6 +15,9 @@
 (function (root) {
   const SORT_ORDER_KEY = "xbo:sort-order";
   const SORT_DIRECTION_KEY = "xbo:sort-direction";
+  // Not a preference: the last observed answer to "is anything ranked?".
+  // See readScoreOrderAvailable below for why a load needs it before /api/setup.
+  const SCORE_AVAILABLE_KEY = "xbo:score-orderable";
   // Recency is the default and always has been. Ranking is opt-in and paid, so
   // a library that was never ranked must open exactly as it did before.
   const DEFAULT_SORT_ORDER = "recent";
@@ -168,6 +171,48 @@
   }
 
   /**
+   * The last answer `/api/setup` gave to {@link scoreOrderAvailable}, kept so
+   * the NEXT load can resolve the stored order before the network does
+   * (issue #104).
+   *
+   * Without it the two halves of a reload disagree: `view-persist.js` keys its
+   * page snapshot by the ordering the pages were FETCHED under, which is the
+   * resolved one, while the load reads back the raw stored choice. An owner
+   * whose stored "score" is not orderable therefore hydrated under
+   * `score:desc` against a snapshot written as `recent:desc`, missed, and
+   * re-fetched every single bookmark - on every refresh.
+   *
+   * This is a remembered OBSERVATION, never the owner's choice: `readSortOrder`
+   * still holds that, untouched, so "Top score" returns by itself after the
+   * next ranking run.
+   */
+  function readScoreOrderAvailable(storage) {
+    try {
+      return storage.getItem(SCORE_AVAILABLE_KEY) === "1";
+    } catch (_) {
+      return false; // fails closed, like scoreOrderAvailable itself
+    }
+  }
+
+  /** Persist the observation; a throwing storage is ignored as everywhere else here. */
+  function writeScoreOrderAvailable(storage, available) {
+    try {
+      storage.setItem(SCORE_AVAILABLE_KEY, available ? "1" : "0");
+    } catch (_) {
+      /* private mode / blocked storage: ignore */
+    }
+  }
+
+  /**
+   * The remembered observation shaped as the `ranking` block
+   * {@link resolveSortOrder} takes, so a caller with no `/api/setup` answer
+   * yet resolves through exactly the same rule as one that has it.
+   */
+  function rememberedRanking(storage) {
+    return { scored: readScoreOrderAvailable(storage) ? 1 : 0 };
+  }
+
+  /**
    * A stored 0..1 score as a compact 0..10 rating, one decimal.
    * Null for a bookmark that was never ranked - which is not a zero, and must
    * not be rendered as one.
@@ -284,6 +329,7 @@
   const api = {
     SORT_ORDER_KEY,
     SORT_DIRECTION_KEY,
+    SCORE_AVAILABLE_KEY,
     DEFAULT_SORT_ORDER,
     DEFAULT_SORT_DIRECTION,
     SORT_ORDERS,
@@ -305,6 +351,9 @@
     directionToggleLabel,
     scoreOrderAvailable,
     resolveSortOrder,
+    readScoreOrderAvailable,
+    writeScoreOrderAvailable,
+    rememberedRanking,
     formatScore,
     scoreBreakdown,
     describeScore,

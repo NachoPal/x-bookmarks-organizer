@@ -20,6 +20,9 @@ const {
   directionToggleLabel,
   scoreOrderAvailable,
   resolveSortOrder,
+  readScoreOrderAvailable,
+  writeScoreOrderAvailable,
+  rememberedRanking,
   formatScore,
   scoreBreakdown,
   describeScore,
@@ -339,5 +342,80 @@ describe("Top score availability", () => {
     expect(resolveSortOrder("score", { scored: 3, total: 9 })).toBe("score");
     expect(resolveSortOrder("recent", { scored: 3, total: 9 })).toBe("recent");
     expect(resolveSortOrder("nonsense", { scored: 3, total: 9 })).toBe("recent");
+  });
+});
+
+/**
+ * Issue #104. `view-persist.js` keys its page snapshot by `sortKey`, which
+ * means the ordering the pages were actually FETCHED under - the RESOLVED
+ * one. A reload that read the raw stored choice instead therefore looked for
+ * a key nothing had ever been saved as, missed, and re-fetched every bookmark
+ * in the view from the server, on every single refresh.
+ *
+ * The fix is that both halves resolve through the same rule, with the last
+ * observed ranking availability standing in for `/api/setup` until it answers.
+ */
+describe("snapshot key stability across a reload (issue #104)", () => {
+  /** The key a load computes before the network has said anything. */
+  function keyOnLoad(storage: Storage): string {
+    return sortKey(
+      resolveSortOrder(readSortOrder(storage), rememberedRanking(storage)),
+      readSortDirection(storage),
+    );
+  }
+
+  /** The key the page was saved under, once `/api/setup` had answered. */
+  function keyOnSave(storage: Storage, ranking: unknown): string {
+    return sortKey(resolveSortOrder(readSortOrder(storage), ranking), readSortDirection(storage));
+  }
+
+  it("round-trips a stored 'score' that nothing is ranked for", () => {
+    const storage = fakeStorage();
+    writeSortOrder(storage, "score");
+    const ranking = { scored: 0, total: 40 };
+    // The previous session ended having observed that nothing is orderable.
+    writeScoreOrderAvailable(storage, scoreOrderAvailable(ranking));
+
+    expect(keyOnSave(storage, ranking)).toBe("recent:desc");
+    expect(keyOnLoad(storage)).toBe("recent:desc");
+  });
+
+  it("round-trips a stored 'score' on a ranked library, in both directions", () => {
+    const storage = fakeStorage();
+    writeSortOrder(storage, "score");
+    const ranking = { scored: 40, total: 40 };
+    writeScoreOrderAvailable(storage, scoreOrderAvailable(ranking));
+
+    expect(keyOnLoad(storage)).toBe(keyOnSave(storage, ranking));
+    expect(keyOnLoad(storage)).toBe("score:desc");
+
+    writeSortDirection(storage, "asc");
+    expect(keyOnLoad(storage)).toBe(keyOnSave(storage, ranking));
+    expect(keyOnLoad(storage)).toBe("score:asc");
+  });
+
+  it("round-trips the plain recency default", () => {
+    const storage = fakeStorage();
+    expect(keyOnLoad(storage)).toBe(keyOnSave(storage, { scored: 0, total: 0 }));
+    expect(keyOnLoad(storage)).toBe("recent:desc");
+  });
+
+  it("remembers the observation without touching the owner's stored choice", () => {
+    const storage = fakeStorage();
+    writeSortOrder(storage, "score");
+    writeScoreOrderAvailable(storage, false);
+    // Resolution falls back...
+    expect(resolveSortOrder(readSortOrder(storage), rememberedRanking(storage))).toBe("recent");
+    // ...but the choice itself survives, so a finished rank run hands it back.
+    expect(readSortOrder(storage)).toBe("score");
+    writeScoreOrderAvailable(storage, true);
+    expect(resolveSortOrder(readSortOrder(storage), rememberedRanking(storage))).toBe("score");
+  });
+
+  it("fails closed: nothing remembered, and a blocked storage, both mean unavailable", () => {
+    expect(readScoreOrderAvailable(fakeStorage())).toBe(false);
+    expect(rememberedRanking(fakeStorage())).toEqual({ scored: 0 });
+    expect(readScoreOrderAvailable(throwingStorage())).toBe(false);
+    expect(() => writeScoreOrderAvailable(throwingStorage(), true)).not.toThrow();
   });
 });

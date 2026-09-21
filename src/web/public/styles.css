@@ -167,6 +167,10 @@
      `contain: layout` plus the post-size `zoom` makes one - so it stays a
      local value, far below the app-level bar/popover/modal layers. */
   --z-sort-bar: 3;
+  /* The viewport-fixed scroll-to-top button (issue #104). Above the whole
+     content pane, but deliberately UNDER --z-backdrop so the narrow drawer's
+     scrim and the first-run scrim dim it along with what it scrolls. */
+  --z-scroll-top: 30;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1116,37 +1120,26 @@ body[data-resizing="sidebar"] {
 }
 
 /* ============================================================
-   Floating scroll-to-top (issue #99)
-   A zero-height `position: sticky` row pinned to the very top of the
-   scrolling pane, holding one round icon button at the pane's right edge. It
-   is a sibling of `.content-inner`, not a child: `.content-inner` is capped
-   at --content-measure and centred, so a button inside it would sit at the
-   post column's edge rather than the pane's, and - the load-bearing half -
-   anything that changes that block's box would re-lay-out every X embed
-   (the #86 constraint). A zero-height row changes nothing about the flow the
-   cards are in.
-   On a wide viewport the button floats in the gutter beside the centred
-   posts, well clear of the sticky sort pill. Only at <=560px do the two meet,
-   and there the pill gives up the room instead (see the breakpoint below) -
-   unconditionally, so the pill's layout does not shift when the button
-   appears mid-scroll.
+   Floating scroll-to-top (issue #99, repositioned in #104)
+   One round icon button fixed to the VIEWPORT's bottom-right corner, which is
+   where this control conventionally lives and the one place it cannot meet
+   the sticky sort pill at any width - the pill no longer has to give up its
+   trailing gutter on a narrow screen to make room.
+   `position: fixed` is also what keeps the #86 constraint intact: the button
+   is inside `.content` in the markup (so the keyboard reaches it before the
+   whole post list) but takes no part in that pane's flow, so it can never
+   change the box `.content-inner` gives the cards and never re-lays-out an X
+   embed.
+   It sits ABOVE the posts but BELOW `--z-backdrop`, so the narrow drawer's
+   scrim and the first-run scrim cover it along with the content they dim.
    ============================================================ */
-.scroll-top-anchor {
-  position: sticky;
-  top: 0;
-  /* One above the sort pill: on a narrow viewport they share the band, and
-     the control that is only sometimes there has to be the one on top. */
-  z-index: calc(var(--z-sort-bar) + 1);
-  height: 0;
-  /* Only the button itself is interactive; the rest of the row must not
-     swallow clicks on the posts scrolling underneath it. */
-  pointer-events: none;
-}
 .scroll-top {
-  pointer-events: auto;
-  position: absolute;
-  top: var(--space-3);
-  right: calc(var(--space-4) + env(safe-area-inset-right, 0px));
+  position: fixed;
+  /* Deliberately more than one gutter's worth of clearance on both edges:
+     flush to the corner it reads as part of the window chrome. */
+  bottom: calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
+  right: calc(var(--space-5) + env(safe-area-inset-right, 0px));
+  z-index: var(--z-scroll-top);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1176,16 +1169,16 @@ body[data-resizing="sidebar"] {
   outline-offset: 2px;
   color: var(--color-text);
 }
-/* Arriving: it fades and lifts into place rather than blinking in. `hidden`
-   is what takes it out of the tab order, so the animation only has to cover
-   the frames after that. */
+/* Arriving: it fades and rises into place from below rather than blinking in.
+   `hidden` is what takes it out of the tab order, so the animation only has to
+   cover the frames after that. */
 .scroll-top:not([hidden]) {
   animation: scroll-top-in var(--motion-fast) var(--ease);
 }
 @keyframes scroll-top-in {
   from {
     opacity: 0;
-    transform: translateY(-0.25rem);
+    transform: translateY(0.25rem);
   }
   to {
     opacity: 1;
@@ -1549,18 +1542,6 @@ body[data-resizing="sidebar"] {
     right: var(--space-2);
     width: auto;
     max-width: none;
-  }
-  /* The floating scroll-to-top control and the sort pill both want the top of
-     the pane, and at this width there is no gutter left for them to share:
-     centred, the pill reaches within a pixel of the button. So the pill gives
-     up the trailing gutter and rides that much left of centre - the
-     alternative, reserving the room on BOTH sides to keep it centred, would
-     make it narrow enough to wrap onto two lines, which costs far more than
-     the offset does. Reserved unconditionally: doing it only while the button
-     is on screen would re-lay-out the pill (and shift every card down)
-     mid-scroll. */
-  .sort-bar {
-    padding-right: calc(var(--scroll-top-size) + var(--space-2));
   }
   /* Four tabs share ~400px: trim their padding rather than their labels. */
   .filter-tab {
@@ -2076,8 +2057,16 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 }
 /* Loading placeholder shown in an embed slot until X's widgets.js reports the
    tweet fully rendered (then revealed) or the post can't embed (link fallback).
-   A shimmering skeleton reserves the slot's height so the card never jumps, with
-   a spinner layered above it that stays fully opaque as the skeleton pulses. */
+   It reserves the slot's height so the card never jumps, with a spinner that
+   stays fully opaque above it.
+
+   Two shapes (issue #104). With no stored text to show it is the original
+   shimmering skeleton, spinner centred. With text - which is the normal case,
+   and always the case on a reload restored from the page snapshot - it shows
+   the post's own author and prose instead: a refresh re-fetches no bookmark,
+   so the list should come back READABLE while X rebuilds its iframes, not as
+   twenty grey boxes. The shimmer steps aside there; the text is the better
+   skeleton, and animating a gradient under prose only makes it hard to read. */
 .embed-loader {
   position: relative;
   display: flex;
@@ -2097,8 +2086,43 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
 }
+.embed-loader[data-preview="1"] {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+.embed-loader[data-preview="1"]::before {
+  content: none;
+}
+.embed-preview {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.embed-preview-author {
+  margin: 0 0 var(--space-1);
+  font-weight: 600;
+  color: var(--color-text);
+}
+/* Clamped rather than shown whole: this is a preview of a post whose real
+   render is seconds away, so it must not resize the slot twice. */
+.embed-preview-text {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-post);
+  line-height: var(--leading-post);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
 .embed-spinner {
   position: relative; /* above the shimmer layer */
+  flex: 0 0 auto;
   width: 1.5rem;
   height: 1.5rem;
   border: 2px solid var(--color-border-strong);
@@ -2861,6 +2885,17 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   gap: var(--space-2);
   width: min(28rem, calc(100vw - 2 * var(--space-4)));
   pointer-events: none;
+}
+/* The scroll-to-top button owns the bottom-right corner (issue #104). A 28rem
+   toast centred on a wide viewport ends well clear of it; once the viewport is
+   narrow enough that the toast is effectively full-width, the two would
+   overlap, so the toast stacks ABOVE the button instead of beside it. */
+@media (max-width: 640px) {
+  .toast-container {
+    bottom: calc(
+      var(--space-5) + var(--scroll-top-size) + var(--space-3) + env(safe-area-inset-bottom, 0px)
+    );
+  }
 }
 .toast {
   pointer-events: auto;

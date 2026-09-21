@@ -195,6 +195,19 @@ only on narrow screens),
 and an independently scrolling content pane; keep tree labels wrapping inside the sidebar (flex
 children need `min-width: 0`) so counts never overflow.
 
+**Every persisted piece of state that is VISIBLE at first paint is applied by the inline
+`#xbo-preboot` script**, the first element inside `<body>` (issue #104). All the `<script>`s are
+`defer`red, so anything they apply lands after the page has painted: a CLOSED sidebar rendered open
+for a frame and snapped shut, and a stored theme that disagreed with the system one flashed the
+wrong way. It applies `data-theme` (`<html>`), `data-sidebar`, `data-tree-colors` and
+`--sidebar-width`, each read in a try/catch. It is the ONLY place those keys and defaults are
+duplicated - `theme.js` / `sidebar-state.js` / `tree-color.js` / `sidebar-width.js` stay the source
+of truth - and `preboot.test.ts` pulls the script out of `index.html` and EXECUTES it against those
+modules, so a key typo or a flipped default fails a test rather than shipping. Anything that only
+styles content fetched later (`--post-scale`, which sizes `.bookmark-card`) does NOT belong here:
+there is nothing on screen yet for it to flash. Put new visible-at-load state in this block, not
+just in `app.js`.
+
 The **top bar** (issues #53/#37/#42/#65) is one sticky row in three flex regions: the animated
 categories-menu toggle (left), the selected category's title + counts on ONE line (center), and
 `search | theme | ranking | sync | settings gear` (right). The category-colors toggle now lives beside the sidebar's "Categories" heading, and the last-synced time + Sync button live in the sync popover (the icon left of the gear; same panel style as settings), not the bar or tab row. The read-state filter LEFT this bar in #65 - it
@@ -349,6 +362,29 @@ the reload re-fetches no bookmarks (X embeds re-init regardless). Every place th
 longer exists falls back to the empty state. A tab switch inside an open category keeps the current
 posts on screen (`aria-busy`, dimmed) until the new page lands (`XBOFilterCache.loadingStrategy`) so
 no blank frame is painted.
+
+**The snapshot's key is the RESOLVED ordering, so both ends of a reload must resolve the same
+way** (issue #104). `persistedSortKey()` is `XBOSortOrder.sortKey(activeSort, activeDir)`, and
+`activeSort` is what the pages were FETCHED under - which for a stored "Top score" on a library
+with nothing ranked is the recency FALLBACK (`resolveSortOrder`). The save therefore happened under
+`recent:desc` while the next load, reading the raw stored choice before `/api/setup` answered,
+hydrated under `score:desc`, missed, and re-fetched the whole view - on EVERY refresh. The fix is
+`XBOSortOrder.readScoreOrderAvailable`/`writeScoreOrderAvailable`: `updateSortAvailability` records
+what the server just said, and `initSortOrder` resolves against that remembered observation. Two
+rules follow. The remembered flag is never the owner's CHOICE - `readSortOrder` still holds that
+untouched, which is what lets "Top score" return by itself after a rank run - and
+`updateSortAvailability` re-resolves from the STORED choice, not from `activeSort`, or a load that
+started on the fallback could never climb back. Anything new that keys a cache by the ordering has
+to key it by the resolved one too.
+
+**The X embed's loading placeholder carries the post's own author and text** (same issue),
+`renderEmbedPreview` in `app.js`, shown as `.embed-loader[data-preview="1"]` with the spinner
+alongside and the shimmer suppressed. This deliberately narrows the older "never show raw text that
+then pops into the embed" rule: a refresh re-fetches no bookmark but still rebuilds every
+cross-origin iframe through X's `widgets.js`, so without it the entire visible experience of a
+reload was twenty blank shimmering boxes and it read as a full reload. The preview is `aria-hidden`
+(the loader is already a `role="status"`, and the same prose arrives for real moments later - a
+screen reader must not hear twenty posts twice) and clamped, so the slot resizes once, not twice.
 
 **A reload does NOT give you a clean client, which makes a stale-cache bug look like a server bug.**
 `persistViewSnapshot` runs on `pagehide`/`visibilitychange`, so an unload re-writes whatever
@@ -870,17 +906,17 @@ it as visible text AND is the radiogroup's `aria-describedby`, with a `title` fo
 `applySetupState` re-runs this on every `/api/setup` read, which is how a finished rank run and a
 reset both keep it in sync with no extra wiring.
 
-**Scroll-to-top** (issue #99) is `#scroll-top`, one round button inside `.scroll-top-anchor` - a
-zero-height `position: sticky` row that is a SIBLING of `.content-inner`, never a child: that block
-is fixed at `--content-measure`, so a button inside it would sit at the post column's edge instead
-of the pane's, and anything that changed that block's box would re-lay-out every X embed (the #86
-constraint). A zero-height row changes nothing about the flow the cards are in. When it shows is
-the pure `XBOScrollTop.nextVisible`, which carries TWO thresholds (`SHOW_AT`/`HIDE_AT`): one
-boundary makes the button flicker on and off while the list is nudged around it. On a wide viewport
-it floats in the gutter clear of the sort pill; at `<=560px` there is no gutter to share, so the
-pill gives up its TRAILING one (`.sort-bar { padding-right }`, unconditional so the pill never
-re-wraps mid-scroll) and rides that much left of centre - reserving on both sides to keep it
-centred made it narrow enough to wrap onto two lines.
+**Scroll-to-top** (issue #99) is `#scroll-top`, one round button `position: fixed` to the
+VIEWPORT's bottom-right corner at `--z-scroll-top` (below `--z-backdrop`, so the drawer's scrim
+dims it with the content it scrolls). It moved there in #104 from a sticky anchor row at the top of
+the pane; the anchor and the `<=560px` `.sort-bar { padding-right }` that reserved room for it are
+both GONE, so the pill is centred at every width. `position: fixed` is what preserves the #86
+constraint now: the button stays inside `.content` in the markup, so the keyboard reaches it before
+the whole post list, but takes no part in that pane's flow and so can never change the box
+`.content-inner` gives the cards. When it shows is the pure `XBOScrollTop.nextVisible`, which
+carries TWO thresholds (`SHOW_AT`/`HIDE_AT`): one boundary makes the button flicker on and off
+while the list is nudged around it. Below 640px `.toast-container` lifts its `bottom` clear of the
+button, because a toast that wide would otherwise run under it.
 
 **Changing the sort is a CONTENT-only refresh** - that was the visible glitch. `repageForSort`
 calls `fetchAndRenderFirstPage({ sameCategory: true })`: the `sameCategory` flag keeps the posts on

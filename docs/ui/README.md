@@ -294,3 +294,20 @@ gap - `transform`/`opacity` only, and the card stays pooled so its X embeds are 
 | `viewer-batch4-dropdowns-light.png` | **Styled dropdowns**, light, Settings panel. Custom chevron, panel-consistent border/radius, and the keyboard focus ring on "Taxonomy model" - still a native `<select>`. |
 | `viewer-batch4-dropdowns-dark.png` | **Same, dark.** The option popup follows `color-scheme` on `:root`, the one part of a select no stylesheet here can reach. |
 | `viewer-batch4-read-slide-midflight.png` | **Mark-as-read, mid-slide** (animation paused at ~70%). The card has flipped to "Read" and is travelling right at ~0.41 opacity; the posts below then FLIP up to close the gap. |
+
+## Issue #104 — no state flash on load, no re-fetch on refresh, scroll-to-top in the corner
+
+Three load-time fixes. An inline pre-paint script in `index.html` applies the stored sidebar,
+theme, tree-tint and sidebar-width state before the body can paint, so a closed sidebar never
+renders open first. The page snapshot now hydrates under the RESOLVED sort key, so a refresh
+re-fetches no bookmarks, and the embed's loading placeholder carries the post's own author and
+text so a restored list is readable while X rebuilds its iframes. The scroll-to-top button moved
+from beside the sort pill to the viewport's bottom-right corner.
+
+| File | What it shows |
+| --- | --- |
+| `104-refresh-sidebar-closed-light.png` | **After a refresh with the sidebar CLOSED**, light, 1280px. It stays closed for the whole load - before the fix the first paint had no `data-sidebar`, so the drawer rendered open (measured: FCP at 4.1s, `app.js` not fetched until 10.3s under Slow 3G + 20x CPU) and then snapped shut. The 20 cards came back from the sessionStorage snapshot with zero `GET /api/categories/:id/bookmarks` calls. |
+| `104-embed-preview-loading-dark.png` | **The embed placeholder**, dark. The post's own author and prose (clamped to 4 lines, muted) with the spinner alongside, instead of a blank shimmering box - which is the whole visible experience of a refresh, since every X iframe is rebuilt by `widgets.js` even when no bookmark was re-fetched. |
+| `104-scroll-top-corner-light.png` | **Scroll-to-top**, light, 1280px. Fixed to the viewport's bottom-right with a full `--space-5` of clearance on both edges. The sort pill is centred again - it no longer gives up its trailing gutter. |
+| `104-scroll-top-corner-narrow-dark.png` | **~400px, dark.** Same corner, same clearance; the pill is centred here too. |
+| `104-scroll-top-toast-narrow-light.png` | **~400px with a toast.** Below 640px the toast stacks ABOVE the button rather than beside it, so a near-full-width toast and the corner button never overlap. |
