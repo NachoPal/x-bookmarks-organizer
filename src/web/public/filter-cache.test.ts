@@ -160,3 +160,85 @@ describe("loadingStrategy (issue #78)", () => {
     expect(loadingStrategy(false, false)).toBe("placeholder");
   });
 });
+
+describe("foldServerRow (issue #91)", () => {
+  const { foldServerRow, sameScore } = require("./filter-cache.js");
+
+  /** A verdict as `/api/categories/:id/bookmarks` ships it. */
+  const verdict = (value: number) => ({
+    value,
+    confidence: 0.9,
+    dimensions: { learning_value: value },
+  });
+
+  it("carries a newly ranked post's score onto the pooled bookmark", () => {
+    // The exact incremental-rank case: the post was pooled BEFORE the run, so
+    // the card on screen was rendered with no verdict at all.
+    const pooled = { id: 1, read: false, favorite: false, score: null, hasSummary: false };
+    const changed = foldServerRow(pooled, {
+      id: 1,
+      read: false,
+      favorite: false,
+      score: verdict(0.8),
+      hasSummary: false,
+    });
+
+    expect(pooled.score).toEqual(verdict(0.8));
+    expect(changed.score).toBe(true);
+    // Ranking writes scores and nothing else, so the read/favorite controls
+    // must not be repainted for it.
+    expect(changed.controls).toBe(false);
+  });
+
+  it("reports no score change when the verdict is unchanged", () => {
+    const pooled = { id: 1, read: false, favorite: false, score: verdict(0.8) };
+    const changed = foldServerRow(pooled, {
+      id: 1,
+      read: false,
+      favorite: false,
+      score: verdict(0.8),
+    });
+    expect(changed.score).toBe(false);
+  });
+
+  it("still folds in fresher read/favorite state, and keeps a local summary", () => {
+    const pooled = { id: 1, read: false, readAt: null, favorite: false, score: null, hasSummary: true };
+    const changed = foldServerRow(pooled, {
+      id: 1,
+      read: true,
+      readAt: "2024-05-01T00:00:00.000Z",
+      favorite: true,
+      score: null,
+      hasSummary: false,
+    });
+
+    expect(changed).toEqual({ controls: true, score: false });
+    expect(pooled.read).toBe(true);
+    expect(pooled.readAt).toBe("2024-05-01T00:00:00.000Z");
+    expect(pooled.favorite).toBe(true);
+    // A summary generated in this tab is not in the row the server sent.
+    expect(pooled.hasSummary).toBe(true);
+  });
+
+  it("never mutates the server row", () => {
+    const row = { id: 1, read: true, favorite: false, score: verdict(0.5) };
+    const snapshot = JSON.parse(JSON.stringify(row));
+    foldServerRow({ id: 1, read: false, favorite: false, score: null }, row);
+    expect(row).toEqual(snapshot);
+  });
+
+  describe("sameScore", () => {
+    it("treats an absent verdict as 'never ranked', never as a zero", () => {
+      expect(sameScore(null, null)).toBe(true);
+      expect(sameScore(null, verdict(0))).toBe(false);
+      expect(sameScore(verdict(0), null)).toBe(false);
+    });
+
+    it("compares the value, the confidence and the breakdown", () => {
+      expect(sameScore(verdict(0.4), verdict(0.4))).toBe(true);
+      expect(sameScore(verdict(0.4), verdict(0.5))).toBe(false);
+      expect(sameScore(verdict(0.4), { ...verdict(0.4), confidence: 0.1 })).toBe(false);
+      expect(sameScore(verdict(0.4), { ...verdict(0.4), dimensions: {} })).toBe(false);
+    });
+  });
+});

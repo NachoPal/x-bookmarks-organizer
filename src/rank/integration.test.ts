@@ -76,6 +76,17 @@ async function startStubTypeSafe(
   };
 }
 
+/** Every distinct `rubric_version` currently stored, so a run's scale is assertable. */
+function storedRubricVersions(db: Database): string[] {
+  const ids = db.getBookmarksToScore({ rubricVersion: 'nothing-matches-this', rescoreAll: true });
+  const versions = new Set<string>();
+  for (const bm of ids) {
+    const score = db.getBookmarkScore(bm.id);
+    if (score) versions.add(score.rubricVersion);
+  }
+  return [...versions];
+}
+
 describe('ranking end to end, over HTTP and out through the viewer API', () => {
   let db: Database;
   let categoryId: number;
@@ -126,6 +137,52 @@ describe('ranking end to end, over HTTP and out through the viewer API', () => {
       const scoreBody = byScore.json() as { sort: string; bookmarks: { postId: string }[] };
       expect(scoreBody.sort).toBe('score');
       expect(scoreBody.bookmarks.map((b) => b.postId)).toEqual(['1', '2']);
+    } finally {
+      await app.close();
+      await stub.close();
+    }
+  });
+
+  it('an incremental run persists and surfaces the newly synced bookmarks (issue #91)', async () => {
+    const stub = await startStubTypeSafe(() => 1);
+    const app = buildServer(db);
+    try {
+      await app.ready();
+      const scorer = new JevStateScorer({ apiKey: 'not-a-real-key', baseURL: stub.baseUrl });
+
+      // The PROVEN path: the first run over the initial library.
+      const first = await rankBookmarks({ db, scorer }, { rubric: buildRubric(), concurrency: 2 });
+      expect(first).toMatchObject({ candidates: 2, scored: 2, failed: 0 });
+      const versionsAfterFirst = storedRubricVersions(db);
+      expect(versionsAfterFirst).toEqual([buildRubric().version]);
+
+      // A later sync stores a bookmark the first run never saw.
+      db.storeCategorizedBatch([bookmark('3', 'a careful walkthrough of B-tree splits')], () => [categoryId], '2024-02-01T00:00:00.000Z');
+
+      // The FAILING path in the report: rank again, incrementally. The rubric
+      // is rebuilt from scratch exactly as a second in-app run rebuilds it -
+      // if that produced a different version tag, the new rows would land
+      // under a scale the first run's rows are not on.
+      const rubric = buildRubric();
+      const second = await rankBookmarks({ db, scorer }, { rubric, concurrency: 2 });
+      // Incremental by construction (issue #80): only the new bookmark is
+      // paid for, and the two already-current rows are not re-scored.
+      expect(second).toMatchObject({ candidates: 1, scored: 1, failed: 0 });
+      expect(db.countScoredBookmarks()).toBe(3);
+      expect(storedRubricVersions(db)).toEqual(versionsAfterFirst);
+
+      // ...and the viewer read returns a verdict for the NEW bookmark, not
+      // only for the ones the first run scored.
+      const res = await app.inject({ url: `/api/categories/${categoryId}/bookmarks` });
+      const body = res.json() as { bookmarks: { postId: string; score: { value: number } | null }[] };
+      expect(body.bookmarks.find((b) => b.postId === '3')!.score).toMatchObject({ value: 1 });
+      expect(body.bookmarks.every((b) => b.score !== null)).toBe(true);
+
+      // Sort by score includes it: an unranked bookmark sorts last, so a row
+      // the read could not see would fall off the end.
+      const byScore = await app.inject({ url: `/api/categories/${categoryId}/bookmarks?sort=score` });
+      const scored = byScore.json() as { bookmarks: { postId: string }[] };
+      expect(scored.bookmarks.map((b) => b.postId).sort()).toEqual(['1', '2', '3']);
     } finally {
       await app.close();
       await stub.close();

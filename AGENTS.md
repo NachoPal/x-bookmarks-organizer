@@ -178,6 +178,13 @@ repeating its message inside the dialog would be noise.
 
 ## Frontend
 
+`npm run lint` covers `src/web/public/**/*.js` as well as the TypeScript (`eslint.config.js`;
+`vendor/` is excluded as third-party). `no-undef` is the load-bearing rule there: `tsc` never sees
+these plain `<script>` files, so nothing else notices a call to a function that has been deleted -
+which is exactly how `releaseOrphanPanes` outlived its own removal and broke the post-ranking and
+sort-change refreshes (issue #91). A module published as a bare global rather than under `XBO*`
+(only `renderSummaryMarkdown`) must be declared in that config's `globals`.
+
 Before editing anything under `src/web/public/`, follow the `building-frontends` skill and make its
 checker pass:
 `python3 ~/.claude/skills/building-frontends/scripts/check_frontend.py src/web/public/*` must be PASS.
@@ -284,8 +291,13 @@ Switching tabs or categories never reloads a post already loaded anywhere (issue
 keeps a per-POST pool (`cardPool`, id -> `{bm, card}`) of rendered cards, all MOUNTED in `listRoot`
 (detaching/re-attaching an iframe reloads the X embed). A view is only an id list: `paintViewCards`
 `hidden`s every card outside it and sequences the rest with inline flex `order` - never move or
-`replaceChildren()` cards. `poolPost` reuses the pooled bm+card for a server row (folding in its fresher
-read/favorite state), so only genuinely new posts render and spin. `viewCaches` (category -> filter ->
+`replaceChildren()` cards. `poolPost` reuses the pooled bm+card for a server row, so only genuinely
+new posts render and spin; what a re-fetched row is allowed to change on the shared bookmark object,
+and what the card must therefore be repainted for, is the pure `XBOFilterCache.foldServerRow` -
+read/favorite state (-> `patchCardControls`) AND the ranking score (-> `patchScoreChip`). **Every
+field the server can revise after a card is pooled has to be folded there**; a field left out means
+the pooled card silently keeps showing pre-change data forever, which was issue #91 (a ranking run
+writes only scores, so a just-ranked post kept the chip-less card it was rendered with). `viewCaches` (category -> filter ->
 `{ids, bmById, offset, hasMore}`, LRU of `MAX_CACHED_CATEGORIES`) holds paging state only; the pool is
 LRU-bounded by `XBOFilterCache.MAX_POOLED_POSTS` (`touchPool`), never evicting on-screen posts. A
 Unread/Read/Favorites view of a category whose cached All list is complete is DERIVED locally
@@ -303,6 +315,13 @@ the reload re-fetches no bookmarks (X embeds re-init regardless). Every place th
 longer exists falls back to the empty state. A tab switch inside an open category keeps the current
 posts on screen (`aria-busy`, dimmed) until the new page lands (`XBOFilterCache.loadingStrategy`) so
 no blank frame is painted.
+
+**A reload does NOT give you a clean client, which makes a stale-cache bug look like a server bug.**
+`persistViewSnapshot` runs on `pagehide`/`visibilitychange`, so an unload re-writes whatever
+`viewCaches` currently holds - even a snapshot just cleared by hand - and the next load hydrates it
+back. Only a new tab (sessionStorage is per-tab) or an expired TTL gives a genuinely cold read. When
+debugging "the viewer shows stale data even after a hard refresh", confirm against `curl`ing the API
+before suspecting the persist/read path: in issue #91 the server was correct throughout.
 
 **Favorites** (issue #63) mirror read state end to end: a `favorite` column on `bookmarks` added
 through the same `PRAGMA table_info`-guarded migration (`BOOKMARKS_ADDED_COLUMNS`),

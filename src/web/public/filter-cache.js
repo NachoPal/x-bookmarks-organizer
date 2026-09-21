@@ -100,6 +100,52 @@
   }
 
   /**
+   * Fold a freshly fetched server row into the POOLED bookmark object that
+   * every view of that post shares, and report what its card must be
+   * repainted for.
+   *
+   * The pool (issue #67) deliberately outlives a re-page, so the object on
+   * screen predates whatever the server has learned about the post since it
+   * was rendered. A ranking run (issue #80) writes nothing but scores, so
+   * folding only the read/favorite state left a just-scored post wearing the
+   * card it was rendered with - no chip - and, because the pooled object is
+   * also what `viewCaches` and the persisted snapshot (issue #78) are built
+   * from, that emptiness outlived a reload too. That was issue #91.
+   *
+   * `pooled` is mutated in place: it IS the shared identity, and handing back
+   * a copy would strand every view still holding the old one. The row is
+   * never mutated. `hasSummary` is sticky rather than overwritten - a summary
+   * generated in this tab is not yet in the row the server sent.
+   */
+  function foldServerRow(pooled, row) {
+    const changed = {
+      controls: pooled.read !== row.read || Boolean(pooled.favorite) !== Boolean(row.favorite),
+      score: !sameScore(pooled.score, row.score),
+    };
+    pooled.read = row.read;
+    pooled.readAt = row.readAt;
+    pooled.favorite = row.favorite;
+    pooled.score = row.score;
+    if (row.hasSummary) pooled.hasSummary = true;
+    return changed;
+  }
+
+  /**
+   * Whether two ranking verdicts would render the same chip. An ABSENT score
+   * means "never ranked", which is not a score of zero, so a missing verdict
+   * only ever equals another missing one.
+   */
+  function sameScore(a, b) {
+    if (!a || !b) return !a && !b;
+    if (a.value !== b.value || a.confidence !== b.confidence) return false;
+    const ad = a.dimensions || {};
+    const bd = b.dimensions || {};
+    const keys = Object.keys(ad);
+    if (keys.length !== Object.keys(bd).length) return false;
+    return keys.every((key) => ad[key] === bd[key]);
+  }
+
+  /**
    * How to show a view that is not cached and must be fetched (issue #78).
    * Switching only the TAB of an already-open category keeps the current
    * content on screen until the new first page arrives, so there is no
@@ -119,6 +165,8 @@
     deriveFilterIds,
     survivesFilter,
     isFilterEntryStale,
+    foldServerRow,
+    sameScore,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
