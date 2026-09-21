@@ -67,6 +67,10 @@
 
   /* Radii */
   --radius-sm: 6px;
+  /* The rounded data-end of a chart bar (the score breakdown's meters). Its
+     own token rather than --radius-sm: a bar's cap is a chart-mark spec, not
+     a surface radius, and the two must be free to move apart. */
+  --radius-bar: 4px;
   --radius-md: 10px;
   --radius-lg: 14px;
   /* The radius X's own embedded-tweet card is drawn with. The embed host is
@@ -107,6 +111,10 @@
      off the bottom of the bar, so they must use the same value. */
   --header-offset: calc(var(--header-height) + env(safe-area-inset-top, 0px));
   --sidebar-width: clamp(17rem, 24vw, 21rem);
+  /* The score chip's breakdown popover: a fixed measure so every card's graph
+     is the same size, held inside the viewport's gutters on a narrow screen. */
+  --score-detail-width: 16.5rem;
+  --score-bar-height: 0.5rem;
   --content-measure: 44rem;
   /* Fixed card column width (like X, ~550-600px): every card renders at this
      same width regardless of its post's content length. */
@@ -127,6 +135,9 @@
   --z-sidebar: 50;
   --z-modal-backdrop: 55;
   --z-modal: 60;
+  /* Above the top bar (a chip near the top of the content would otherwise
+     open its detail UNDER the sticky bar), still below the summary modal. */
+  --z-popover: 54;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1834,11 +1845,12 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   width: 1rem;
   height: 1rem;
 }
-/* The ranking score (issue #62): a read-only rating, not a control, so it is
-   deliberately quieter than the row's actual actions. The gauge icon plus the
-   number carry the meaning - the chip never signals by color alone - and both
-   `title` and `aria-label` hold the rubric breakdown behind it. Absent
-   entirely for an unranked bookmark: there is no "unranked" badge to show. */
+/* The ranking score (issue #62): a quiet rating that reveals the rubric
+   breakdown behind it. The gauge icon plus the number carry the meaning - the
+   chip never signals by color alone - and its `aria-label` is the whole
+   verdict in prose, so the graph it opens is a drawing of something a screen
+   reader already has. Absent entirely for an unranked bookmark: there is no
+   "unranked" badge to show, and no zero. */
 .score-chip {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1850,16 +1862,144 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   border-radius: 999px;
   background: var(--color-surface-2);
   color: var(--color-text);
+  font: inherit;
   font-size: var(--text-small);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: help;
 }
+.score-chip:hover,
+.score-chip[aria-expanded="true"] {
+  border-color: var(--color-border-strong);
+  background: var(--color-accent-soft);
+}
+.score-chip:active {
+  border-color: var(--color-accent);
+}
+.score-chip:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
 .score-chip .icon-gauge {
   width: 0.9375rem;
   height: 0.9375rem;
   color: var(--color-text-muted);
+}
+
+/* ---- score breakdown popover -------------------------------------------
+   ONE element, reused by every chip and mounted on <body> rather than inside
+   a card: `.bookmark-card` carries both `contain: layout` and the post-size
+   `zoom`, either of which would trap and rescale a popover rendered inside
+   it. Position is computed in JS from the chip's own rect (which `zoom`
+   already resolves into viewport coordinates), flipping above the chip and
+   clamping into the gutters near an edge.
+
+   The graph is a meter per rubric question: bar LENGTH carries the magnitude,
+   so every bar is one accent hue rather than a value ramp - colouring by value
+   too would encode the same fact twice. Each bar is directly labelled with its
+   own 0..10 rating, which is what lets the chart carry no axis at all. */
+.score-detail {
+  position: fixed;
+  z-index: var(--z-popover);
+  width: min(var(--score-detail-width), calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease);
+}
+.score-detail.is-open {
+  opacity: 1;
+}
+.score-detail[hidden] {
+  display: none;
+}
+.score-detail-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.score-detail-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+/* The hero figure: the one number the graph leads with. */
+.score-detail-rating {
+  flex: 0 0 auto;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.score-detail-scale {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+.score-detail-confidence {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+}
+.score-detail-rows {
+  display: grid;
+  /* Wider than the row's own label-to-bar gap below, so each bar reads as
+     belonging to the label above it rather than to the one below. */
+  gap: var(--space-3);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+.score-detail-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.1875rem var(--space-2);
+  align-items: baseline;
+}
+.score-detail-name {
+  min-width: 0;
+  color: var(--color-text-muted);
+}
+.score-detail-value {
+  color: var(--color-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* Meter track: a lighter step of the bar's own hue, so the unfilled remainder
+   still reads as part of the same scale. Both ends square at the baseline
+   (left) and rounded at the data end (right). */
+.score-detail-track {
+  grid-column: 1 / -1;
+  height: var(--score-bar-height);
+  border-radius: 0 var(--radius-bar) var(--radius-bar) 0;
+  background: var(--color-accent-soft);
+  /* A 3:1 boundary so an empty or near-empty track is still visible as a
+     track, which the soft accent alone does not manage on either surface. */
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+.score-detail-fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 0 var(--radius-bar) var(--radius-bar) 0;
+  background: var(--color-accent);
+}
+.score-detail-empty {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .score-detail {
+    transition: none;
+  }
 }
 .delete-btn {
   width: 2.5rem;

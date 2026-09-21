@@ -400,5 +400,42 @@ all.forEach((bm, i) => {
   if (i % 4 === 0) db.setFavorite(bm.id, true);
 });
 
+// Fake ranking verdicts (issue #62), so the score chip, its hover graph and the
+// "Top score" order can be exercised on the seed WITHOUT a paid Jev run. Two
+// thirds of the library is scored and a third is deliberately left unranked -
+// an absent row means "never ranked", never "scored zero", and the viewer must
+// render no chip for it and sort it LAST under Top score.
+const SEED_DIMENSIONS = ['learning_value', 'insight_density', 'durability', 'actionability', 'relevance'];
+// A tiny deterministic hash, so re-seeding produces the same spread of scores
+// (a screenshot or a manual check stays comparable across runs).
+function pseudoRandom(seed) {
+  let h = seed * 2654435761;
+  h ^= h >>> 15;
+  h = Math.imul(h, 2246822507);
+  h ^= h >>> 13;
+  return ((h >>> 0) % 1000) / 1000;
+}
+all.forEach((bm, i) => {
+  if (i % 3 === 2) return; // left unranked on purpose
+  const dimensions = {};
+  // The last dimension is the opt-in `relevance` question, so some rows omit it
+  // - a card's graph has to render a 4-row and a 5-row breakdown equally well.
+  const used = i % 4 === 1 ? SEED_DIMENSIONS.slice(0, 4) : SEED_DIMENSIONS;
+  used.forEach((id, d) => {
+    dimensions[id] = Math.round(pseudoRandom(i * 17 + d * 101) * 100) / 100;
+  });
+  const values = used.map((id) => dimensions[id]);
+  const score = Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 100) / 100;
+  db.saveBookmarkScore({
+    bookmarkId: bm.id,
+    score,
+    confidence: Math.round((0.55 + pseudoRandom(i * 7 + 3) * 0.44) * 100) / 100,
+    dimensions,
+    model: 'jev-dev-seed',
+    rubricVersion: 'v1-seed',
+    scoredAt: new Date().toISOString(),
+  });
+});
+
 console.log(`Seeded ${all.length} bookmarks across ${idByPath.size} categories -> ${dbPath}`);
 db.close();

@@ -68,32 +68,106 @@
     return (Math.round(clamped * 100) / 10).toFixed(1);
   }
 
+  /**
+   * The rubric's dimensions (`src/rank/rubric.ts`) in the rubric's own order,
+   * heaviest question first, with the two label registers the two surfaces
+   * need: a terse `short` for the prose sentence a screen reader hears, and a
+   * full `label` for the breakdown graph's row labels.
+   *
+   * The order lives here rather than being taken from a stored row's key
+   * order, so the graph's rows never reshuffle between two bookmarks.
+   */
+  const DIMENSIONS = [
+    { id: "learning_value", short: "learning", label: "Learning value" },
+    { id: "insight_density", short: "substance", label: "Insight density" },
+    { id: "durability", short: "lasting", label: "Durability" },
+    { id: "actionability", short: "actionable", label: "Actionability" },
+    { id: "relevance", short: "relevance", label: "Relevance" },
+  ];
+
+  const DIMENSION_BY_ID = {};
+  for (const dimension of DIMENSIONS) DIMENSION_BY_ID[dimension.id] = dimension;
+
   /** Human dimension names, so a tooltip reads as prose rather than as keys. */
-  const DIMENSION_LABELS = {
-    learning_value: "learning",
-    insight_density: "substance",
-    durability: "lasting",
-    actionability: "actionable",
-    relevance: "relevance",
-  };
+  const DIMENSION_LABELS = {};
+  for (const dimension of DIMENSIONS) DIMENSION_LABELS[dimension.id] = dimension.short;
+
+  function clamp01(value) {
+    return Math.min(1, Math.max(0, value));
+  }
+
+  function isScored(value) {
+    return typeof value === "number" && isFinite(value);
+  }
+
+  /** A 0..1 dimension value as its own 0..10 rating, one decimal. */
+  function dimensionRating(value) {
+    return (Math.round(clamp01(value) * 100) / 10).toFixed(1);
+  }
+
+  /**
+   * A stored score unpacked into everything the chip's breakdown graph needs:
+   * the overall rating, the model's confidence, and one row per rubric
+   * dimension carrying its label, its 0..1 value and the 0..10 rating that
+   * labels its bar.
+   *
+   * Pure and DOM-free on purpose - the graph is a handful of `<div>`s built
+   * from this, so the arithmetic deciding what it says is unit-tested with
+   * nothing to stub, the same way `tree-counts.js` is.
+   *
+   * A dimension the stored row does not carry is OMITTED, never zero-filled:
+   * `relevance` is opt-in (`XBOOKMARKS_RANKER_INTERESTS`) and a row written
+   * under an earlier rubric simply has fewer answers. A dimension this build
+   * has no descriptor for still shows, labelled by its raw key, so a rubric
+   * that gains a question is not silently half-rendered. Null for a bookmark
+   * the ranking pass never scored - which is not a zero.
+   */
+  function scoreBreakdown(score) {
+    const rating = formatScore(score);
+    if (rating === null) return null;
+    const raw = score.dimensions && typeof score.dimensions === "object" ? score.dimensions : {};
+    const ids = [
+      ...DIMENSIONS.map((dimension) => dimension.id),
+      ...Object.keys(raw).filter((id) => !DIMENSION_BY_ID[id]),
+    ].filter((id) => isScored(raw[id]));
+    const confidence = isScored(score.confidence) ? clamp01(score.confidence) : null;
+    return {
+      rating,
+      value: clamp01(score.value),
+      confidence,
+      confidencePercent: confidence === null ? null : Math.round(confidence * 100),
+      dimensions: ids.map((id) => {
+        const value = clamp01(raw[id]);
+        const descriptor = DIMENSION_BY_ID[id];
+        return {
+          id,
+          label: descriptor ? descriptor.label : id,
+          short: descriptor ? descriptor.short : id,
+          value,
+          rating: dimensionRating(value),
+          percent: Math.round(value * 100),
+        };
+      }),
+    };
+  }
 
   /**
    * The full sentence behind a score chip: the rating, the model's confidence,
    * and the per-dimension breakdown that makes the number accountable instead
    * of an unexplained verdict. Null when there is no score to describe.
+   *
+   * This is the chip's accessible NAME, and the graph the chip reveals is the
+   * same facts drawn - both are built from one `scoreBreakdown`, so they can
+   * never disagree about what the model said.
    */
   function describeScore(score) {
-    const rating = formatScore(score);
-    if (rating === null) return null;
-    const parts = [`Learning value ${rating} of 10`];
-    if (typeof score.confidence === "number" && isFinite(score.confidence)) {
-      parts.push(`confidence ${Math.round(Math.min(1, Math.max(0, score.confidence)) * 100)}%`);
+    const breakdown = scoreBreakdown(score);
+    if (breakdown === null) return null;
+    const parts = [`Learning value ${breakdown.rating} of 10`];
+    if (breakdown.confidencePercent !== null) parts.push(`confidence ${breakdown.confidencePercent}%`);
+    if (breakdown.dimensions.length > 0) {
+      parts.push(breakdown.dimensions.map((dimension) => `${dimension.short} ${dimension.rating}`).join(", "));
     }
-    const dimensions = score.dimensions && typeof score.dimensions === "object" ? score.dimensions : {};
-    const breakdown = Object.keys(dimensions)
-      .filter((key) => typeof dimensions[key] === "number" && isFinite(dimensions[key]))
-      .map((key) => `${DIMENSION_LABELS[key] || key} ${(Math.round(dimensions[key] * 100) / 10).toFixed(1)}`);
-    if (breakdown.length > 0) parts.push(breakdown.join(", "));
     return `${parts.join(" · ")}.`;
   }
 
@@ -101,12 +175,14 @@
     SORT_ORDER_KEY,
     DEFAULT_SORT_ORDER,
     SORT_ORDERS,
+    DIMENSIONS,
     DIMENSION_LABELS,
     isKnownSortOrder,
     readSortOrder,
     writeSortOrder,
     sortParam,
     formatScore,
+    scoreBreakdown,
     describeScore,
   };
   if (typeof module !== "undefined" && module.exports) {

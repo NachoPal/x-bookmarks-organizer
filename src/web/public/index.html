@@ -659,6 +659,14 @@
       </div>
     </div>
 
+    <!-- The score chip's ranking breakdown (issue #62). ONE element shared by
+         every chip and mounted here on <body>, out of the cards: a bookmark
+         card carries `contain: layout` and the post-size `zoom`, both of which
+         would trap a popover rendered inside it. `aria-hidden` because it is a
+         DRAWING of the chip's own `aria-label` - announcing it again would
+         read the same numbers twice. -->
+    <div id="score-detail" class="score-detail" hidden aria-hidden="true"></div>
+
     <script src="https://platform.twitter.com/widgets.js" async></script>
     <script src="vendor/marked.min.js" defer></script>
     <script src="vendor/dompurify.min.js" defer></script>

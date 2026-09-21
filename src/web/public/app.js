@@ -366,18 +366,25 @@
    * card. Re-rendering would detach the card's mounted X embed and reload it,
    * the very thing the pool exists to prevent.
    *
-   * The chip is read-only and never focusable, so swapping it strands no
-   * focus; a bookmark with no verdict simply ends up with no chip.
+   * The chip IS focusable and opens the breakdown graph, so the swap has to
+   * carry that state across: an open graph is closed (its numbers just
+   * changed) and the keyboard is handed the replacement, never left on a
+   * detached node. A bookmark with no verdict simply ends up with no chip.
    */
   function patchScoreChip(bm, cardEl) {
     const right = cardEl.querySelector(".bookmark-actions-right");
     if (!right) return;
     const existing = right.querySelector(".score-chip");
-    if (existing) existing.remove();
+    const hadFocus = existing !== null && document.activeElement === existing;
+    if (existing) {
+      if (scoreDetailAnchor === existing) closeScoreDetail();
+      existing.remove();
+    }
     const chip = renderScoreChip(bm);
     // The chip leads the right-hand group, ahead of the delete button - the
     // same order `renderCard` builds.
     if (chip) right.insertBefore(chip, right.firstChild);
+    if (chip && hadFocus) chip.focus();
   }
 
   /** Permanently remove a deleted bookmark from every cached view and the pool. */
@@ -2072,25 +2079,175 @@
    * controls - or nothing at all for a bookmark the paid ranking pass has never
    * scored, which is not the same as a score of zero.
    *
-   * Deliberately not a control: the number is a read-only fact about the post,
-   * there is nothing to toggle, and the rubric's breakdown is what explains it
-   * (carried by both `title` and `aria-label`, so the reasoning is available to
-   * a screen reader and not only on hover).
+   * The number alone is an unexplained verdict, so the chip reveals the rubric
+   * breakdown behind it: a small graph on hover, on keyboard focus and on tap.
+   * That is why it is a real `<button>` rather than the plain span it started
+   * as - hover is not a keyboard or touch gesture, and a focusable element with
+   * a click contract is the cheapest way to have all three. The whole verdict
+   * also stays on the chip's `aria-label`, so a screen reader is told it in
+   * prose and the popover it opens is only a drawing of what it already heard
+   * (hence the popover's `aria-hidden`, and no `aria-expanded` claiming to
+   * reveal something to AT).
    */
   function renderScoreChip(bm) {
     if (!window.XBOSortOrder) return null;
-    const rating = window.XBOSortOrder.formatScore(bm.score);
-    if (rating === null) return null;
+    const breakdown = window.XBOSortOrder.scoreBreakdown(bm.score);
+    if (breakdown === null) return null;
 
-    const chip = el("span", "score-chip");
+    const chip = el("button", "score-chip");
+    chip.type = "button";
     chip.appendChild(gaugeIcon());
-    chip.appendChild(el("span", "score-chip-value", rating));
+    chip.appendChild(el("span", "score-chip-value", breakdown.rating));
     const description = window.XBOSortOrder.describeScore(bm.score);
-    if (description) {
-      chip.title = description;
-      chip.setAttribute("aria-label", description);
-    }
+    if (description) chip.setAttribute("aria-label", description);
+
+    // Hover is mouse-only on purpose: a touch `pointerenter` fires immediately
+    // before the `click` that follows it, so without the guard a tap would
+    // open the graph and then instantly toggle it shut again.
+    chip.addEventListener("pointerenter", (e) => {
+      if (e.pointerType === "mouse") openScoreDetail(chip, breakdown);
+    });
+    chip.addEventListener("pointerleave", (e) => {
+      // A chip the keyboard is sitting on keeps its graph when the pointer
+      // merely passes over it.
+      if (e.pointerType === "mouse" && document.activeElement !== chip) closeScoreDetail();
+    });
+    // `:focus-visible` rather than plain focus: a mouse click focuses the chip
+    // too, and opening from that would fight the click's own toggle.
+    chip.addEventListener("focus", () => {
+      if (chip.matches(":focus-visible")) openScoreDetail(chip, breakdown);
+    });
+    chip.addEventListener("blur", () => {
+      if (scoreDetailAnchor === chip) closeScoreDetail();
+    });
+    chip.addEventListener("click", () => {
+      if (scoreDetailAnchor === chip) closeScoreDetail();
+      else openScoreDetail(chip, breakdown);
+    });
     return chip;
+  }
+
+  // ---- score breakdown popover -------------------------------------------
+  // ONE popover shared by every chip, mounted on <body> (see index.html for
+  // why it cannot live inside a card). It holds no state of its own beyond
+  // which chip opened it.
+  const scoreDetailEl = document.getElementById("score-detail");
+  let scoreDetailAnchor = null;
+
+  /**
+   * Draw one rubric question as a labelled meter.
+   *
+   * Length is the only magnitude channel - every bar wears the same accent
+   * hue, because shading it by value as well would encode the same number
+   * twice. Each bar carries its own 0..10 rating as a direct label, which is
+   * what lets the graph do without an axis at this size.
+   */
+  function renderScoreDetailRow(dimension) {
+    const row = el("li", "score-detail-row");
+    row.appendChild(el("span", "score-detail-name", dimension.label));
+    row.appendChild(el("span", "score-detail-value", dimension.rating));
+    const track = el("span", "score-detail-track");
+    const fill = el("span", "score-detail-fill");
+    fill.style.width = `${dimension.percent}%`;
+    track.appendChild(fill);
+    row.appendChild(track);
+    return row;
+  }
+
+  function renderScoreDetail(breakdown) {
+    const head = el("div", "score-detail-head");
+    head.appendChild(el("span", "score-detail-label", "Ranking score"));
+    head.appendChild(el("span", "score-detail-rating", breakdown.rating));
+    head.appendChild(el("span", "score-detail-scale", "/ 10"));
+
+    const nodes = [head];
+    if (breakdown.confidencePercent !== null) {
+      nodes.push(el("p", "score-detail-confidence", `${breakdown.confidencePercent}% model confidence`));
+    }
+    if (breakdown.dimensions.length > 0) {
+      const rows = el("ul", "score-detail-rows");
+      for (const dimension of breakdown.dimensions) rows.appendChild(renderScoreDetailRow(dimension));
+      nodes.push(rows);
+    } else {
+      // A score stored without a readable breakdown blob still has a total
+      // worth showing; the graph just has nothing to draw (see the tolerant
+      // `dimensions` read in `src/db/database.ts`).
+      nodes.push(el("p", "score-detail-empty", "No per-question breakdown was stored for this score."));
+    }
+    scoreDetailEl.replaceChildren(...nodes);
+  }
+
+  /**
+   * Anchor the popover to its chip: centred under it, flipped above when it
+   * would run off the bottom, and clamped into the viewport's gutters either
+   * way so nothing is ever half off-screen on a narrow window.
+   */
+  function positionScoreDetail(anchor) {
+    const gutter = 8;
+    const rect = anchor.getBoundingClientRect();
+    const width = scoreDetailEl.offsetWidth;
+    const height = scoreDetailEl.offsetHeight;
+
+    let top = rect.bottom + gutter;
+    if (top + height > window.innerHeight - gutter) top = rect.top - gutter - height;
+    top = Math.max(gutter, Math.min(top, window.innerHeight - gutter - height));
+
+    let left = rect.left + rect.width / 2 - width / 2;
+    left = Math.max(gutter, Math.min(left, window.innerWidth - gutter - width));
+
+    scoreDetailEl.style.top = `${Math.round(top)}px`;
+    scoreDetailEl.style.left = `${Math.round(left)}px`;
+  }
+
+  function openScoreDetail(anchor, breakdown) {
+    if (!scoreDetailEl) return;
+    scoreDetailAnchor = anchor;
+    renderScoreDetail(breakdown);
+    scoreDetailEl.hidden = false;
+    positionScoreDetail(anchor);
+    // One frame with the popover laid out but still transparent, so the fade
+    // has something to run from (`prefers-reduced-motion` drops it in CSS).
+    requestAnimationFrame(() => {
+      if (scoreDetailAnchor === anchor) scoreDetailEl.classList.add("is-open");
+    });
+  }
+
+  function closeScoreDetail(opts) {
+    if (!scoreDetailEl || scoreDetailAnchor === null) return;
+    const anchor = scoreDetailAnchor;
+    scoreDetailAnchor = null;
+    scoreDetailEl.classList.remove("is-open");
+    scoreDetailEl.hidden = true;
+    scoreDetailEl.replaceChildren();
+    if (opts && opts.returnFocus && anchor.isConnected) anchor.focus();
+  }
+
+  function initScoreDetail() {
+    if (!scoreDetailEl) return;
+    // The content pane scrolls under a fixed popover, and a card can be
+    // re-sequenced or dropped from the pool while it is open, so the anchor is
+    // re-read rather than trusted.
+    const reflow = () => {
+      if (scoreDetailAnchor === null) return;
+      if (!scoreDetailAnchor.isConnected) {
+        closeScoreDetail();
+        return;
+      }
+      positionScoreDetail(scoreDetailAnchor);
+    };
+    window.addEventListener("scroll", reflow, true);
+    window.addEventListener("resize", reflow);
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || scoreDetailAnchor === null) return;
+      // The popover owns Escape while it is open, so dismissing it does not
+      // also close the sidebar drawer or a popover in the top bar.
+      e.stopPropagation();
+      closeScoreDetail({ returnFocus: true });
+    });
+    document.addEventListener("pointerdown", (e) => {
+      if (scoreDetailAnchor === null || scoreDetailAnchor.contains(e.target)) return;
+      closeScoreDetail();
+    });
   }
 
   /** A small gauge, so the chip reads as a rating rather than a bare number. */
@@ -4068,6 +4225,7 @@
   // ---- init --------------------------------------------------------------
   initSidebar();
   initCrumbMenu();
+  initScoreDetail();
   initSettingsPanel();
   initPostScale();
   initSortOrder();
