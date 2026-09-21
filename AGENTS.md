@@ -598,8 +598,7 @@ against one shared state, which is what makes a decomposed rubric affordable.
 Paid safety, and the ORDER matters: `requireRankerCredentials` checks the OPT-IN before the key, so
 a `TYPESAFE_API_KEY` left over from a categorization experiment can never turn `rank` into a paid
 run on its own; an unrecognized `XBOOKMARKS_RANKER` value is `off`, never an opt-in. `rank
---dry-run` reports the size of a run while making no call. Never add an in-app button that starts a
-ranking run - the viewer only ORDERS what is already scored.
+--dry-run` reports the size of a run while making no call.
 
 Storage is `bookmark_scores` (`src/db/schema.ts`), keyed by bookmark: normalized 0..1 `score`, the
 model's own `confidence`, the per-dimension breakdown as JSON (read tolerantly - a blob this build
@@ -612,8 +611,9 @@ the viewer renders no chip at all rather than a zero.
 
 Surface: `score` on every listed bookmark (a pure cache read in `toViewerBookmarks`, empty when
 ranking was never run), `?sort=score` on `/api/categories/:id/bookmarks` (server-side, because
-paging is), `ranking: { scored, total }` on `/api/setup`, and in the viewer an **Order** segmented
-control in the settings popover plus a read-only `.score-chip` on each ranked card.
+paging is), a `ranking` block on `/api/setup` (`scored`/`total`, plus what the in-app trigger needs
+- see issue #80 below), and in the viewer an **Order** segmented control in the settings popover
+plus a read-only `.score-chip` on each ranked card.
 `src/web/public/sort-order.js` (`XBOSortOrder`) is the pure, unit-tested half (guarded persistence,
 the query param, the rating/tooltip formatting) in the same style as `post-scale.js`. Changing the
 order DROPS every cached view (`viewCaches`) wholesale - they were paged under the old order - the
@@ -623,6 +623,51 @@ Tests are entirely offline and must stay that way: `client.test.ts` drives the R
 injectable `Fetch`, `integration.test.ts` runs the REAL ranker against a local `http` server
 standing in for the API and then asserts the viewer API's ordering. Never let a test reach
 `api.typesafe.ai`, and never make a real Jev call to validate a change here.
+
+## In-app ranking run (issue #80)
+
+A ranking run is startable from the app, not only the CLI - the web-app-first rule applies to the
+paid pass too. What is NOT relaxed is the cost invariant. The old rule here read "never add an
+in-app button that starts a ranking run"; the reason behind it was that a paid run must never be
+one careless click away, NOT that in-app ranking is forbidden. **The contract is now: an in-app
+trigger is allowed, and it carries every gate the CLI has plus one the CLI does not need.** Four
+gates, and all four are load-bearing:
+
+1. **Opt-in, then key** - `requireRankerCredentials`, in that order, exactly as `rank` does. The
+   server-side wiring (`src/web/rank-job.ts`'s `createRankWiring`) is the only place that decides,
+   and the SAME check is surfaced up front as `blocker` so the control explains itself instead of
+   failing on press. Never re-derive this rule in the route or the client.
+2. **An explicit paid confirmation.** `POST /api/rank` refuses without `{ confirm: true }` (400),
+   and the viewer sends it from ONE place: a confirm dialog that names the price before the scope
+   and whose primary button restates the count. This is the in-app equivalent of deliberately
+   typing `rank`, and it is why the button may exist at all. The blocker is RE-checked at the
+   moment of the authorization, so a stale browser cannot spend money.
+3. **Billing surfaced, every run.** `reportRankerBilling` writes into the run's progress stream, so
+   the price tag is the first line the owner sees while it runs - never a silent spend.
+4. **One run at a time**, and never racing a sync (either order) or a reset: two runs would pay
+   twice, and an ingest is writing the very bookmarks a run selects.
+
+The run is **incremental by default and must stay that way**: it takes the ranker's normal
+selection (`getBookmarksToScore`, which skips anything already scored under the current rubric) and
+must NEVER pass `rescoreAll`. Pressing it again after a later sync therefore pays only for the
+newly-synced bookmarks, exactly as sync itself only fetches what is new; a run over zero unranked
+bookmarks no-ops with a "nothing to rank" line rather than erroring. `pending` (a free
+`planRanking` read - no API call) is what the panel and the dialog use to say how many a run would
+score.
+
+Mechanically it is the SYNC pattern, not a second one: `JobRunner` (`src/web/job-runner.ts`) is the
+one-at-a-time-job-with-pollable-progress engine that `SyncRunner` and `RankRunner`
+(`src/web/rank.ts`) both bind, `POST /api/rank` returns 202 and `GET /api/rank` is polled, and the
+client paints the same `.sync-progress` strip through the shared `renderProgressStrip`. A completed
+run drops the cached views the way a sort change does, so new chips and the score order appear with
+no reload. A viewer built without the wiring degrades with 503, keeping `buildServer(db)` usable in
+tests. Frontend rules live in `src/web/public/ranking.js` (`XBORanking`, pure + unit-tested), which
+fails CLOSED: no state means no button.
+
+The ranker's knobs stay OUT of the settings panel on purpose - turning ranking on remains an
+explicit server-side act, which is gate 1. Tests are offline end to end (`rank-job.test.ts`,
+`rank-api.test.ts`, `ranking.test.ts`); never let one reach `api.typesafe.ai`, and never make a real
+Jev call to validate a change here.
 
 ## Categorizer comparison (`eval-categorizers`, issue #83)
 

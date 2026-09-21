@@ -605,7 +605,7 @@
     popovers.forEach((p) => p.toggle.addEventListener("click", () => setPopoverOpen(p, !isPopoverOpen(p))));
 
     document.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape" || isSetupOpen()) return;
+      if (e.key !== "Escape" || isSetupOpen() || isRankOpen()) return;
       popovers.forEach((p) => isPopoverOpen(p) && setPopoverOpen(p, false));
     });
     // A click anywhere outside dismisses it; inside it (or on its icon,
@@ -653,8 +653,9 @@
   }
 
   // ---- list ordering (issue #62) -----------------------------------------
-  // The ranking pass is paid and runs from the CLI, so this panel only chooses
-  // how to ORDER what has already been scored - it never starts a paid run.
+  // This control only chooses how to ORDER what has already been scored; it
+  // never starts a run. Starting one lives behind the confirm-gated "Rank now"
+  // in the sync popover (issue #80), which is where the paid decision belongs.
   const sortOrderEl = document.getElementById("sort-order");
   const sortOrderHintEl = document.getElementById("sort-order-hint");
 
@@ -678,7 +679,7 @@
       sortOrderHintEl.textContent =
         total === 0
           ? "Nothing is ranked yet."
-          : `None of your ${total} bookmarks are ranked yet. Ranking is paid per token and runs from the command line: node dist/index.js rank`;
+          : `None of your ${total} bookmarks are ranked yet. Ranking is paid per token; start a run from "Rank now" in the sync panel.`;
       return;
     }
     sortOrderHintEl.textContent =
@@ -2512,6 +2513,7 @@
   /** Push the current setup payload into every control that reflects it. */
   function applySetupState() {
     updateSyncButton();
+    updateRankControl();
     updateEmptyLibraryState();
     updateSortOrderHint();
     if (settingsForm && setupState && !settingsDirty) {
@@ -2644,31 +2646,53 @@
 
   // ---- the progress strip ------------------------------------------------
 
-  function renderSyncProgress(status) {
-    if (!syncProgressEl) return;
+  /**
+   * Paint one progress strip from a job status. Shared by the sync and the
+   * ranking run (issue #80): both are one-at-a-time server-side jobs whose
+   * progress is their own logger output, so they get the same strip rather
+   * than two near-copies that drift.
+   *
+   * `line` is the caller's pure formatter - `XBOCategorization.progressLine`
+   * for a sync, `XBORanking.progressLine` for a run.
+   */
+  function renderProgressStrip(els, status, line) {
+    if (!els.root) return;
     if (!status || status.state === "idle") {
-      syncProgressEl.hidden = true;
+      els.root.hidden = true;
       return;
     }
     const state = status.state;
-    syncProgressEl.hidden = false;
-    syncProgressEl.setAttribute("data-state", state);
-    syncProgressTextEl.textContent = categorization().progressLine(status);
+    els.root.hidden = false;
+    els.root.setAttribute("data-state", state);
+    els.text.textContent = line(status);
 
     const messages = status.messages || [];
-    syncProgressDetailsEl.hidden = messages.length === 0;
+    els.details.hidden = messages.length === 0;
     if (messages.length > 0) {
-      syncProgressLogEl.replaceChildren(...messages.map((m) => el("li", "", m)));
+      els.log.replaceChildren(...messages.map((m) => el("li", "", m)));
     }
-    syncProgressRetryBtn.hidden = state !== "error";
-    syncProgressDismissBtn.hidden = state === "running";
+    els.retry.hidden = state !== "error";
+    els.dismiss.hidden = state === "running";
 
     if (state === "done") {
       // A good-news strip clears itself; an error stays until acknowledged.
       window.setTimeout(() => {
-        if (syncProgressEl.getAttribute("data-state") === "done") syncProgressEl.hidden = true;
+        if (els.root.getAttribute("data-state") === "done") els.root.hidden = true;
       }, SYNC_DONE_DISMISS_MS);
     }
+  }
+
+  const syncProgressEls = {
+    root: syncProgressEl,
+    text: syncProgressTextEl,
+    details: syncProgressDetailsEl,
+    log: syncProgressLogEl,
+    retry: syncProgressRetryBtn,
+    dismiss: syncProgressDismissBtn,
+  };
+
+  function renderSyncProgress(status) {
+    renderProgressStrip(syncProgressEls, status, (s) => categorization().progressLine(s));
   }
 
   function initSync() {
@@ -2680,6 +2704,239 @@
         syncBtn.focus();
       });
     }
+  }
+
+  // ======================================================================
+  // In-app ranking run (issue #80)
+  // ======================================================================
+  // The Jev ranking pass, startable from the app instead of the terminal -
+  // but it is PAID per token, so the control is built around that fact rather
+  // than around convenience. Three things stand between a press and a bill,
+  // and all three are load-bearing:
+  //
+  //   1. The server's own gates: ranking must be opted into
+  //      (XBOOKMARKS_RANKER=typesafe) AND the key must resolve. When either is
+  //      missing the button is disabled and the panel SAYS WHY, in the
+  //      credential chain's own words - a blocker message, not a dead control.
+  //   2. An explicit confirmation dialog that names the price before the
+  //      scope, and whose confirm button restates how many bookmarks are
+  //      covered. This is the in-app equivalent of deliberately typing `rank`.
+  //   3. `POST /api/rank` refuses without `{ confirm: true }`, so the dialog
+  //      cannot be routed around.
+  //
+  // "Try again" after a failure reopens the DIALOG, never the run: a retry is
+  // a second authorization, not a repeat of the first.
+
+  const rankOpenBtn = document.getElementById("rank-open");
+  const rankCoverageEl = document.getElementById("rank-coverage");
+  const rankBlockerEl = document.getElementById("rank-blocker");
+  const rankModalEl = document.getElementById("rank-modal");
+  const rankBackdropEl = document.getElementById("rank-backdrop");
+  const rankCostTextEl = document.getElementById("rank-modal-cost-text");
+  const rankErrorEl = document.getElementById("rank-modal-error");
+  const rankCancelBtn = document.getElementById("rank-cancel");
+  const rankConfirmBtn = document.getElementById("rank-confirm");
+  const rankProgressEls = {
+    root: document.getElementById("rank-progress"),
+    text: document.getElementById("rank-progress-text"),
+    details: document.getElementById("rank-progress-details"),
+    log: document.getElementById("rank-progress-log"),
+    retry: document.getElementById("rank-progress-retry"),
+    dismiss: document.getElementById("rank-progress-dismiss"),
+  };
+
+  let rankPollTimer = null;
+  const RANK_POLL_MS = 1500;
+
+  // Inert defaults, like NO_CATEGORIZATION: a missing script must leave the
+  // paid control OFF, never accidentally enabled.
+  const NO_RANKING = {
+    rankBlocker: () => "Ranking is unavailable in this viewer.",
+    canRank: () => false,
+    isRunning: () => false,
+    coverageLine: () => "",
+    confirmCost: () => "This is a paid run, billed per input token.",
+    confirmLabel: () => "Rank bookmarks",
+    progressLine: () => "",
+  };
+
+  function ranking() {
+    return window.XBORanking || NO_RANKING;
+  }
+
+  function rankState() {
+    return (setupState && setupState.ranking) || null;
+  }
+
+  function updateRankControl() {
+    if (!rankOpenBtn) return;
+    const state = rankState();
+    const running = ranking().isRunning(state);
+    const blocker = state ? ranking().rankBlocker(state) : "Ranking status is unavailable.";
+
+    rankOpenBtn.classList.toggle("is-ranking", running);
+    rankOpenBtn.disabled = running || blocker !== null;
+    const label = rankOpenBtn.querySelector(".rank-btn-label");
+    if (label) label.textContent = running ? "Ranking\u2026" : "Rank now";
+    rankOpenBtn.setAttribute(
+      "aria-label",
+      running ? "Ranking your bookmarks" : "Rank bookmarks - a paid run you confirm first",
+    );
+
+    if (rankCoverageEl) {
+      rankCoverageEl.textContent = state
+        ? ranking().coverageLine(state)
+        : "Ranking status is unavailable.";
+    }
+    // The reason lives in the panel, not only in a tooltip: a tooltip is a
+    // dead end on touch, and this one is the owner's whole fix-it instruction.
+    if (rankBlockerEl) {
+      rankBlockerEl.textContent = !running && blocker ? blocker : "";
+      rankBlockerEl.hidden = running || !blocker;
+    }
+  }
+
+  function isRankOpen() {
+    return !!rankModalEl && !rankModalEl.hidden;
+  }
+
+  /** Open the paid confirmation. Nothing is spent until it is confirmed. */
+  function openRankConfirm() {
+    if (!rankModalEl) return;
+    const state = rankState();
+    if (state && ranking().rankBlocker(state) !== null) {
+      updateRankControl();
+      return;
+    }
+    const syncPopover = popovers.find((p) => p.name === "sync");
+    if (syncPopover && isPopoverOpen(syncPopover)) setPopoverOpen(syncPopover, false, { returnFocus: false });
+
+    if (rankCostTextEl) rankCostTextEl.textContent = ranking().confirmCost(state);
+    if (rankConfirmBtn) rankConfirmBtn.textContent = ranking().confirmLabel(state);
+    rankErrorEl.hidden = true;
+    rankModalEl.hidden = false;
+    rankBackdropEl.hidden = false;
+    // Cancel first: the button that spends money is never the default target.
+    rankCancelBtn.focus();
+  }
+
+  function closeRankConfirm(focusTarget) {
+    if (!rankModalEl) return;
+    rankModalEl.hidden = true;
+    rankBackdropEl.hidden = true;
+    // Focus goes back to a trigger the owner can actually see. "Rank now"
+    // lives INSIDE the sync popover, which opening the dialog closed, so it is
+    // usually not focusable by the time we get here - focusing it then would
+    // silently drop focus to <body> and strand a keyboard user. The popover's
+    // own toggle is the visible thing that stands for it.
+    const visible = (elm) => !!elm && !elm.disabled && elm.offsetParent !== null;
+    const target =
+      focusTarget || (visible(rankOpenBtn) ? rankOpenBtn : document.getElementById("sync-toggle"));
+    if (target) target.focus();
+  }
+
+  /** The authorization itself: the ONE place the viewer sends `confirm: true`. */
+  async function confirmRank() {
+    rankConfirmBtn.disabled = true;
+    rankConfirmBtn.classList.add("is-loading");
+    rankErrorEl.hidden = true;
+    try {
+      const res = await fetch("/api/rank", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Could not start the ranking run.");
+      }
+    } catch (err) {
+      rankErrorEl.textContent = err.message;
+      rankErrorEl.hidden = false;
+      return;
+    } finally {
+      rankConfirmBtn.disabled = false;
+      rankConfirmBtn.classList.remove("is-loading");
+    }
+    closeRankConfirm();
+    renderRankProgress({ state: "running", messages: ["Starting the ranking run\u2026"] });
+    pollRank();
+  }
+
+  function renderRankProgress(status) {
+    renderProgressStrip(rankProgressEls, status, (s) => ranking().progressLine(s));
+  }
+
+  function pollRank() {
+    if (rankPollTimer) return;
+    const tick = async () => {
+      let data;
+      try {
+        data = await getJSON("/api/rank");
+      } catch (_) {
+        return; // transient; the next tick tries again
+      }
+      if (setupState && data.ranking) setupState.ranking = data.ranking;
+      const status = data.ranking && data.ranking.status;
+      renderRankProgress(status);
+      updateRankControl();
+      updateSortOrderHint();
+
+      if (status && (status.state === "done" || status.state === "error")) {
+        stopRankPolling();
+        if (status.state === "done") await refreshAfterRank();
+      }
+    };
+    rankPollTimer = setInterval(tick, RANK_POLL_MS);
+    void tick();
+  }
+
+  function stopRankPolling() {
+    if (!rankPollTimer) return;
+    clearInterval(rankPollTimer);
+    rankPollTimer = null;
+  }
+
+  /**
+   * Bring the viewer up to date with what a run stored. A ranking run touches
+   * only scores - no bookmark, category or count - so the tree is left alone;
+   * but every cached view was paged under the OLD scores, so they are dropped
+   * exactly as changing the Order does, and the open category re-pages. That
+   * is what makes "Top score" and the new chips correct without a reload.
+   */
+  async function refreshAfterRank() {
+    clearPersistedViews();
+    viewCaches = new Map();
+    cacheOrder = [];
+    releaseOrphanPanes();
+    await fetchSetup();
+    if (selectedCategoryId != null) await fetchAndRenderFirstPage();
+  }
+
+  function initRanking() {
+    if (!rankOpenBtn || !rankModalEl) return;
+    rankOpenBtn.addEventListener("click", openRankConfirm);
+    rankCancelBtn.addEventListener("click", () => closeRankConfirm());
+    rankBackdropEl.addEventListener("click", () => closeRankConfirm());
+    rankConfirmBtn.addEventListener("click", () => void confirmRank());
+    // A retry is a fresh authorization, never a silent re-run.
+    if (rankProgressEls.retry) rankProgressEls.retry.addEventListener("click", openRankConfirm);
+    if (rankProgressEls.dismiss) {
+      rankProgressEls.dismiss.addEventListener("click", () => {
+        rankProgressEls.root.hidden = true;
+        const toggle = document.getElementById("sync-toggle");
+        if (toggle) toggle.focus();
+      });
+    }
+    document.addEventListener("keydown", (e) => {
+      if (!isRankOpen()) return;
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeRankConfirm();
+        return;
+      }
+      trapModalFocus(rankModalEl, e);
+    });
   }
 
   // ---- the categorization selector (fixowl-style dropdowns) --------------
@@ -3420,6 +3677,7 @@
   initCategorizationSettings();
   initSetup();
   initReset();
+  initRanking();
   void restoreLastView();
   window.addEventListener("pagehide", persistViewSnapshot);
   document.addEventListener("visibilitychange", () => {
@@ -3431,5 +3689,7 @@
   // state (an already-selected category suppresses it).
   void fetchSetup().then(() => {
     if (syncIsRunning()) pollSync();
+    // A run started in another tab (or before a reload) keeps reporting here.
+    if (ranking().isRunning(rankState())) pollRank();
   });
 })();

@@ -14,6 +14,7 @@ import { toRunner } from './llm/runner';
 import { buildSettingsCatalog } from './settings/catalog';
 import { applySettingsToConfig, effectiveSettings } from './settings/settings';
 import { createSyncJob } from './web/sync-job';
+import { createRankWiring } from './web/rank-job';
 import { backfillArticlePreviews } from './articles/backfill';
 import { HttpArticleFetcher } from './articles/fetch-article';
 import { backfillXArticles } from './x/backfill-articles';
@@ -436,6 +437,11 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // purpose: the job re-reads the settings on every run, so changing them in
     // the Settings panel takes effect without restarting the viewer.
     syncJob: createSyncJob({ db, store, config: baseConfig }),
+    // The "Rank now" button's work (issue #80). `baseConfig` again, for the
+    // same reason as the sync job - and because the ranker's opt-in and knobs
+    // are deliberately NOT settings-panel choices: turning ranking on stays an
+    // explicit server-side act, which is the first of its paid gates.
+    ranking: createRankWiring({ db, store, config: baseConfig }),
     credentials: store,
     xLogin: async () => {
       const current = applySettingsToConfig(
@@ -456,6 +462,14 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
   // The viewer can start a sync itself now, so say how one would be billed
   // before the owner presses the button, not only once it is running.
   reportCategorizerBilling(config, llm, (msg) => console.log(`Sync: ${msg}`));
+  // Same courtesy for the in-app ranking run: it is PAID per token, so say up
+  // front whether the button can run at all, and never imply a free press.
+  const rankBlocker = createRankWiring({ db, store, config: baseConfig }).blocker();
+  console.log(
+    rankBlocker
+      ? 'Ranking: off (set XBOOKMARKS_RANKER=typesafe and provide TYPESAFE_API_KEY to enable "Rank now").'
+      : `Ranking: "Rank now" is available in the app - ${billingLabel('per-token')}, and every run is confirmed before it starts.`,
+  );
   console.log('Press Ctrl+C to stop.');
   const shutdown = () => {
     app.close().finally(() => {
