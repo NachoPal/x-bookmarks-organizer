@@ -1,0 +1,102 @@
+/**
+ * The work an in-app ranking run actually performs (issue #80), and the two
+ * free questions the UI asks about it before offering the button.
+ *
+ * Exactly what `node dist/index.js rank` does, assembled from the SAME pieces:
+ * `buildRanker` (which is where the paid gate lives), `reportRankerBilling`,
+ * and `rankBookmarks`. Nothing about scoring is reimplemented here - this
+ * module only hands the CLI's own pass a logger that writes into the progress
+ * stream the owner is watching instead of stdout.
+ *
+ * PAID-SAFETY, and it is the same set of gates the CLI has, in the same order:
+ *
+ *  1. `requireRankerCredentials` (inside `buildRanker`) refuses unless ranking
+ *     is opted into via `XBOOKMARKS_RANKER=typesafe` AND `TYPESAFE_API_KEY`
+ *     resolves - the OPT-IN first, so a key left over from a categorization
+ *     experiment can never make a run billable on its own.
+ *  2. `reportRankerBilling` announces the price tag BEFORE the first call, into
+ *     the same progress stream, so the run says what it costs while it runs.
+ *  3. The route (`POST /api/rank`) additionally requires an explicit
+ *     `{ confirm: true }`, and the viewer only sends it from a confirmation
+ *     dialog that states the run is paid. That is the in-app equivalent of the
+ *     CLI's deliberate `rank` invocation: a paid run is never one careless
+ *     click away.
+ *
+ * Unlike the sync job, no app setting is layered onto the config: the ranker's
+ * knobs (`XBOOKMARKS_RANKER*`) are deliberately NOT in the settings panel, so
+ * turning ranking on stays an explicit act the owner performs on the server
+ * once - gate 1 above. A stray env var therefore cannot start a run by itself
+ * either; it only makes the button offerable, and gate 3 still stands between
+ * it and any spend.
+ *
+ * `buildRanker` and `rank` are the offline test seams (mirroring
+ * `SyncJobDeps.ingest`): a test drives the real wiring with a fake scorer, so
+ * nothing reaches `api.typesafe.ai` and nothing is billed.
+ */
+import { requireRankerCredentials, type Config } from '../config';
+import type { CredentialStore } from '../creds/resolve';
+import type { Database } from '../db/database';
+import { buildRanker as defaultBuildRanker, reportRankerBilling, type BuiltRanker } from '../rank/build';
+import { planRanking, rankBookmarks as defaultRankBookmarks } from '../rank/ranker';
+import { buildRubric } from '../rank/rubric';
+import type { RankJob } from './rank';
+
+export interface RankJobDeps {
+  db: Database;
+  store: CredentialStore;
+  config: Config;
+  /** Test seam: constructs the scorer + rubric. Defaults to the real paid gate. */
+  buildRanker?: (config: Config, store: CredentialStore) => BuiltRanker;
+  /** Test seam: the ranking pass itself. Defaults to the real `rankBookmarks`. */
+  rank?: typeof defaultRankBookmarks;
+}
+
+/**
+ * Everything the server needs to offer in-app ranking: the run, plus the two
+ * questions it can answer for free (no API call, no spend) so the button can
+ * say what a run would do and why it cannot run yet.
+ */
+export interface RankWiring {
+  job: RankJob;
+  /**
+   * Why a run cannot start right now - ranking off, or the key missing - as
+   * the credential chain's own actionable sentence, or null when it can. Only
+   * a key's PRESENCE is ever consulted; its value is never read out (`AGENTS.md`).
+   */
+  blocker: () => string | null;
+  /** How many bookmarks a run would score right now. A pure DB read - no API call. */
+  pending: () => number;
+}
+
+export function createRankWiring(deps: RankJobDeps): RankWiring {
+  const build = deps.buildRanker ?? defaultBuildRanker;
+  const rank = deps.rank ?? defaultRankBookmarks;
+  const { db, store, config } = deps;
+
+  return {
+    job: async (log) => {
+      const { scorer, rubric } = build(config, store);
+      reportRankerBilling(config, rubric, log);
+      return rank(
+        { db, scorer, logger: log },
+        { rubric, concurrency: config.ranker.concurrency },
+      );
+    },
+
+    blocker: () => {
+      try {
+        requireRankerCredentials(config, store);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : 'Ranking is not available.';
+      }
+    },
+
+    // The rubric is pure (no SDK, no clock, no network), so the same selection
+    // `rank --dry-run` reports is available to the dialog for free - which is
+    // what lets it name the size of the bill before the owner authorizes it.
+    pending: () =>
+      planRanking(db, { rubric: buildRubric(config.ranker.interests), concurrency: config.ranker.concurrency })
+        .length,
+  };
+}

@@ -26,6 +26,8 @@ import {
 import { TYPESAFE_API_KEY } from '../config';
 import type { CredentialStore } from '../creds/resolve';
 import { SyncRunner, type SyncJob } from './sync';
+import { RankRunner } from './rank';
+import type { RankWiring } from './rank-job';
 import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 
 /** Directory holding the built static viewer assets (relative to this file). */
@@ -77,6 +79,17 @@ export interface ServerOptions {
    */
   credentials?: CredentialStore;
   /**
+   * The in-app ranking pass (issue #80): the run itself, plus the free
+   * questions the UI asks before offering it. Undefined leaves the "Rank now"
+   * control disabled with {@link RANK_UNAVAILABLE_MESSAGE} - which is what a
+   * test-built server, and any viewer started without the ranking wiring, gets.
+   *
+   * The paid gates live inside the wiring, not here: the job refuses itself
+   * unless ranking is opted into and a key resolves, and the route below
+   * additionally demands an explicit `{ confirm: true }`.
+   */
+  ranking?: RankWiring;
+  /**
    * Runs the one-time X OAuth consent (the same `login()` the CLI calls).
    * Undefined hides the in-app "Connect X" button and tells the owner to run
    * the CLI login instead.
@@ -87,6 +100,14 @@ export interface ServerOptions {
 /** Shown when the Sync button is pressed on a viewer with no ingest wiring. */
 export const SYNC_UNAVAILABLE_MESSAGE =
   'Syncing is not available in this viewer. Start it with `node dist/index.js serve`.';
+
+/** Shown when "Rank now" is pressed on a viewer with no ranking wiring. */
+export const RANK_UNAVAILABLE_MESSAGE =
+  'Ranking is not available in this viewer. Start it with `node dist/index.js serve`.';
+
+/** Shown when a ranking run is started without the explicit paid confirmation. */
+export const RANK_CONFIRM_MESSAGE =
+  'Ranking is PAID per token. Send { "confirm": true } to authorize a run.';
 
 /** Shown when "Connect X" is pressed on a viewer with no login wiring. */
 export const X_LOGIN_UNAVAILABLE_MESSAGE =
@@ -284,6 +305,10 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // rather than about whichever browser tab asked. A viewer with no `syncJob`
   // still answers every route below - it just reports sync as unavailable.
   const syncRunner = opts.syncJob ? new SyncRunner(opts.syncJob) : undefined;
+  // Same single-slot rule, and for a sharper reason: two ranking runs would pay
+  // twice for the same bookmarks.
+  const ranking = opts.ranking;
+  const rankRunner = ranking ? new RankRunner(ranking.job) : undefined;
   const catalog: SettingsCatalog = buildSettingsCatalog();
   const xLoginStatus: XLoginStatus = { state: 'idle', error: null };
 
@@ -294,6 +319,24 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     return resolved.value
       ? { present: true, source: resolved.source }
       : { present: false };
+  }
+
+  /**
+   * The ranking feature's whole state, as both `/api/setup` and `/api/rank`
+   * report it. Every field is a cheap local read - the counts are SQL, the
+   * blocker is a credential-presence check - so polling it costs nothing and,
+   * critically, never touches the paid API.
+   */
+  function rankingState() {
+    return {
+      scored: db.countScoredBookmarks(),
+      total: db.getBookmarkCount(),
+      available: !!rankRunner,
+      reason: rankRunner ? undefined : RANK_UNAVAILABLE_MESSAGE,
+      blocker: ranking ? ranking.blocker() : null,
+      pending: ranking ? ranking.pending() : 0,
+      status: rankRunner ? rankRunner.status() : null,
+    };
   }
 
   /**
@@ -329,12 +372,12 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       },
       // How much of the library the opt-in ranking pass has scored (issue #62),
       // so the Settings panel can say whether sorting by score will actually
-      // order anything. Two counts, not a trigger: ranking is PAID per token
-      // and is deliberately run from the CLI, never from a button in here.
-      ranking: {
-        scored: db.countScoredBookmarks(),
-        total: db.getBookmarkCount(),
-      },
+      // order anything - plus, since issue #80, everything the in-app "Rank
+      // now" control needs to decide what to offer: whether the viewer can run
+      // the pass at all, why it cannot start yet (ranking off / key missing),
+      // how many bookmarks a run would score, and the current run's progress.
+      // `blocker` and `pending` are both free to compute: no API call, no spend.
+      ranking: rankingState(),
     };
   });
 
@@ -365,6 +408,12 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // progress so the client can simply attach to it.
   app.post('/api/sync', async (_req, reply) => {
     if (!syncRunner) return reply.code(503).send({ error: SYNC_UNAVAILABLE_MESSAGE });
+    // The other half of the "never race a ranking run" rule enforced by
+    // POST /api/rank: an ingest must not store bookmarks under a run that has
+    // already chosen which ones it is paying to score.
+    if (rankRunner?.isRunning()) {
+      return reply.code(409).send({ error: 'A ranking run is in progress. Wait for it to finish, then sync.' });
+    }
     const { started, status } = syncRunner.start();
     if (!started) {
       return reply.code(409).send({ error: 'A sync is already running.', status });
@@ -380,6 +429,44 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     status: syncRunner ? syncRunner.status() : null,
     lastSyncedAt: db.getLastSyncedAt() ?? null,
   }));
+
+  // Start a ranking run (issue #80). The in-app equivalent of typing `rank`,
+  // and gated the same way plus one gate the CLI does not need:
+  //
+  //   * `{ confirm: true }` is REQUIRED. Ranking is billed per input token, so
+  //     the paid action must be an explicit authorization, never a stray POST
+  //     or a mis-click - the same rule `/api/reset` applies to a destructive
+  //     one. The viewer only sends it from a dialog that says the run is paid.
+  //   * The opt-in and the key are checked inside the job (`buildRanker` ->
+  //     `requireRankerCredentials`, opt-in FIRST), and the same check is
+  //     surfaced up front as `ranking.blocker` so the control explains itself
+  //     rather than failing on press. It is re-checked here so a direct POST
+  //     cannot skip past the UI's copy of the answer.
+  //   * A sync is refused as a concurrent run: an ingest is storing the very
+  //     bookmarks a run would be selecting, and paying to score a half-written
+  //     library helps nobody.
+  //
+  // Like a sync it returns at once (202) and the client polls GET /api/rank.
+  app.post<{ Body?: { confirm?: unknown } }>('/api/rank', async (req, reply) => {
+    if (!rankRunner || !ranking) return reply.code(503).send({ error: RANK_UNAVAILABLE_MESSAGE });
+    if ((req.body ?? {}).confirm !== true) {
+      return reply.code(400).send({ error: RANK_CONFIRM_MESSAGE });
+    }
+    const blocker = ranking.blocker();
+    if (blocker) return reply.code(403).send({ error: blocker });
+    if (syncRunner?.isRunning()) {
+      return reply.code(409).send({ error: 'A sync is running. Wait for it to finish, then rank.' });
+    }
+    const { started, status } = rankRunner.start();
+    if (!started) {
+      return reply.code(409).send({ error: 'A ranking run is already running.', status });
+    }
+    return reply.code(202).send({ status });
+  });
+
+  // The current (or last) ranking run's progress, plus the counts the Order
+  // control's hint reads - so one poll refreshes both.
+  app.get('/api/rank', async () => ({ ranking: rankingState() }));
 
   // Run the one-time X OAuth consent. Like a sync it is started, not awaited:
   // it blocks on the owner approving a consent page in another tab, which no
@@ -419,8 +506,12 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (syncRunner?.isRunning()) {
       return reply.code(409).send({ error: 'A sync is running. Wait for it to finish, then reset.' });
     }
+    if (rankRunner?.isRunning()) {
+      return reply.code(409).send({ error: 'A ranking run is in progress. Wait for it to finish, then reset.' });
+    }
     db.resetLibrary();
     syncRunner?.clear();
+    rankRunner?.clear();
     return { ok: true, bookmarkCount: db.getBookmarkCount() };
   });
 

@@ -918,6 +918,16 @@ describe('ranking score on the bookmark API (issue #62)', () => {
   it('reports how much of the library is ranked, so the viewer can say whether sorting will order anything', async () => {
     score('high', 0.9);
     const res = await app.inject({ url: '/api/setup' });
-    expect((res.json() as { ranking: unknown }).ranking).toEqual({ scored: 1, total: 2 });
+    // Since issue #80 the same block also carries what the in-app "Rank now"
+    // control needs; this server is built without the ranking wiring, so it
+    // reports the pass as unavailable rather than offering a paid button.
+    expect((res.json() as { ranking: unknown }).ranking).toMatchObject({
+      scored: 1,
+      total: 2,
+      available: false,
+      pending: 0,
+      blocker: null,
+      status: null,
+    });
   });
 });

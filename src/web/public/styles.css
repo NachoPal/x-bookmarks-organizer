@@ -2599,6 +2599,82 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   }
 }
 
+/* ---- In-app ranking run (PAID, confirm-gated - issue #80) ---------------- */
+/* Sits in the sync popover between the Sync button and Reset: the same kind of
+   deliberate, whole-library action, and like Reset it never fires on one
+   press - the button opens a confirmation that names the cost first. */
+.sync-rank {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.sync-subheading {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.sync-rank-note {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+/* Why the button is disabled, in the panel itself - a disabled control whose
+   only explanation is a tooltip is a dead end on touch. */
+.sync-rank-blocker {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  /* The credential chain writes these messages as deliberate lines - "what is
+     wrong", then "the command that fixes it", then "what is unaffected". HTML
+     would collapse them into one block of prose, so the breaks are kept. */
+  white-space: pre-line;
+  /* `break-word`, not `anywhere`: a long env var name must not overflow the
+     panel, but it should move to the next line intact before it is split. */
+  overflow-wrap: break-word;
+}
+.rank-btn.is-ranking {
+  cursor: progress;
+  opacity: 1;
+}
+
+/* The confirmation's cost callout. Amber, not red: spending money is not an
+   error - but it is carried by an icon and the words as well as the tint. */
+.rank-cost {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  border-left: 3px solid var(--color-favorite);
+  border-radius: var(--radius-sm);
+  background: var(--color-favorite-soft);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+}
+.rank-cost-icon {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.05rem;
+  color: var(--color-favorite);
+}
+.rank-cost-text {
+  min-width: 0;
+  font-weight: 600;
+}
+
 /* ---- Reset library (destructive, local only) + guided first run ---------- */
 .btn-danger {
   background: var(--color-danger-soft);

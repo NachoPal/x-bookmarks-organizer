@@ -182,6 +182,15 @@
                             </svg>
                             <span class="sync-btn-label">Sync</span>
                           </button>
+              <div class="sync-rank">
+                <h3 class="sync-subheading">Ranking</h3>
+                <p id="rank-coverage" class="sync-rank-note">Loading…</p>
+                <button id="rank-open" class="btn btn-secondary rank-btn" type="button">
+                  <span class="rank-btn-label">Rank now</span>
+                </button>
+                <p id="rank-blocker" class="sync-rank-blocker" hidden></p>
+              </div>
+
               <div class="sync-reset">
                 <p class="sync-reset-note">Start over from an empty library. Your X sign-in is kept.</p>
                 <button id="reset-open" class="btn btn-danger" type="button">Reset library</button>
@@ -268,8 +277,8 @@
                   </label>
                 </div>
                 <p id="sort-order-hint" class="settings-hint">
-                  Top score needs the ranking pass, which is paid per token and runs from the
-                  command line: <code>node dist/index.js rank</code>.
+                  Top score needs the ranking pass, which is paid per token. Start a run from
+                  &ldquo;Rank now&rdquo; in the sync panel.
                 </p>
               </div>
 
@@ -384,6 +393,29 @@
             class="icon-btn sync-progress-dismiss"
             type="button"
             aria-label="Dismiss sync status"
+            hidden
+          >
+            <span class="icon-x" aria-hidden="true"></span>
+          </button>
+        </div>
+
+        <div id="rank-progress" class="sync-progress" role="status" aria-live="polite" hidden>
+          <span id="rank-progress-icon" class="sync-progress-icon" aria-hidden="true"></span>
+          <div class="sync-progress-body">
+            <p id="rank-progress-text" class="sync-progress-text"></p>
+            <details id="rank-progress-details" class="sync-progress-details" hidden>
+              <summary class="sync-progress-summary">Details</summary>
+              <ol id="rank-progress-log" class="sync-progress-log"></ol>
+            </details>
+          </div>
+          <button id="rank-progress-retry" class="btn btn-secondary sync-progress-btn" type="button" hidden>
+            Try again
+          </button>
+          <button
+            id="rank-progress-dismiss"
+            class="icon-btn sync-progress-dismiss"
+            type="button"
+            aria-label="Dismiss ranking status"
             hidden
           >
             <span class="icon-x" aria-hidden="true"></span>
@@ -511,6 +543,55 @@
       </div>
     </div>
 
+    <div id="rank-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="rank-modal"
+      class="reader-modal setup-modal"
+      hidden
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="rank-modal-title"
+      aria-describedby="rank-modal-cost"
+    >
+      <div class="setup-panel reset-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="rank-modal-title" class="setup-title">Start a paid ranking run?</h2>
+          </div>
+        </div>
+        <div class="reset-body">
+          <p id="rank-modal-cost" class="rank-cost">
+            <svg class="rank-cost-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M12.4 7.4A3 3 0 0 0 10 6.3c-1.4 0-2.4.7-2.4 1.8 0 2.5 5 1.2 5 3.8 0 1.1-1.1 1.8-2.6 1.8a3.2 3.2 0 0 1-2.5-1.1"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+              <line x1="10" y1="4.6" x2="10" y2="15.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span id="rank-modal-cost-text" class="rank-cost-text"></span>
+          </p>
+          <p class="reset-text">
+            Each bookmark is scored once for learning value, and the score is what the
+            <strong>Top score</strong> order reads. Your bookmarks, categories and summaries are
+            not modified.
+          </p>
+          <p class="reset-text reset-text-muted">
+            You can close the app while it runs; a bookmark that has already been scored is never
+            paid for twice.
+          </p>
+          <p id="rank-modal-error" class="setup-error" hidden></p>
+        </div>
+        <div class="setup-footer">
+          <button id="rank-cancel" class="btn btn-secondary" type="button">Cancel</button>
+          <button id="rank-confirm" class="btn btn-primary" type="button">Rank bookmarks</button>
+        </div>
+      </div>
+    </div>
+
     <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="false"></div>
 
     <div id="summary-backdrop" class="reader-backdrop" hidden></div>
@@ -551,6 +632,7 @@
     <script src="filter-cache.js" defer></script>
     <script src="view-persist.js" defer></script>
     <script src="sort-order.js" defer></script>
+    <script src="ranking.js" defer></script>
     <script src="categorization.js" defer></script>
     <script src="app.js" defer></script>
   </body>
