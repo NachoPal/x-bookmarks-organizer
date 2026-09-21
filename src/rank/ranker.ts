@@ -35,6 +35,15 @@ export interface RankOptions {
   rescoreAll?: boolean;
   /** Stop after this many bookmarks - a cost ceiling for a first look. */
   limit?: number;
+  /**
+   * Narrow the run to these bookmark ids (issue #98's per-post rank).
+   *
+   * A FILTER over the normal selection, never a way around it: an id that is
+   * already current under this rubric is not a candidate and is therefore not
+   * re-scored, so the one-post path can no more spend twice on the same
+   * bookmark than the whole pass can.
+   */
+  bookmarkIds?: number[];
   /** Injected clock, so a test can assert the stored timestamp. */
   now?: () => string;
 }
@@ -85,11 +94,14 @@ async function forEachWithConcurrency<T>(
  * authorizing one.
  */
 export function planRanking(db: Database, options: RankOptions): StoredBookmark[] {
-  return db.getBookmarksToScore({
+  const candidates = db.getBookmarksToScore({
     rubricVersion: options.rubric.version,
     ...(options.rescoreAll ? { rescoreAll: true } : {}),
     ...(options.limit != null ? { limit: options.limit } : {}),
   });
+  if (!options.bookmarkIds) return candidates;
+  const wanted = new Set(options.bookmarkIds);
+  return candidates.filter((bookmark) => wanted.has(bookmark.id));
 }
 
 export async function rankBookmarks(deps: RankDeps, options: RankOptions): Promise<RankSummary> {

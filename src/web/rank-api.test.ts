@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { buildServer, RANK_CONFIRM_MESSAGE, RANK_UNAVAILABLE_MESSAGE } from './server';
+import {
+  buildServer,
+  RANK_CONFIRM_MESSAGE,
+  RANK_ONE_CONFIRM_MESSAGE,
+  RANK_UNAVAILABLE_MESSAGE,
+} from './server';
 import { Database } from '../db/database';
 import type { RankSummary } from '../rank/ranker';
 import type { RankWiring } from './rank-job';
@@ -64,6 +69,10 @@ describe('POST /api/rank and GET /api/rank', () => {
         ? undefined
         : {
             job: async () => {
+              runs++;
+              return summary;
+            },
+            rankOne: async () => {
               runs++;
               return summary;
             },
@@ -353,6 +362,125 @@ describe('POST /api/rank and GET /api/rank', () => {
       await serve();
       const body = (await app.inject({ url: '/api/setup' })).json();
       expect(JSON.stringify(body)).not.toMatch(/TYPESAFE_API_KEY.{0,40}=|sk-|secret-value/);
+    });
+  });
+
+  // ---- POST /api/bookmarks/:id/rank (issue #98) --------------------------
+  // The card's empty score badge. One bookmark is still a billed call, so it
+  // carries every gate the whole-library run does - these tests exist to stop
+  // the narrower scope quietly becoming the looser one.
+  describe('POST /api/bookmarks/:id/rank', () => {
+    const one = (id: number, body?: unknown) =>
+      app.inject({
+        method: 'POST',
+        url: `/api/bookmarks/${id}/rank`,
+        ...(body === undefined ? {} : { payload: body }),
+      });
+
+    const firstId = () => db.getBookmarkByPostId('1')!.id;
+
+    it('refuses without the explicit paid confirmation', async () => {
+      await serve();
+      expect((await one(firstId(), {})).statusCode).toBe(400);
+      expect((await one(firstId(), {})).json().error).toBe(RANK_ONE_CONFIRM_MESSAGE);
+      expect((await one(firstId())).statusCode).toBe(400);
+      for (const confirm of ['true', 1, 'yes', {}, null]) {
+        expect((await one(firstId(), { confirm })).statusCode).toBe(400);
+      }
+      expect(runs).toBe(0);
+    });
+
+    it('refuses with 403 and the gate’s own words when ranking is off or the key is missing', async () => {
+      await serve({ wiring: { blocker: () => 'Missing credential: TYPESAFE_API_KEY. Set it in your .env.' } });
+      const res = await one(firstId(), { confirm: true });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toMatch(/TYPESAFE_API_KEY/);
+      expect(runs).toBe(0);
+    });
+
+    it('degrades with 503 on a viewer with no ranking wiring', async () => {
+      await serve({ wiring: null });
+      const res = await one(firstId(), { confirm: true });
+      expect(res.statusCode).toBe(503);
+      expect(res.json().error).toBe(RANK_UNAVAILABLE_MESSAGE);
+    });
+
+    it('404s an unknown bookmark - and checks the blocker BEFORE it looks', async () => {
+      await serve();
+      expect((await one(999_999, { confirm: true })).statusCode).toBe(404);
+      expect(runs).toBe(0);
+      expect((await one(Number.NaN, { confirm: true })).statusCode).toBe(400);
+    });
+
+    it('scores exactly the bookmark asked for, and nothing else', async () => {
+      await serve({
+        wiring: {
+          rankOne: async (bookmarkId, log) => {
+            log('Ranking pass: TypeSafe Jev - pay-per-token.');
+            db.saveBookmarkScore({
+              bookmarkId,
+              score: 0.75,
+              confidence: 0.6,
+              dimensions: { depth: 0.8 },
+              model: 'jev-test',
+              rubricVersion: 'v1',
+              scoredAt: '2026-01-01T00:00:00.000Z',
+            });
+            return { candidates: 1, scored: 1, skipped: 0, failed: 0, inputTokens: 120 };
+          },
+        },
+      });
+
+      const res = await one(firstId(), { confirm: true });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.score).toMatchObject({ value: 0.75, confidence: 0.6 });
+      expect(body.summary).toMatchObject({ scored: 1, inputTokens: 120 });
+      // The billing line rides the same stream a whole run's does, so a paid
+      // call is announced even at this size.
+      expect(body.messages[0]).toMatch(/pay-per-token/);
+      // Exactly one of the two stored bookmarks gained a score.
+      expect(body.ranking).toMatchObject({ scored: 1, total: 2 });
+      expect(db.getBookmarkScores([db.getBookmarkByPostId('2')!.id]).size).toBe(0);
+    });
+
+    it('reports a failed call as its own actionable message, not a crash', async () => {
+      await serve({
+        wiring: {
+          rankOne: async () => {
+            throw new Error('TypeSafe request failed: 401 unauthorized.');
+          },
+        },
+      });
+      const res = await one(firstId(), { confirm: true });
+      expect(res.statusCode).toBe(502);
+      expect(res.json().error).toContain('401');
+    });
+
+    it('refuses while a whole-library run or a sync is in flight', async () => {
+      let releaseRank = () => {};
+      let releaseSync = () => {};
+      await serve({
+        wiring: { job: () => new Promise<RankSummary>((resolve) => (releaseRank = () => resolve(summary))) },
+        syncJob: () =>
+          new Promise((resolve) => {
+            releaseSync = () => resolve({ newBookmarks: 0, batches: 0, nodesCreated: 0 });
+          }),
+      });
+
+      await post({ confirm: true });
+      const duringRank = await one(firstId(), { confirm: true });
+      expect(duringRank.statusCode).toBe(409);
+      expect(duringRank.json().error).toMatch(/ranking run is in progress/i);
+      releaseRank();
+      await settle();
+
+      await app.inject({ method: 'POST', url: '/api/sync' });
+      const duringSync = await one(firstId(), { confirm: true });
+      expect(duringSync.statusCode).toBe(409);
+      expect(duringSync.json().error).toMatch(/sync is running/i);
+      releaseSync();
+      await settle();
     });
   });
 });

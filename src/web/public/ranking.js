@@ -61,20 +61,45 @@
   }
 
   /**
-   * The standing line under the control: how much of the library is scored,
-   * and how much a run would cover. It describes the library, not the button,
-   * so it is shown whether or not a run can start.
+   * How many stored bookmarks carry no score at all.
+   *
+   * Derived from the setup counts and nothing else, which is what keeps the
+   * notification honest: a sync that stores new bookmarks raises it the moment
+   * `/api/setup` is re-read, and a finished run drops it to zero. It is
+   * deliberately NOT `pending` - that is the ranker's own selection, which
+   * also picks up bookmarks scored under an older rubric, and re-scoring an
+   * already-judged post is not what "unranked" means to the owner.
+   */
+  function unrankedCount(ranking) {
+    var r = state(ranking);
+    return Math.max(0, (r.total || 0) - (r.scored || 0));
+  }
+
+  /**
+   * Whether the ranking icon should carry its "something is unranked" dot
+   * (issue #98) - in practice, right after a sync added bookmarks.
+   *
+   * Gated on the viewer actually HAVING the ranking wiring: a dot is an
+   * invitation to act, and a viewer that cannot rank at all has nothing to
+   * invite. A missing KEY is a different matter - there the dot is correct and
+   * the popover explains what to fix.
+   */
+  function hasUnranked(ranking) {
+    return state(ranking).available === true && unrankedCount(ranking) > 0;
+  }
+
+  /**
+   * The standing line under the control: how much of the library still needs
+   * ranking. It describes the library, not the button, so it is shown whether
+   * or not a run can start - and it is phrased around what is LEFT (issue
+   * #98), because that is the number the icon's dot stands for.
    */
   function coverageLine(ranking) {
     var r = state(ranking);
     if (r.total === 0) return "Nothing is ranked yet.";
-    if (r.scored === 0) {
-      return "None of your " + plural(r.total, "bookmark", "bookmarks") + " are ranked.";
-    }
-    if (r.scored >= r.total && !r.pending) {
-      return "All " + plural(r.total, "bookmark", "bookmarks") + " are ranked.";
-    }
-    return r.scored + " of " + plural(r.total, "bookmark", "bookmarks") + " are ranked.";
+    var left = unrankedCount(r);
+    if (left === 0) return "All " + plural(r.total, "bookmark", "bookmarks") + " are ranked.";
+    return left + " of " + plural(r.total, "bookmark", "bookmarks") + " unranked.";
   }
 
   /**
@@ -137,8 +162,63 @@
     return "";
   }
 
+  /**
+   * Why ranking ONE post cannot start, or null when it can (issue #98).
+   *
+   * The same gates as a full run minus the "there is nothing to score" one:
+   * that question is answered by the card itself - an empty badge is only ever
+   * rendered for a bookmark with no score - so re-asking it against the
+   * library-wide selection would disable the affordance on a library whose
+   * only unranked post is the one being pressed.
+   */
+  function singleRankBlocker(ranking) {
+    var r = state(ranking);
+    if (!r.available) return r.reason || "Ranking is not available in this viewer.";
+    return r.blocker || null;
+  }
+
+  /** The one-post confirmation: the price first, the (single) scope second. */
+  function confirmCostOne() {
+    return (
+      "This is a paid run: this one bookmark is scored through the TypeSafe/Jev API, " +
+      "billed per input token. 1 bookmark would be scored now."
+    );
+  }
+
+  function confirmLabelOne() {
+    return "Rank this bookmark";
+  }
+
+  /**
+   * Which job the ONE shared progress strip is showing (issue #98).
+   *
+   * Sync and ranking both write their progress into the same strip now, which
+   * is only safe because the server refuses to run them at once (`/api/sync`
+   * and `/api/rank` each 409 on the other). So: a RUNNING job always wins, and
+   * with neither running the one that started most recently keeps the strip -
+   * the owner is looking at the run they just watched, not at a stale one.
+   * Null means neither has anything to show and the strip stays hidden.
+   */
+  function progressSource(syncStatus, rankStatus) {
+    var live = function (s) { return s && s.state && s.state !== "idle" ? s : null; };
+    var sync = live(syncStatus);
+    var rank = live(rankStatus);
+    if (!sync && !rank) return null;
+    if (!sync) return "rank";
+    if (!rank) return "sync";
+    if (rank.state === "running" && sync.state !== "running") return "rank";
+    if (sync.state === "running" && rank.state !== "running") return "sync";
+    return (rank.startedAt || "") >= (sync.startedAt || "") ? "rank" : "sync";
+  }
+
   var api = {
     rankBlocker: rankBlocker,
+    singleRankBlocker: singleRankBlocker,
+    unrankedCount: unrankedCount,
+    hasUnranked: hasUnranked,
+    confirmCostOne: confirmCostOne,
+    confirmLabelOne: confirmLabelOne,
+    progressSource: progressSource,
     canRank: canRank,
     isRunning: isRunning,
     coverageLine: coverageLine,

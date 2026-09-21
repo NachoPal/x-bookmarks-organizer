@@ -864,7 +864,7 @@ what stops two scales being sorted against each other, and it is why `buildRubri
 zero"** - every consumer must honor that, which is why `sort=score` puts unranked bookmarks LAST -
 in BOTH directions, since #97 (`sc.score IS NULL` is sorted ascending whichever way the score
 itself runs; flipping it would claim the model judged an unjudged post worst of all) - and the
-viewer renders no chip at all rather than a zero.
+viewer renders the hollow "not ranked" badge (issue #98) rather than a zero.
 
 Surface: `score` on every listed bookmark (a pure cache read in `toViewerBookmarks`, empty when
 ranking was never run), `?sort=score` on `/api/categories/:id/bookmarks` (server-side, because
@@ -1000,11 +1000,50 @@ The ranker's knobs stay OUT of the settings panel on purpose: what turns a run i
 confirmation, and burying a paid feature's switch among post-size and sort preferences would invite
 exactly the careless click gate 2 exists to stop. The control lives in its OWN top-bar popover
 (`#rank-toggle` / `#rank-panel`, an up/down-arrows icon immediately LEFT of the sync icon), not in
-the sync panel - ranking is not part of syncing, and the run's progress strip moved there with it.
-The icon itself carries the running state (`.rank-toggle.is-ranking`), since a run outlives the
-popover being open. Tests are offline end to end (`rank-job.test.ts`,
-`rank-api.test.ts`, `ranking.test.ts`); never let one reach `api.typesafe.ai`, and never make a real
-Jev call to validate a change here.
+the sync panel - ranking is not part of syncing. The icon itself carries the running state
+(`.rank-toggle.is-ranking`) and the backlog dot (below), since both outlive the popover being open.
+Tests are offline end to end (`rank-job.test.ts`, `rank-api.test.ts`, `ranking.test.ts`,
+`ranking-view.test.ts`); never let one reach `api.typesafe.ai`, and never make a real Jev call to
+validate a change here.
+
+## Ranking UX: one strip, the unranked dot, the per-post badge (issue #98)
+
+**There is ONE progress strip and both jobs write to it.** A ranking run used to paint into its own
+strip inside the rank popover, where it was invisible the moment the panel was dismissed and in a
+different place from the sync the owner had watched a minute earlier. Both are one-at-a-time server
+jobs whose progress is their own log, and the server refuses to run them at once, so they now share
+`#sync-progress` under the filter tabs. `app.js` holds the two statuses (`syncStatusView` /
+`rankStatusView` - held there, not read off `setupState`, because several are OPTIMISTIC: a
+"Starting sync…" exists before any server confirmed anything) and the pure
+`XBORanking.progressSource` picks between them: a RUNNING job wins, otherwise the most recently
+started one. `progressOwner` is what the strip's Try again (which for a rank REOPENS the paid
+dialog - a retry is a second authorization, never a repeat of the first) and its Dismiss dispatch
+on. Do not give a new job its own strip; give it a `progressSource` case.
+
+**The icon's blue dot is derived, never stored** (`#rank-dot`, `XBORanking.hasUnranked`): it is on
+whenever `/api/setup` `ranking.scored < ranking.total` and the viewer HAS the ranking wiring, and
+the panel's coverage line names the same number ("N of M bookmarks unranked"). It is deliberately
+NOT `pending`, which also selects bookmarks scored under an older rubric - those have a verdict on
+screen, so they are not "unranked" to the owner. Because it is derived, every path that re-reads
+`/api/setup` (a finished sync, a finished run, the per-post rank) keeps it correct with no extra
+wiring. The dot is decorative (`aria-hidden`); the count is in the icon's `title` and stated in
+full by the panel, so it is never the only channel.
+
+**An unranked card carries a hollow badge, and it ranks THAT post** (`renderEmptyScoreChip`).
+"Absent score = never ranked" is unchanged - the badge shows a dash, wears a dashed outline rather
+than the scored chip's fill, and says "Not ranked yet" in its accessible name, so it can never read
+as a zero. Pressing it opens the SAME confirmation with a one-post scope (`rankOneTarget` in
+`app.js`, `confirmCostOne`/`confirmLabelOne`), which is the only place `{ confirm: true }` is sent.
+Server side it is `POST /api/bookmarks/:id/rank`, which carries every gate `POST /api/rank` does in
+the same order - confirm, `ranking.blocker()` re-checked, no racing a sync or a run - and differs
+only in shape: one bookmark is one call, so it is awaited and answers with the new score, the
+`RankSummary` and the run's log lines (the `reportRankerBilling` tag first), which the client paints
+into the shared strip. `RankWiring.rankOne` is assembled from the same `buildRanker` +
+`reportRankerBilling` + `rankBookmarks` pieces; `RankOptions.bookmarkIds` NARROWS the normal
+selection rather than bypassing it, so a second press on a bookmark already current under the
+rubric is a free no-op. When ranking is blocked the badge spends nothing and opens the ranking
+panel, which is where the cause is stated in full - never a dead control and never a bare tooltip.
+The chip is patched in place (`patchScoreChip`), so no X embed reloads.
 
 ## Categorizer comparison (`eval-categorizers`, issue #83)
 

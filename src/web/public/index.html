@@ -220,6 +220,10 @@
                   <path d="M17.2 12.6L14 15.8l-3.2-3.2" />
                 </g>
               </svg>
+              <!-- Issue #98: "there are bookmarks with no score" - typically
+                   right after a sync. Purely decorative; the same fact is in
+                   the button's aria-label and spelled out in the panel. -->
+              <span id="rank-dot" class="rank-dot" aria-hidden="true" hidden></span>
             </button>
 
             <div
@@ -243,30 +247,8 @@
               </div>
               <p class="rank-note">
                 Scoring is paid per token. A run always asks you to confirm the cost first.
+                Its progress appears in the strip under the filter tabs, next to a sync's.
               </p>
-
-              <div id="rank-progress" class="sync-progress panel-progress" role="status" aria-live="polite" hidden>
-                <span id="rank-progress-icon" class="sync-progress-icon" aria-hidden="true"></span>
-                <div class="sync-progress-body">
-                  <p id="rank-progress-text" class="sync-progress-text"></p>
-                  <details id="rank-progress-details" class="sync-progress-details" hidden>
-                    <summary class="sync-progress-summary">Details</summary>
-                    <ol id="rank-progress-log" class="sync-progress-log"></ol>
-                  </details>
-                </div>
-                <button id="rank-progress-retry" class="btn btn-secondary sync-progress-btn" type="button" hidden>
-                  Try again
-                </button>
-                <button
-                  id="rank-progress-dismiss"
-                  class="icon-btn sync-progress-dismiss"
-                  type="button"
-                  aria-label="Dismiss ranking status"
-                  hidden
-                >
-                  <span class="icon-x" aria-hidden="true"></span>
-                </button>
-              </div>
             </div>
           </div>
 
@@ -496,7 +478,7 @@
             id="sync-progress-dismiss"
             class="icon-btn sync-progress-dismiss"
             type="button"
-            aria-label="Dismiss sync status"
+            aria-label="Dismiss status"
             hidden
           >
             <span class="icon-x" aria-hidden="true"></span>

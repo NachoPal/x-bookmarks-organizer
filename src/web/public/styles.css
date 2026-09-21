@@ -2340,8 +2340,8 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
    breakdown behind it. The gauge icon plus the number carry the meaning - the
    chip never signals by color alone - and its `aria-label` is the whole
    verdict in prose, so the graph it opens is a drawing of something a screen
-   reader already has. Absent entirely for an unranked bookmark: there is no
-   "unranked" badge to show, and no zero. */
+   reader already has. An unranked bookmark gets the hollow badge below
+   instead (issue #98) - an affordance to rank that one post, never a zero. */
 .score-chip {
   flex: 0 0 auto;
   display: inline-flex;
@@ -2376,6 +2376,32 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   width: 0.9375rem;
   height: 0.9375rem;
   color: var(--color-text-muted);
+}
+/* The UNRANKED badge (issue #98). Same shape and place in the row as a real
+   chip - so nothing shifts when one fills in - but hollow and dashed, with a
+   dash where a number would be: an absent verdict is not a low score, and the
+   two must not be mistakable at a glance. It is a real action (it opens the
+   paid confirmation for this one post), so it takes a pointer cursor rather
+   than the scored chip's `help`. */
+.score-chip.is-empty {
+  border-style: dashed;
+  /* The outline is the badge's ONLY boundary once the fill is gone, so it
+     needs the 3:1 a UI boundary owes - `--color-border` reads as a boundary
+     only because a filled chip carries a surface behind it. This is the token
+     that exists for exactly that (see its note at the top of the file). */
+  border-color: var(--color-switch-off);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.score-chip.is-empty:hover {
+  border-style: solid;
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+.score-chip.is-empty:active {
+  border-color: var(--color-accent-hover);
 }
 
 /* ---- score breakdown popover -------------------------------------------
@@ -3589,9 +3615,27 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 /* A run keeps going with the panel closed, so the icon carries that state
    too - by a slow pulse AND the title, never by color alone. The global
    reduced-motion block at the end of this file flattens the animation. */
+.rank-toggle {
+  position: relative;
+}
 .rank-toggle.is-ranking {
   color: var(--color-accent);
   animation: rank-pulse 1.6s ease-in-out infinite;
+}
+/* "There are bookmarks with no score" - in practice, a sync just added some
+   (issue #98). Decorative on purpose: the count is in the icon's own title
+   and stated in full by the panel's coverage line, so the dot is never the
+   only channel. The ring is the bar's own surface, so the dot reads as a
+   badge ON the icon rather than as part of the glyph, on either theme. */
+.rank-dot {
+  position: absolute;
+  top: 0.4375rem;
+  right: 0.4375rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--color-unread);
+  box-shadow: 0 0 0 2px var(--color-surface);
 }
 @keyframes rank-pulse {
   50% {
@@ -3603,15 +3647,6 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   color: var(--color-text-muted);
   font-size: var(--text-small);
   line-height: var(--leading-body);
-}
-/* Inside a popover the progress strip is a card, not the full-bleed band it
-   is under the toolbar. */
-.panel-progress {
-  align-self: stretch;
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-bottom: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
 }
 /* Why the button is disabled, in the panel itself - a disabled control whose
    only explanation is a tooltip is a dead end on touch. */
