@@ -1012,7 +1012,16 @@
   function initSortOrder() {
     const api = sortOrderApi();
     if (!api) return;
-    activeSort = api.readSortOrder(window.localStorage);
+    // Resolved against the REMEMBERED ranking availability, not the raw stored
+    // choice (issue #104). `persistedSortKey()` has to mean the same thing on
+    // the way in as it did on the way out, and what the pages were fetched
+    // under is the resolved order - a stored "score" that is not orderable
+    // otherwise hydrated the snapshot under a key nothing was ever saved as,
+    // and every refresh re-fetched the whole view from the server.
+    activeSort = api.resolveSortOrder(
+      api.readSortOrder(window.localStorage),
+      api.rememberedRanking(window.localStorage),
+    );
     activeDir = api.readSortDirection(window.localStorage);
     renderSortBar();
     for (const input of sortFieldInputs()) {
@@ -1033,7 +1042,16 @@
   function updateSortAvailability() {
     const api = sortOrderApi();
     if (!api) return;
-    const resolved = api.resolveSortOrder(activeSort, setupState && setupState.ranking);
+    const ranking = setupState && setupState.ranking;
+    // Remember what the server just said, so the NEXT load resolves the same
+    // way this one finally did and its page snapshot is keyed to match
+    // (issue #104). Only a real answer is recorded - a failed `/api/setup`
+    // must not clear a good observation.
+    if (ranking) api.writeScoreOrderAvailable(window.localStorage, api.scoreOrderAvailable(ranking));
+    // Resolved from the STORED choice, not from `activeSort`: this load may
+    // have started on the fallback, and a finished ranking run has to be able
+    // to hand "Top score" back without the owner re-picking it.
+    const resolved = api.resolveSortOrder(api.readSortOrder(window.localStorage), ranking);
     const changed = resolved !== activeSort;
     activeSort = resolved;
     renderSortBar();
@@ -2703,6 +2721,30 @@
     renderEmbed(variant, bm, () => setRead(bm, card, true), opts);
   }
 
+  /**
+   * The post's own author + text, as the loading placeholder's content
+   * (issue #104), or null for a stored row that carries neither - there is
+   * nothing to preview then, and the bare spinner is still the honest state.
+   *
+   * `aria-hidden`: the loader is already a `role="status"` announcing
+   * "Loading post…", and the same prose is about to arrive for real in the
+   * embed (or in the fallback, which carries its own byline). Reading it twice
+   * would make a refresh of twenty posts unusable with a screen reader.
+   */
+  function renderEmbedPreview(bm) {
+    if (!bm.text && !bm.authorUsername) return null;
+    const preview = el("div", "embed-preview");
+    preview.setAttribute("aria-hidden", "true");
+    if (bm.authorUsername) {
+      const author = el("p", "embed-preview-author");
+      author.append(document.createTextNode(bm.authorName || bm.authorUsername));
+      author.appendChild(el("span", "bookmark-handle", ` @${bm.authorUsername}`));
+      preview.appendChild(author);
+    }
+    if (bm.text) preview.appendChild(el("p", "embed-preview-text", bm.text));
+    return preview;
+  }
+
   function renderEmbed(variant, bm, onOpen, opts) {
     const options = opts || {};
     // A variant can be released while its createTweet is still in flight (the
@@ -2715,14 +2757,28 @@
     const settle = () => {
       if (options.onSettled) options.onSettled();
     };
-    // Show a skeleton + spinner immediately and reveal only the finished
-    // result: the official embed once widgets.js reports it fully rendered, or
-    // the text+link fallback on failure/timeout/non-embeddable post. This
-    // avoids the previous flash where raw text showed first and then "popped"
-    // into the embed.
+    // Show a placeholder immediately and reveal only the finished result: the
+    // official embed once widgets.js reports it fully rendered, or the
+    // text+link fallback on failure/timeout/non-embeddable post.
+    //
+    // The placeholder carries the post's OWN author and text when the stored
+    // row has them (issue #104). A reload restores the whole list from the
+    // sessionStorage snapshot without a single server round trip, but every
+    // X embed still has to be rebuilt by X's widgets.js - so a list of blank
+    // shimmering boxes was the entire visible experience of a refresh, and it
+    // read as "the posts are loading again" even though no post was fetched.
+    // This narrows the earlier rule (an embed must not be preceded by raw
+    // text that then "pops"): the preview is visibly a LOADING state - muted,
+    // clamped, spinner alongside - not content presented as final, and the
+    // shimmer steps aside for it since the text is the better skeleton.
     const loader = el("div", "embed-loader");
     loader.setAttribute("role", "status");
     loader.setAttribute("aria-label", "Loading post…");
+    const preview = renderEmbedPreview(bm);
+    if (preview) {
+      loader.dataset.preview = "1";
+      loader.appendChild(preview);
+    }
     const spinner = el("span", "embed-spinner");
     spinner.setAttribute("aria-hidden", "true");
     loader.appendChild(spinner);
