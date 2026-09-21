@@ -159,6 +159,11 @@
   /* Above the top bar (a chip near the top of the content would otherwise
      open its detail UNDER the sticky bar), still below the summary modal. */
   --z-popover: 54;
+  /* The category editor's destructive confirmation (issue #101) opens OVER
+     the editor modal itself, so it needs its own pair above --z-modal. Still
+     below --z-drag, which is the pointer. */
+  --z-modal-top-backdrop: 62;
+  --z-modal-top: 64;
   /* The chip that follows the pointer while a post is dragged onto the tree
      (issue #92): above everything, because it IS the pointer. */
   --z-drag: 70;
@@ -4120,6 +4125,232 @@ body.is-card-dragging .tree-node {
   .card-grip,
   .move-btn,
   .move-row {
+    transition: none;
+  }
+}
+
+/* ============================================================
+   Category editor (issue #101)
+
+   The modal the owner adds and removes categories in. It reuses the move
+   picker's shell, but its tree is laid out the other way round: the BIN is a
+   fixed column at the far left of every row, so the destructive control sits
+   on one vertical line down the whole tree instead of stepping in with the
+   indentation. The depth is therefore carried by a spacer INSIDE the row
+   (`--ced-depth`), not by padding on the nested list.
+   ============================================================ */
+.cat-editor-panel {
+  width: min(34rem, 100%);
+  /* A floor as well as a ceiling: the tree grows and shrinks as branches are
+     opened, and a panel that resized on every twisty would make the owner
+     chase the row they were aiming at. */
+  min-height: min(26rem, 100%);
+  max-height: min(38rem, 100%);
+}
+.cat-editor-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--space-5);
+}
+.cat-editor-list,
+.ced-group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ced-group[hidden] {
+  display: none;
+}
+.ced-item {
+  border-radius: var(--radius-sm);
+}
+.ced-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 2.5rem;
+  padding: var(--space-1) var(--space-1);
+  border-radius: var(--radius-sm);
+}
+.ced-row:hover {
+  background: var(--color-surface-2);
+}
+/* The row's depth, as an inert spacer after the bin column. */
+.ced-indent {
+  flex: 0 0 auto;
+  width: calc(var(--ced-depth, 0) * var(--tree-indent));
+}
+.ced-bin,
+.ced-twisty {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+/* Muted at rest, danger once it is aimed at: a row of red bins down the whole
+   tree reads as an alarm about the tree itself rather than as a control. The
+   trash glyph is what says "destructive" at rest; the color joins in on
+   hover/focus, when it is about to be used. */
+.ced-bin:hover,
+.ced-bin:focus-visible {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+.ced-bin:active {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+.ced-bin:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+  background: none;
+}
+.ced-twisty:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+.ced-twisty .ced-chev {
+  transition: transform var(--motion-med) var(--ease);
+  font-size: 0.7rem;
+  line-height: 1;
+}
+.ced-twisty[aria-expanded="true"] .ced-chev {
+  transform: rotate(90deg);
+}
+.ced-bin .icon-trash {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+.ced-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: var(--space-1);
+  overflow-wrap: anywhere;
+}
+.ced-count {
+  flex: 0 0 auto;
+  padding-inline: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- the add affordance --------------------------------------------------- */
+.ced-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-1);
+}
+.ced-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-2);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+}
+.ced-add:hover {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+.ced-add .ced-plus {
+  font-size: 1rem;
+  line-height: 1;
+}
+/* The inline name form the add button becomes. */
+.ced-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) 0;
+}
+.ced-form .search-field {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+.ced-form-error {
+  flex: 1 1 100%;
+  margin: 0;
+}
+.ced-form .btn {
+  min-height: 2rem;
+  padding-block: var(--space-1);
+}
+
+/* --- the destructive confirmation, stacked over the editor ---------------- */
+.reader-backdrop.is-over-modal {
+  z-index: var(--z-modal-top-backdrop);
+}
+.reader-modal.is-over-modal {
+  z-index: var(--z-modal-top);
+}
+.cat-delete-skip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.cat-delete-skip input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+.cat-editor-footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+}
+.cat-editor-footer .setup-error {
+  margin: 0 var(--space-5);
+}
+
+@media (max-width: 560px) {
+  .cat-editor-tree {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+  .cat-editor-footer .setup-error {
+    margin-inline: var(--space-4);
+  }
+  /* A phone has no room for a full indent step per level AND the bin column,
+     so the step narrows rather than pushing deep names off the row. */
+  .ced-indent {
+    width: calc(var(--ced-depth, 0) * var(--space-2));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ced-bin,
+  .ced-twisty,
+  .ced-twisty .ced-chev,
+  .ced-add {
     transition: none;
   }
 }

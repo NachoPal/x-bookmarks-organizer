@@ -65,6 +65,28 @@
       <div class="sidebar-inner">
         <div class="sidebar-topbar">
           <h2 class="sidebar-heading">Categories</h2>
+          <!-- Opens the category editor (issue #101). Sits to the LEFT of the
+               colors toggle: editing the tree is a bigger deal than tinting
+               it, so it leads the pair. -->
+          <button
+            id="cat-editor-open"
+            class="icon-btn"
+            type="button"
+            aria-haspopup="dialog"
+            aria-label="Edit categories"
+            title="Edit categories"
+          >
+            <svg class="icon-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path
+                d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linejoin="round"
+              />
+              <line x1="14.5" y1="7.5" x2="17.5" y2="10.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+          </button>
           <button
             id="color-toggle"
             class="icon-btn is-toggle"
@@ -793,6 +815,92 @@
       </div>
     </div>
 
+    <!-- The category editor (issue #101): add a category anywhere in the tree,
+         or delete one. Same modal shell and dimming overlay as the move
+         picker above. It is a nested <ul> disclosure list, not an ARIA
+         `tree`: every row holds real buttons (a bin, a twisty, an add), and a
+         `tree` role would promise a single-focus keyboard contract those
+         buttons contradict. Native semantics keep Tab, Enter and Space
+         working with nothing custom to get wrong. -->
+    <div id="cat-editor-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="cat-editor-modal"
+      class="reader-modal setup-modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cat-editor-title"
+      aria-describedby="cat-editor-intro"
+    >
+      <div class="setup-panel cat-editor-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="cat-editor-title" class="setup-title">Edit categories</h2>
+            <p id="cat-editor-intro" class="setup-step-hint">
+              Add a category anywhere in the tree, or delete one. Deleting a category also
+              deletes its sub-categories, and permanently deletes any post left filed nowhere else.
+            </p>
+          </div>
+          <div class="reader-header-actions">
+            <button
+              id="cat-editor-close"
+              class="icon-btn reader-close"
+              type="button"
+              aria-label="Close the category editor"
+            >
+              <span class="icon-x" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+        <div id="cat-editor-tree" class="cat-editor-tree"></div>
+        <div class="cat-editor-footer">
+          <p id="cat-editor-error" class="setup-error" hidden></p>
+          <div class="setup-footer">
+            <button id="cat-editor-done" class="btn btn-primary" type="button">Done</button>
+          </div>
+        </div>
+      </div>
+      <p id="cat-editor-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
+    </div>
+
+    <!-- The destructive confirmation. It opens OVER the editor (its own
+         backdrop pair sits above `--z-modal`), and the counts it states are
+         always read fresh from the server immediately before it appears -
+         this deletes posts, so it never quotes a number it guessed. -->
+    <div id="cat-delete-backdrop" class="reader-backdrop is-over-modal" hidden></div>
+    <div
+      id="cat-delete-modal"
+      class="reader-modal setup-modal is-over-modal"
+      hidden
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="cat-delete-title"
+      aria-describedby="cat-delete-text"
+    >
+      <div class="setup-panel reset-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="cat-delete-title" class="setup-title">Delete this category?</h2>
+          </div>
+        </div>
+        <div class="reset-body">
+          <p id="cat-delete-text" class="reset-text"></p>
+          <p id="cat-delete-detail" class="reset-text reset-text-muted"></p>
+          <label class="cat-delete-skip" for="cat-delete-skip-input">
+            <input id="cat-delete-skip-input" type="checkbox" />
+            <span>Don&rsquo;t ask again for sub-categories</span>
+          </label>
+          <p id="cat-delete-error" class="setup-error" hidden></p>
+        </div>
+        <div class="setup-footer">
+          <button id="cat-delete-cancel" class="btn btn-secondary" type="button">Cancel</button>
+          <button id="cat-delete-confirm" class="btn btn-danger" type="button" disabled>
+            Delete category
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- The chip that follows the pointer while a card is dragged onto the
          tree (issue #92). Mounted on <body>, out of the cards: a bookmark
          card carries `contain: layout` and the post-size `zoom`, either of
@@ -858,6 +966,7 @@
     <script src="card-drag.js" defer></script>
     <script src="embed-theme.js" defer></script>
     <script src="categorization.js" defer></script>
+    <script src="category-editor.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

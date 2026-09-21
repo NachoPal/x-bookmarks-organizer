@@ -669,6 +669,11 @@
       if (e.key !== "Escape" || isCollapsed()) return;
       // The settings popover and the setup dialog each own Escape while open.
       if (popovers.some(isPopoverOpen) || isSetupOpen()) return;
+      // So does any modal dialog over the tree. Without this, Escape closed
+      // the dialog AND collapsed the drawer behind it - which for the
+      // category editor also stranded focus, because the pencil it returns
+      // the keyboard to is inside the drawer that just went `inert`.
+      if (isCatEditorOpen() || isCatDeleteOpen() || isMovePickerOpen()) return;
       setCollapsed(true);
     });
   }
@@ -4149,6 +4154,534 @@
     }
   }
 
+  // ---- category editor (issue #101) ---------------------------------------
+  // Add a category anywhere in the tree, or delete one. A delete cascades to
+  // the sub-categories AND permanently deletes every post the cascade would
+  // leave filed nowhere else (the owner's rule), so the destructive half of
+  // this section is deliberately slow and loud: the counts are read fresh
+  // from the server immediately before they are shown, the dialog names them,
+  // and "don't ask again" can never silence a ROOT delete.
+  //
+  // The tree here is a nested <ul> DISCLOSURE list, not an ARIA `tree`: each
+  // row carries real buttons (a bin, a twisty, an add), which is the opposite
+  // of a tree's single-focus keyboard contract. Native semantics mean Tab,
+  // Enter and Space all work with nothing custom to promise.
+
+  const catEditorOpenBtn = document.getElementById("cat-editor-open");
+  const catEditorModalEl = document.getElementById("cat-editor-modal");
+  const catEditorBackdropEl = document.getElementById("cat-editor-backdrop");
+  const catEditorTreeEl = document.getElementById("cat-editor-tree");
+  const catEditorErrorEl = document.getElementById("cat-editor-error");
+  const catEditorDoneBtn = document.getElementById("cat-editor-done");
+  const catEditorCloseBtn = document.getElementById("cat-editor-close");
+  const catEditorAnnouncerEl = document.getElementById("cat-editor-announcer");
+
+  const catDeleteModalEl = document.getElementById("cat-delete-modal");
+  const catDeleteBackdropEl = document.getElementById("cat-delete-backdrop");
+  const catDeleteTextEl = document.getElementById("cat-delete-text");
+  const catDeleteDetailEl = document.getElementById("cat-delete-detail");
+  const catDeleteSkipInput = document.getElementById("cat-delete-skip-input");
+  const catDeleteErrorEl = document.getElementById("cat-delete-error");
+  const catDeleteCancelBtn = document.getElementById("cat-delete-cancel");
+  const catDeleteConfirmBtn = document.getElementById("cat-delete-confirm");
+
+  /** Open state: the trigger to hand focus back to, and which rows are open. */
+  let catEditor = null;
+  /** The pending destructive confirmation: its node, its counts, its trigger. */
+  let catDelete = null;
+
+  function editor() {
+    return window.XBOCategoryEditor;
+  }
+
+  function isCatEditorOpen() {
+    return !!catEditorModalEl && !catEditorModalEl.hidden;
+  }
+
+  function isCatDeleteOpen() {
+    return !!catDeleteModalEl && !catDeleteModalEl.hidden;
+  }
+
+  function announceCatEditor(message) {
+    if (catEditorAnnouncerEl) catEditorAnnouncerEl.textContent = message;
+  }
+
+  function showCatEditorError(message) {
+    if (!catEditorErrorEl) return;
+    catEditorErrorEl.textContent = message || "";
+    catEditorErrorEl.hidden = !message;
+  }
+
+  function openCategoryEditor(triggerEl) {
+    if (!catEditorModalEl || !editor()) return;
+    // Start from the expansion state the sidebar is showing, so the editor
+    // opens on the part of the tree the owner is already looking at.
+    const expanded = new Set();
+    for (const [id, open] of expansionState) if (open) expanded.add(id);
+    catEditor = { trigger: triggerEl, expanded, adding: undefined, busy: false };
+    showCatEditorError(null);
+    renderCategoryEditor();
+    catEditorBackdropEl.hidden = false;
+    catEditorModalEl.hidden = false;
+    catEditorCloseBtn.focus();
+    document.addEventListener("keydown", onCatEditorKeydown);
+  }
+
+  function closeCategoryEditor() {
+    if (!isCatEditorOpen()) return;
+    if (isCatDeleteOpen()) closeCatDelete({ returnFocus: false });
+    catEditorModalEl.hidden = true;
+    catEditorBackdropEl.hidden = true;
+    document.removeEventListener("keydown", onCatEditorKeydown);
+    const trigger = catEditor && catEditor.trigger;
+    catEditor = null;
+    if (trigger && trigger.isConnected) trigger.focus();
+  }
+
+  /** Every id in `node`'s subtree, which is exactly what a delete removes. */
+  function catSubtreeIds(node) {
+    const out = [];
+    const walk = (n) => {
+      out.push(n.id);
+      for (const child of n.children || []) walk(child);
+    };
+    if (node) walk(node);
+    return out;
+  }
+
+  // --- rendering ------------------------------------------------------------
+
+  function renderCategoryEditor() {
+    if (!catEditor) return;
+    const list = el("ul", "cat-editor-list");
+    // The root-level add leads the list, so "a new top-level category" is the
+    // first thing the editor offers - and the one affordance an empty library
+    // still needs.
+    list.appendChild(buildCatAddRow(null, 0));
+    if (treeRoots.length === 0) {
+      const empty = el("li", "ced-empty-row");
+      empty.appendChild(
+        el("p", "state state-empty", "No categories yet. Add one above, or run a sync to build them."),
+      );
+      list.appendChild(empty);
+    } else {
+      buildCatEditorNodes(treeRoots, list, 0);
+    }
+    catEditorTreeEl.replaceChildren(list);
+  }
+
+  function catIsExpanded(node) {
+    return !!catEditor && catEditor.expanded.has(node.id);
+  }
+
+  function buildCatEditorNodes(nodes, parentList, depth) {
+    for (const node of nodes) {
+      const hasChildren = !!(node.children && node.children.length);
+      const expanded = catIsExpanded(node);
+      const groupId = `ced-group-${node.id}`;
+
+      const li = el("li", "ced-item");
+      const row = el("div", "ced-row");
+      row.style.setProperty("--ced-depth", String(depth));
+
+      const bin = el("button", "ced-bin");
+      bin.type = "button";
+      bin.dataset.categoryId = String(node.id);
+      bin.setAttribute("aria-label", `Delete “${node.name}”`);
+      bin.title = `Delete “${node.name}”`;
+      bin.appendChild(trashIcon());
+      bin.addEventListener("click", () => void requestCategoryDelete(node, bin));
+      row.appendChild(bin);
+
+      const indent = el("span", "ced-indent");
+      indent.setAttribute("aria-hidden", "true");
+      row.appendChild(indent);
+
+      // EVERY node gets a twisty here, including a leaf - unlike the sidebar,
+      // where one would open on nothing. Opening a leaf reveals the "+" that
+      // files a child under it, and without that a category with no children
+      // yet (every category the owner has just created) would be a dead end.
+      const twisty = el("button", "ced-twisty");
+      twisty.type = "button";
+      twisty.setAttribute("aria-expanded", String(expanded));
+      twisty.setAttribute("aria-controls", groupId);
+      twisty.setAttribute(
+        "aria-label",
+        expanded
+          ? `Collapse “${node.name}”`
+          : hasChildren
+            ? `Expand “${node.name}”`
+            : `Open “${node.name}” to add a category in it`,
+      );
+      const chev = el("span", "ced-chev", "▶");
+      chev.setAttribute("aria-hidden", "true");
+      twisty.appendChild(chev);
+      twisty.addEventListener("click", () => setCatEditorExpanded(node.id, !expanded));
+      row.appendChild(twisty);
+
+      row.appendChild(el("span", "ced-name", node.name));
+      const count = el("span", "ced-count", String(node.total));
+      count.setAttribute("aria-label", `${node.total} bookmarks`);
+      row.appendChild(count);
+      li.appendChild(row);
+
+      // The group holds this node's children AND the one "+" that files a
+      // new child under it - which is what "one add per level" means here.
+      const group = el("ul", "ced-group");
+      group.id = groupId;
+      if (hasChildren) buildCatEditorNodes(node.children, group, depth + 1);
+      group.appendChild(buildCatAddRow(node, depth + 1));
+      group.hidden = !expanded;
+      li.appendChild(group);
+      parentList.appendChild(li);
+    }
+  }
+
+  /**
+   * The "+" for `parent` (null: a new root) - or, once it is pressed, the
+   * inline name form it becomes. One per level, and the form replaces the
+   * button in place so the owner's eye never leaves where the category lands.
+   */
+  function buildCatAddRow(parent, depth) {
+    const parentId = parent ? parent.id : null;
+    const li = el("li", "ced-add-row");
+    li.style.setProperty("--ced-depth", String(depth));
+    const indent = el("span", "ced-indent");
+    indent.setAttribute("aria-hidden", "true");
+    li.appendChild(indent);
+
+    if (catEditor && catEditor.adding === parentId) {
+      li.appendChild(buildCatAddForm(parent));
+      return li;
+    }
+
+    const btn = el("button", "ced-add");
+    btn.type = "button";
+    const plus = el("span", "ced-plus", "+");
+    plus.setAttribute("aria-hidden", "true");
+    btn.appendChild(plus);
+    btn.appendChild(
+      el("span", null, parent ? `Add a category in “${parent.name}”` : "Add a top-level category"),
+    );
+    btn.addEventListener("click", () => startCatAdd(parentId));
+    li.appendChild(btn);
+    return li;
+  }
+
+  function buildCatAddForm(parent) {
+    const parentId = parent ? parent.id : null;
+    const form = el("form", "ced-form");
+    const fieldId = `ced-name-${parentId == null ? "root" : parentId}`;
+    const errorId = `${fieldId}-error`;
+
+    const label = el("label", "visually-hidden", parent ? `Name of the new category in ${parent.name}` : "Name of the new top-level category");
+    label.setAttribute("for", fieldId);
+    form.appendChild(label);
+
+    const field = el("div", "search-field");
+    const input = el("input", "search-input");
+    input.id = fieldId;
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    field.appendChild(input);
+    form.appendChild(field);
+
+    const save = el("button", "btn btn-primary", "Add");
+    save.type = "submit";
+    const cancel = el("button", "btn btn-secondary", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => {
+      cancelCatAdd(parentId);
+    });
+    form.append(save, cancel);
+
+    const error = el("p", "setup-error ced-form-error");
+    error.id = errorId;
+    error.hidden = true;
+    form.appendChild(error);
+
+    const fail = (message) => {
+      error.textContent = message;
+      error.hidden = false;
+      input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", errorId);
+      input.focus();
+    };
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const siblings = editor().siblingsOf(treeRoots, parentId);
+      const check = editor().validateName(input.value, siblings);
+      if (!check.ok) {
+        fail(check.error);
+        return;
+      }
+      error.hidden = true;
+      input.removeAttribute("aria-invalid");
+      save.disabled = true;
+      save.classList.add("is-loading");
+      // The typed value is never cleared on a failure - it is the owner's
+      // input, and the fix is usually one character.
+      void createCategory(check.name, parentId).catch((err) => {
+        save.disabled = false;
+        save.classList.remove("is-loading");
+        fail(err.message || "Could not add that category.");
+      });
+    });
+    // Escape backs out of the form without closing the whole editor.
+    form.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelCatAdd(parentId);
+    });
+    queueMicrotask(() => input.focus());
+    return form;
+  }
+
+  function setCatEditorExpanded(id, open) {
+    if (!catEditor) return;
+    if (open) catEditor.expanded.add(id);
+    else catEditor.expanded.delete(id);
+    renderCategoryEditor();
+    focusCatEditorRow(id);
+  }
+
+  function startCatAdd(parentId) {
+    if (!catEditor) return;
+    showCatEditorError(null);
+    catEditor.adding = parentId;
+    // A category can only take a child where its children are visible.
+    if (parentId != null) catEditor.expanded.add(parentId);
+    renderCategoryEditor();
+  }
+
+  function cancelCatAdd(parentId) {
+    if (!catEditor) return;
+    catEditor.adding = undefined;
+    renderCategoryEditor();
+    const back = parentId == null
+      ? catEditorTreeEl.querySelector(".ced-add")
+      : catEditorTreeEl.querySelector(`.ced-bin[data-category-id="${parentId}"]`);
+    if (back) back.focus();
+  }
+
+  /** Put focus back on a row's bin - the one control every row is guaranteed. */
+  function focusCatEditorRow(id) {
+    const bin = catEditorTreeEl.querySelector(`.ced-bin[data-category-id="${id}"]`);
+    if (bin) bin.focus();
+  }
+
+  // --- add ------------------------------------------------------------------
+
+  async function createCategory(name, parentId) {
+    const res = await fetch("/api/categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parentId == null ? { name } : { name, parentId }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || "Could not add that category.");
+    }
+    const created = (await res.json()).category;
+    catEditor.adding = undefined;
+    // A new category is empty, so nothing that is cached can be stale: only
+    // the tree itself has to catch up.
+    await loadTree();
+    if (parentId != null) catEditor.expanded.add(parentId);
+    renderCategoryEditor();
+    focusCatEditorRow(created.id);
+    announceCatEditor(`Added “${created.name}”.`);
+  }
+
+  // --- delete ---------------------------------------------------------------
+
+  /**
+   * The bin. Always reads the counts first - even when "don't ask again" will
+   * skip the dialog - because those counts are also what the confirmation
+   * toast reports, and because a preview that fails must stop the delete
+   * rather than let it run blind.
+   */
+  async function requestCategoryDelete(node, triggerEl) {
+    if (!catEditor || catEditor.busy) return;
+    showCatEditorError(null);
+    let preview;
+    try {
+      preview = await getJSON(`/api/categories/${node.id}/deletion`);
+    } catch (err) {
+      showCatEditorError(
+        (err.body && err.body.error) || "Could not work out what deleting that would remove.",
+      );
+      return;
+    }
+    const removes = preview.removes;
+    if (!editor().needsConfirm(node, editor().readSkipConfirm(window.localStorage))) {
+      await runCategoryDelete(node, removes, triggerEl);
+      return;
+    }
+    openCatDelete(node, removes, triggerEl);
+  }
+
+  function openCatDelete(node, removes, triggerEl) {
+    if (!catDeleteModalEl) return;
+    catDelete = { node, removes, trigger: triggerEl };
+    catDeleteTextEl.textContent = editor().confirmSentence(node.name, removes);
+    catDeleteDetailEl.textContent = editor().confirmDetail(removes);
+    catDeleteConfirmBtn.textContent = editor().confirmLabel(removes);
+    catDeleteConfirmBtn.disabled = false;
+    catDeleteConfirmBtn.classList.remove("is-loading");
+    catDeleteErrorEl.hidden = true;
+    catDeleteErrorEl.textContent = "";
+    catDeleteSkipInput.checked = editor().readSkipConfirm(window.localStorage);
+    // A root can never be silenced, so offering the switch there would be a
+    // promise the dialog does not keep.
+    const isRoot = node.parentId == null;
+    catDeleteSkipInput.closest(".cat-delete-skip").hidden = isRoot;
+    catDeleteBackdropEl.hidden = false;
+    catDeleteModalEl.hidden = false;
+    // Cancel first: the destructive button is never the default target.
+    catDeleteCancelBtn.focus();
+    document.addEventListener("keydown", onCatDeleteKeydown);
+  }
+
+  function closeCatDelete(opts) {
+    if (!isCatDeleteOpen()) return;
+    catDeleteModalEl.hidden = true;
+    catDeleteBackdropEl.hidden = true;
+    document.removeEventListener("keydown", onCatDeleteKeydown);
+    const trigger = catDelete && catDelete.trigger;
+    catDelete = null;
+    if (opts && opts.returnFocus === false) return;
+    if (trigger && trigger.isConnected) trigger.focus();
+    else if (catEditorCloseBtn && isCatEditorOpen()) catEditorCloseBtn.focus();
+  }
+
+  async function confirmCatDelete() {
+    if (!catDelete) return;
+    const { node, removes, trigger } = catDelete;
+    // The preference is the owner's, recorded whichever way the box is left.
+    editor().writeSkipConfirm(window.localStorage, catDeleteSkipInput.checked === true);
+    catDeleteConfirmBtn.disabled = true;
+    catDeleteConfirmBtn.classList.add("is-loading");
+    catDeleteErrorEl.hidden = true;
+    try {
+      await runCategoryDelete(node, removes, trigger, { keepDialog: true });
+    } catch (err) {
+      catDeleteErrorEl.textContent = err.message || "Could not delete that category.";
+      catDeleteErrorEl.hidden = false;
+      catDeleteConfirmBtn.disabled = false;
+      catDeleteConfirmBtn.classList.remove("is-loading");
+      return;
+    }
+    closeCatDelete({ returnFocus: false });
+  }
+
+  /**
+   * Carry out the delete and put the viewer back in step with it.
+   *
+   * Every cached view is dropped and the card pool reset: a category delete
+   * removes posts outright and re-files the ones it spared, so any page that
+   * was fetched before it could now be wrong. The open category falls back to
+   * the empty state when it was inside the subtree that just went.
+   */
+  async function runCategoryDelete(node, removes, triggerEl, opts) {
+    const removedIds = catSubtreeIds(node);
+    const parentId = node.parentId;
+    catEditor.busy = true;
+    let body;
+    try {
+      const res = await fetch(`/api/categories/${node.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const failure = await res.json().catch(() => ({}));
+        throw new Error(failure.error || "Could not delete that category.");
+      }
+      body = await res.json();
+    } catch (err) {
+      catEditor.busy = false;
+      if (opts && opts.keepDialog) throw err;
+      showCatEditorError(err.message);
+      return;
+    }
+    catEditor.busy = false;
+
+    clearPersistedViews();
+    viewCaches = new Map();
+    cacheOrder = [];
+    resetPool();
+    const survives = editor().selectionSurvives(selectedCategoryId, removedIds);
+    const keepId = survives ? selectedCategoryId : null;
+    if (!survives) {
+      selectedCategoryId = null;
+      selectedButton = null;
+      renderEmptyTitle();
+      persistSelection();
+      ensureViewHost();
+      renderSelectPrompt();
+    }
+    for (const id of removedIds) catEditor.expanded.delete(id);
+    await loadTree();
+    await fetchSetup();
+    if (keepId != null) {
+      const stillThere = categoryIndex.get(keepId);
+      const button = treeEl.querySelector(`[data-category-id="${keepId}"]`);
+      if (stillThere && button) {
+        selectedCategoryId = null; // force a real re-select, not a cache hit
+        await selectCategory(stillThere, button);
+      }
+    }
+    if (isCatEditorOpen()) {
+      renderCategoryEditor();
+      // The row is gone, so focus goes to the nearest thing that outlived it.
+      const back =
+        (parentId != null && catEditorTreeEl.querySelector(`.ced-bin[data-category-id="${parentId}"]`)) ||
+        catEditorTreeEl.querySelector(".ced-add") ||
+        catEditorCloseBtn;
+      if (back && (!triggerEl || !triggerEl.isConnected)) back.focus();
+    }
+    const summary = editor().deletedSummary(node.name, body.removed || removes);
+    announceCatEditor(summary);
+    showToast(summary);
+  }
+
+  // --- keyboard -------------------------------------------------------------
+
+  function onCatEditorKeydown(e) {
+    if (!isCatEditorOpen()) return;
+    // The confirmation is on top and owns the keyboard while it is open.
+    if (isCatDeleteOpen()) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeCategoryEditor();
+      return;
+    }
+    trapModalFocus(catEditorModalEl, e);
+  }
+
+  function onCatDeleteKeydown(e) {
+    if (!isCatDeleteOpen()) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeCatDelete();
+      return;
+    }
+    trapModalFocus(catDeleteModalEl, e);
+  }
+
+  function initCategoryEditor() {
+    if (!catEditorOpenBtn || !catEditorModalEl) return;
+    catEditorOpenBtn.addEventListener("click", () => openCategoryEditor(catEditorOpenBtn));
+    catEditorCloseBtn.addEventListener("click", () => closeCategoryEditor());
+    catEditorDoneBtn.addEventListener("click", () => closeCategoryEditor());
+    catEditorBackdropEl.addEventListener("click", () => closeCategoryEditor());
+    catDeleteCancelBtn.addEventListener("click", () => closeCatDelete());
+    catDeleteBackdropEl.addEventListener("click", () => closeCatDelete());
+    catDeleteConfirmBtn.addEventListener("click", () => void confirmCatDelete());
+  }
+
   // ---- summary modal -------------------------------------------------------
   // Fetches (or serves from cache) an on-demand LLM summary of a bookmark's
   // content - the post text, plus its extracted article when available - in
@@ -5899,6 +6432,7 @@
   initReset();
   initRanking();
   initMovePicker();
+  initCategoryEditor();
   void restoreLastView();
   window.addEventListener("pagehide", persistViewSnapshot);
   document.addEventListener("visibilitychange", () => {

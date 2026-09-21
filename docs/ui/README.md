@@ -331,3 +331,22 @@ run. Captured against the dev seed with a stub TypeSafe API: no real Jev call, n
 | `98-rank-blocked-no-key-light.png` | **No `TYPESAFE_API_KEY`.** Pressing a hollow badge spends nothing and opens the ranking panel: "Rank now" disabled, the cause stated outright, the credential chain's list of places behind "Where to put the key". |
 | `98-rank-dot-narrow-dark.png` | **~500px, dark** (the narrowest this browser would render). The dot survives the two-row top bar. |
 | `98-empty-badge-narrow-dark.png` | **Same width, cards.** The action row is two rows here, and the badge - hollow or filled - sits on the second one beside Summarize. |
+
+## Issue #101 - the category editor: add and remove categories by hand
+
+A pencil beside the sidebar's "Categories" heading opens a modal in which categories are added at
+any level and deleted. A delete cascades to the sub-categories and permanently deletes the posts
+the cascade would leave filed nowhere else - the owner's rule: a post also filed under a surviving
+category is KEPT and only unlinked. Every delete states the real counts first, read fresh from
+`GET /api/categories/:id/deletion`, which runs the same plan the delete itself runs. Captured
+against the dev seed.
+
+| File | What it shows |
+| --- | --- |
+| `101-light.png` | **The editor**, light, 1280px. The bin is a fixed column at the far LEFT of every row, so the destructive control sits on one vertical line down the whole tree; depth is carried by a spacer inside the row instead. One "+" per level: a root-level one above the list, and one inside each opened category. |
+| `101-add-light.png` | **After adding.** "Rust & Systems" (a new root) and "Tokio" (its child, one level deeper) are in the editor AND in the sidebar behind it. Every row has a twisty, including a leaf - opening a leaf is what reveals the "+" that files a child under it, so a category just created is never a dead end. |
+| `101-add-validation-light.png` | **Sibling-uniqueness, inline.** "Computer Vision" already exists under this parent, so the form says so beside the field and keeps what was typed. The test is case-insensitive, because that is how the database merges sibling names. |
+| `101-confirm-root-light.png` | **The destructive confirmation for a ROOT.** "Design & Product" holds 7 posts but the dialog says 6 - the seventh is also filed under another root and survives. The button restates the scope it commits to, and Cancel holds focus. A root has no "don't ask again": it always confirms. |
+| `101-confirm-child-light.png` | **The same dialog for a sub-category**, where "Don't ask again for sub-categories" is offered (guarded localStorage). It silences later sub-category deletes only; the counts are still computed and shown whenever the dialog does appear. |
+| `101-dark.png` | **Dark.** The bin is muted at rest and turns danger-red on hover/focus - a column of red bins reads as an alarm about the tree rather than as a control. |
+| `101-mobile-dark.png` | **Narrow, dark.** The per-level indent step narrows so the bin column and a deep name both still fit; names wrap rather than overflow, and the tree scrolls vertically only. |

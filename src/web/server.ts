@@ -624,6 +624,94 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     return { tree: buildCategoryTree(db) };
   });
 
+  // ---- the category editor (issue #101) ----------------------------------
+  // Manual add/remove of categories. Both routes need nothing but `db`, so
+  // they are fully live on a `buildServer(db)` with no sync/rank wiring - but
+  // a write is refused while a job that is itself writing categories runs.
+
+  /**
+   * Whether a category write can happen right now. An ingest is minting and
+   * filing categories as it goes and a ranking run is selecting the very
+   * bookmarks a delete would remove, so neither may race an edit. Returns the
+   * reason to refuse with, or null when the write may proceed.
+   */
+  const categoryWriteBlocker = (): string | null => {
+    if (syncRunner?.isRunning()) {
+      return 'A sync is running. Wait for it to finish, then edit your categories.';
+    }
+    if (rankRunner?.isRunning()) {
+      return 'A ranking run is in progress. Wait for it to finish, then edit your categories.';
+    }
+    return null;
+  };
+
+  // Create a category: a root when `parentId` is absent/null, otherwise a
+  // child one level under it. A name already taken by a sibling is a 409 (the
+  // editor shows it inline beside the input) - deliberately not a silent
+  // get-or-create merge, which is what the taxonomy passes want but not what
+  // an owner typing a new name is asking for.
+  app.post<{ Body?: { name?: unknown; parentId?: unknown } }>('/api/categories', async (req, reply) => {
+    const blocked = categoryWriteBlocker();
+    if (blocked) return reply.code(409).send({ error: blocked });
+    const body = req.body ?? {};
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name) return reply.code(400).send({ error: 'A category needs a name.' });
+    const rawParent = body.parentId;
+    let parentId: number | null = null;
+    if (rawParent !== undefined && rawParent !== null) {
+      if (!Number.isInteger(rawParent)) {
+        return reply.code(400).send({ error: 'parentId must be a category id, or omitted for a root category.' });
+      }
+      const parent = db.getCategoryById(rawParent as number);
+      if (!parent) return reply.code(400).send({ error: `Unknown category id ${String(rawParent)}.` });
+      parentId = parent.id;
+    }
+    const created = db.createCategory(name, parentId);
+    if (!created) {
+      return reply.code(409).send({
+        error: parentId === null
+          ? `A root category called “${name}” already exists.`
+          : `That category already has a “${name}”.`,
+      });
+    }
+    return reply.code(201).send({ category: created, tree: buildCategoryTree(db) });
+  });
+
+  // What deleting a category WOULD remove, without touching anything: the
+  // category rows and the posts that would be left filed nowhere. This is the
+  // number the destructive confirmation states, and it is computed by the same
+  // `planCategoryDeletion` the delete itself runs, so the two cannot disagree.
+  app.get<{ Params: { id: string } }>('/api/categories/:id/deletion', async (req, reply) => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid category id' });
+    const category = db.getCategoryById(id);
+    const plan = category ? db.planCategoryDeletion(id) : undefined;
+    if (!category || !plan) return reply.code(404).send({ error: 'category not found' });
+    return {
+      category: { id: category.id, name: category.name, isRoot: category.parentId === null },
+      removes: {
+        categories: plan.categoryIds.length,
+        subcategories: plan.subcategoryCount,
+        posts: plan.orphanedBookmarkIds.length,
+      },
+    };
+  });
+
+  // Delete a category, its sub-categories and the posts orphaned by that -
+  // the owner's rule on issue #101: a post also filed under a surviving
+  // category is KEPT and merely unlinked. Irreversible: the deleted posts are
+  // tombstoned so a later sync never brings them back. One transaction, and
+  // it answers with the counts actually removed plus the rebuilt tree.
+  app.delete<{ Params: { id: string } }>('/api/categories/:id', async (req, reply) => {
+    const blocked = categoryWriteBlocker();
+    if (blocked) return reply.code(409).send({ error: blocked });
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid category id' });
+    const removed = db.deleteCategory(id);
+    if (!removed) return reply.code(404).send({ error: 'category not found' });
+    return { removed, tree: buildCategoryTree(db), bookmarkCount: db.getBookmarkCount() };
+  });
+
   app.get('/api/tree', async () => ({ tree: buildCategoryTree(db) }));
 
   // When bookmarks were last successfully synced with X, or null if never.
