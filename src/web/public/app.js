@@ -17,6 +17,9 @@
   const searchInput = document.getElementById("category-search");
   const searchClear = document.getElementById("category-search-clear");
   const filterTabsEl = document.getElementById("filter-tabs");
+  // The row the tab bar sits in. Hiding the ROW, not just the tablist, is what
+  // keeps the empty states free of a stray 1px border with nothing above it.
+  const toolbarEl = document.getElementById("toolbar");
 
   // ---- summary modal ------------------------------------------------------
   const summaryBackdropEl = document.getElementById("summary-backdrop");
@@ -1448,6 +1451,7 @@
     prompt.setAttribute("data-open-categories", "");
     titleEl.replaceChildren(prompt);
     titleEl.removeAttribute("title");
+    updateToolbarVisibility();
   }
 
   // ---- the top bar's breadcrumb (issue #89) --------------------------------
@@ -1514,6 +1518,7 @@
       renderEmptyTitle();
       return;
     }
+    updateToolbarVisibility();
     const segments = window.XBOBreadcrumb.layout(path);
     titleEl.replaceChildren();
 
@@ -1649,6 +1654,36 @@
         "aria-label",
         `${tab.querySelector(".filter-tab-label").textContent}, ${n}`,
       );
+    }
+  }
+
+  /**
+   * Show or hide the whole tab bar (PR #95).
+   *
+   * Unread / Read / All / Favorites are views OF a category, so the bar only
+   * exists while one is open AND the library has something in it; the
+   * decision itself is the pure `XBOCategorization.showFilterTabs`. In the
+   * never-synced first run and the "Select a category" state the bar is
+   * ABSENT, not zeroed - which is also the fix for a Reset leaving the old
+   * category's badges on screen, since a reset returns the app to the first
+   * run and the badges are cleared on the way out.
+   *
+   * `role="tabpanel"` goes with it: a panel whose tablist is not on screen is
+   * a role promise the page cannot keep, and its `aria-labelledby` would
+   * point at a hidden tab.
+   */
+  function updateToolbarVisibility() {
+    if (!toolbarEl) return;
+    const count = setupState ? setupState.bookmarkCount : undefined;
+    const show = categorization().showFilterTabs(count, selectedCategoryId);
+    if (!show) clearTabCounts();
+    toolbarEl.hidden = !show;
+    if (show) {
+      listRoot.setAttribute("role", "tabpanel");
+      renderFilterTabs(); // re-establishes aria-labelledby on the active tab
+    } else {
+      listRoot.removeAttribute("role");
+      listRoot.removeAttribute("aria-labelledby");
     }
   }
 
@@ -2426,6 +2461,149 @@
     return widgetsReadyPromise;
   }
 
+  // ---- leaving the live view (#95) ---------------------------------
+  // Marking a post read in the Unread tab used to make it disappear on the
+  // spot and the next post jump up into its place. It is now a movement with
+  // a direction: the card slides out to the RIGHT while fading, and only then
+  // do the posts below travel up to close the gap. `transform` and `opacity`
+  // only, on both halves - the gap is closed with a FLIP, never by animating
+  // a layout property.
+
+  const reducedMotion =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : { matches: false };
+
+  /** How far right the card travels, as a share of its own width. */
+  const EXIT_SLIDE_DISTANCE = "22%";
+  /** Leaving accelerates away (the arrival back uses the token layer's ease). */
+  const EXIT_EASE = "cubic-bezier(0.4, 0, 1, 1)";
+
+  /**
+   * A motion token's duration in milliseconds. The Web Animations API needs a
+   * number, and reading it back from the token layer keeps `styles.css` the
+   * one place the app's motion scale is defined.
+   */
+  function motionMs(token, fallback) {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+    const value = parseFloat(raw);
+    if (!Number.isFinite(value) || value <= 0) return fallback;
+    return /ms$/.test(raw) ? value : value * 1000;
+  }
+
+  /** The token layer's own easing curve, for the settling half of a move. */
+  function easeToken() {
+    return getComputedStyle(document.documentElement).getPropertyValue("--ease").trim()
+      || "cubic-bezier(0.2, 0, 0, 1)";
+  }
+
+  /**
+   * The post-size setting applies `zoom` to a card, and an element's own
+   * `transform` resolves in its ZOOMED coordinate space - so a distance
+   * measured in screen pixels has to be divided by this before it can be fed
+   * to a translate. (The slide itself is a percentage of the card, which
+   * needs no such correction.)
+   */
+  function cardZoom(cardEl) {
+    const raw = parseFloat(getComputedStyle(cardEl).getPropertyValue("--post-scale"));
+    return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  }
+
+  /**
+   * The visible pooled cards sequenced after `card` - the ones that will move
+   * up when it leaves. Cards are ordered by inline `order`, not by DOM
+   * position (the pool never moves a card), so that is what decides "after".
+   */
+  function cardsAfter(card) {
+    const from = Number(card.style.order);
+    const after = [];
+    for (const pooled of cardPool.values()) {
+      const other = pooled.card;
+      if (other === card || other.hidden) continue;
+      if (Number(other.style.order) > from) after.push(other);
+    }
+    return after;
+  }
+
+  /**
+   * Slide `card` out of the live view, then run `commit` - which does the real
+   * bookkeeping (hiding the card, splicing it out of the view, repainting the
+   * counts) and is called exactly ONCE either way, so a browser without the
+   * Web Animations API and an owner who asked for reduced motion both get
+   * today's instant hide and nothing else changes.
+   *
+   * The card is hidden, never detached: it stays pooled with its mounted X
+   * embeds, which is what stops a post reappearing in another tab from
+   * reloading (issues #67, #89). The animation only borrows it on the way out,
+   * and the fill is released once it is hidden so a later reveal is clean.
+   */
+  function animateCardExit(card, commit) {
+    if (reducedMotion.matches || typeof card.animate !== "function" || card.hidden) {
+      commit();
+      return;
+    }
+    const followers = cardsAfter(card);
+    const before = followers.map((other) => other.getBoundingClientRect().top);
+    const slide = card.animate(
+      [
+        { transform: "translateX(0)", opacity: 1 },
+        { transform: `translateX(${EXIT_SLIDE_DISTANCE})`, opacity: 0 },
+      ],
+      { duration: motionMs("--motion-slow", 260), easing: EXIT_EASE, fill: "forwards" },
+    );
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      commit(); // the card is hidden here: the gap opens on this frame
+      slide.cancel(); // release the held end state before it can be re-shown
+      const collapse = motionMs("--motion-med", 200);
+      const ease = easeToken();
+      followers.forEach((other, i) => {
+        if (other.hidden) return;
+        const delta = (before[i] - other.getBoundingClientRect().top) / cardZoom(other);
+        if (Math.abs(delta) < 1) return;
+        other.animate(
+          [{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }],
+          { duration: collapse, easing: ease },
+        );
+      });
+    };
+    slide.addEventListener("finish", finish);
+    slide.addEventListener("cancel", finish);
+  }
+
+  /**
+   * A bookmark no longer belongs in the tab that is open: animate its card out
+   * and settle the view behind it.
+   *
+   * The bookkeeping is unchanged from when this was inlined twice. That row
+   * also left the server-side filtered set, so the paging offset shifts back
+   * by one to keep the next batch aligned; an emptied view pulls the next
+   * batch in if there is one, and otherwise says so.
+   *
+   * The COUNTS are not in here: the caller settles them before the exit
+   * starts, so a tab badge never lags the sidebar counter it has to agree
+   * with by the length of an animation.
+   */
+  function dropCardFromView(bm, card) {
+    animateCardExit(card, () => {
+      card.hidden = true; // stays pooled and mounted: no reload if it reappears
+      const idx = currentViewBookmarks.indexOf(bm);
+      if (idx !== -1) currentViewBookmarks.splice(idx, 1);
+      pageOffset = Math.max(0, pageOffset - 1);
+      if (currentViewBookmarks.length > 0) {
+        updateTail(); // keep the "N shown" end-of-list marker in step
+      } else if (pageHasMore) {
+        // Emptied the visible view but more remain: pull the next batch in.
+        loadMore();
+      } else {
+        removeTail();
+        stateMessage(listEl, "empty", emptyFilterMessage());
+      }
+    });
+  }
+
   // ---- read tracking -----------------------------------------------------
 
   /**
@@ -2461,31 +2639,12 @@
       syncCachedViewsOnChange(bm);
 
       patchCardControls(bm, card); // the pooled card is reused by other tabs
+      // Only the two read-state tabs' membership turns on this toggle - a
+      // post is not un-starred by being read, so the Favorites tab keeps it.
       const dropsOut =
         (activeFilter === "unread" && bm.read) || (activeFilter === "read" && !bm.read);
-      if (dropsOut) {
-        // The card no longer belongs in the filtered view: drop it out. That
-        // row also leaves the server-side filtered set, so shift the offset
-        // back by one to keep the next batch aligned.
-        card.hidden = true; // stays pooled and mounted: no reload if it reappears
-        const idx = currentViewBookmarks.indexOf(bm);
-        if (idx !== -1) currentViewBookmarks.splice(idx, 1);
-        pageOffset = Math.max(0, pageOffset - 1);
-        if (currentViewBookmarks.length > 0) {
-          renderCountLine();
-          updateTail(); // keep the "N shown" end-of-list marker in step
-        } else if (pageHasMore) {
-          // Emptied the visible view but more remain: pull the next batch in.
-          renderCountLine();
-          loadMore();
-        } else {
-          removeTail();
-          renderCountLine();
-          stateMessage(listEl, "empty", emptyFilterMessage());
-        }
-      } else {
-        renderCountLine();
-      }
+      renderCountLine();
+      if (dropsOut) dropCardFromView(bm, card);
     } catch (_err) {
       if (pillBtn) {
         pillBtn.classList.remove("is-loading");
@@ -2520,29 +2679,12 @@
         starBtn.disabled = false;
         applyFavoriteButtonState(starBtn, bm.favorite);
       }
-      if (activeFilter === "favorite" && !bm.favorite) {
-        // Unstarred while the Favorites tab is open: the row also leaves the
-        // server-side filtered set, so shift the offset back by one to keep
-        // the next batch aligned (same bookkeeping as a read-state drop-out).
-        card.hidden = true; // stays pooled and mounted: no reload if it reappears
-        const idx = currentViewBookmarks.indexOf(bm);
-        if (idx !== -1) currentViewBookmarks.splice(idx, 1);
-        pageOffset = Math.max(0, pageOffset - 1);
-        if (currentViewBookmarks.length > 0) {
-          renderCountLine();
-          updateTail();
-        } else if (pageHasMore) {
-          renderCountLine();
-          loadMore();
-        } else {
-          removeTail();
-          renderCountLine();
-          stateMessage(listEl, "empty", emptyFilterMessage());
-        }
-        return;
-      }
-
       renderCountLine();
+      if (activeFilter === "favorite" && !bm.favorite) {
+        // Unstarred while the Favorites tab is open: it leaves this view the
+        // same way a read post leaves Unread, animation and bookkeeping alike.
+        dropCardFromView(bm, card);
+      }
     } catch (_err) {
       if (starBtn) {
         starBtn.classList.remove("is-loading");
@@ -3028,6 +3170,7 @@
     syncBlockers: () => [],
     needsAuthorizationOnly: () => false,
     emptyStateKind: () => "none",
+    showFilterTabs: (_count, categoryId) => categoryId != null,
     progressLine: () => "",
   };
 
@@ -3052,6 +3195,7 @@
     updateSyncButton();
     updateRankControl();
     updateEmptyLibraryState();
+    updateToolbarVisibility();
     updateSortOrderHint();
     if (settingsForm && setupState && !settingsDirty) {
       settingsForm.setCatalog(setupState.catalog);
@@ -3121,8 +3265,23 @@
       renderSyncProgress({ state: "error", error: "Could not reach the server.", messages: [] });
       return false;
     }
+    markSyncRunning();
     pollSync();
     return true;
+  }
+
+  /**
+   * The server has taken the run: put every control that reflects it in step
+   * now rather than a poll interval later. The first-run view's scrim hangs
+   * off this same status, so without it the get-started view would stay
+   * clickable for the first second of a run it had already started.
+   */
+  function markSyncRunning() {
+    if (setupState && setupState.sync) {
+      setupState.sync.status = { state: "running", messages: ["Starting sync…"] };
+    }
+    updateSyncButton();
+    updateFirstRun();
   }
 
   function pollSync() {
@@ -3141,6 +3300,7 @@
       }
       renderSyncProgress(data.status);
       updateSyncButton();
+      updateFirstRun(); // raises/lifts the get-started scrim with the run
       if (isSetupOpen()) renderSetupStep();
 
       if (data.status && (data.status.state === "done" || data.status.state === "error")) {
@@ -3522,7 +3682,13 @@
     const hint = el("p", "field-hint");
     hint.id = `${select.id}-hint`;
     select.setAttribute("aria-describedby", hint.id);
-    field.append(label, select, hint);
+    // The select keeps being a NATIVE select - it is styled, not replaced, so
+    // the platform's own keyboard, type-ahead, screen-reader and (on a phone)
+    // picker behaviour all survive. The shell exists only to hang the app's
+    // chevron beside it, since `appearance: none` takes the browser's away.
+    const shell = el("div", "select-shell");
+    shell.append(select);
+    field.append(label, shell, hint);
     return { field, select, hint };
   }
 
@@ -4028,6 +4194,11 @@
   let firstRunNoteEl = null;
   let firstRunStatusEl = null;
   let firstRunSyncBtn = null;
+  // Everything the sync scrim covers, and whether it is covering it right now
+  // (#95) - the flag is what makes the hand-off of focus to the progress
+  // strip happen once, on the transition into the run, and not on every poll.
+  let firstRunBodyEl = null;
+  let firstRunScrimmed = false;
 
   function renderSelectPrompt() {
     const box = el("div", "state state-empty state-welcome state-prompt");
@@ -4058,6 +4229,7 @@
       el("p", "state-body", "Pick how your X bookmarks get sorted, then sync. You can change this later in Settings."),
     );
 
+    const body = el("div", "first-run-body");
     const formHost = el("div", "first-run-steps");
     firstRunForm = createCategorizationForm(formHost, "firstrun", () => {
       firstRunDirty = true;
@@ -4078,7 +4250,14 @@
       [firstRunNoteEl, firstRunStatusEl, firstRunSyncBtn],
     );
     formHost.appendChild(syncPhase);
-    root.append(intro, formHost);
+    // The scrim is a SIBLING of everything it dims, so it is never itself
+    // dimmed or made inert. The body below it is what a running sync takes
+    // out of reach (#95).
+    body.append(intro, formHost);
+    firstRunBodyEl = body;
+    const scrim = el("div", "first-run-scrim");
+    scrim.setAttribute("aria-hidden", "true");
+    root.append(body, scrim);
     return root;
   }
 
@@ -4102,6 +4281,17 @@
     if (!firstRunEl || !setupState) return;
     updateFormNote(firstRunForm, firstRunNoteEl);
     const running = syncIsRunning();
+    // A run is not interruptible and takes minutes, so the get-started view
+    // goes behind a scrim for its duration: dimmed (CSS, keyed off this
+    // attribute), click-proof, and `inert` so nothing behind it can be
+    // tabbed to or re-pressed. The progress strip lives ABOVE the scrim, in
+    // the column's own row, and is where the keyboard is handed on the way in.
+    firstRunEl.dataset.syncing = running ? "true" : "false";
+    if (firstRunBodyEl) firstRunBodyEl.inert = running;
+    if (running && !firstRunScrimmed && firstRunEl.isConnected && syncProgressEl && !syncProgressEl.hidden) {
+      syncProgressEl.focus();
+    }
+    firstRunScrimmed = running;
     firstRunSyncBtn.disabled = running || !syncAvailable();
     firstRunSyncBtn.textContent = running ? "Syncing…" : "Sync my bookmarks";
     const status = setupState.sync && setupState.sync.status;

@@ -368,7 +368,7 @@
 
     <div class="app-body">
       <div class="main-column">
-        <div class="toolbar">
+        <div id="toolbar" class="toolbar">
           <div
             id="filter-tabs"
             class="filter-tabs"
@@ -439,7 +439,7 @@
           </div>
         </div>
 
-        <div id="sync-progress" class="sync-progress" role="status" aria-live="polite" hidden>
+        <div id="sync-progress" class="sync-progress" role="status" aria-live="polite" tabindex="-1" hidden>
           <span id="sync-progress-icon" class="sync-progress-icon" aria-hidden="true"></span>
           <div class="sync-progress-body">
             <p id="sync-progress-text" class="sync-progress-text"></p>
