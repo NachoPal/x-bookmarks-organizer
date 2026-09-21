@@ -1,5 +1,12 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { assembleTree, buildCategoryTree, materializeTaxonomy, renderTreeForPrompt } from './tree';
+import {
+  assembleTree,
+  buildCategoryTree,
+  materializeTaxonomy,
+  readRootOrder,
+  renderTreeForPrompt,
+  writeRootOrder,
+} from './tree';
 import { Database } from '../db/database';
 import type { CategoryNode, TaxonomyNode } from '../types';
 
@@ -164,5 +171,55 @@ describe('renderTreeForPrompt', () => {
 
     expect(line.startsWith('- AI - a b ')).toBe(true);
     expect(line.length).toBeLessThan(140);
+  });
+});
+
+describe('root order (issue #82)', () => {
+  const cats3: CategoryNode[] = [
+    ...cats,
+    { id: 5, parentId: null, name: 'Zebra', createdAt: '' },
+    { id: 6, parentId: 5, name: 'B child', createdAt: '' },
+    { id: 7, parentId: 5, name: 'A child', createdAt: '' },
+  ];
+
+  it('orders roots by the saved names, leaving children alphabetical', () => {
+    const roots = assembleTree(cats3, new Map(), ['Zebra', 'Game Dev', 'AI']);
+    expect(roots.map((r) => r.name)).toEqual(['Zebra', 'Game Dev', 'AI']);
+    expect(roots[0].children.map((c) => c.name)).toEqual(['A child', 'B child']);
+  });
+
+  it('appends a root with no saved position, alphabetically, after the ordered ones', () => {
+    const roots = assembleTree(cats3, new Map(), ['Zebra']);
+    expect(roots.map((r) => r.name)).toEqual(['Zebra', 'AI', 'Game Dev']);
+  });
+
+  it('ignores a saved name whose root is gone', () => {
+    const roots = assembleTree(cats3, new Map(), ['Gone', 'Game Dev']);
+    expect(roots.map((r) => r.name)).toEqual(['Game Dev', 'AI', 'Zebra']);
+  });
+
+  it('round-trips through the db and survives a recategorize-style clear', () => {
+    const db = new Database(':memory:');
+    try {
+      const now = new Date().toISOString();
+      for (const n of ['AI', 'Game Dev', 'Zebra']) db.getOrCreateCategory(n, null, now);
+      writeRootOrder(db, ['Zebra', 'AI', 'Game Dev']);
+      expect(buildCategoryTree(db).map((r) => r.name)).toEqual(['Zebra', 'AI', 'Game Dev']);
+      db.clearCategories();
+      for (const n of ['Game Dev', 'AI', 'Zebra', 'New']) db.getOrCreateCategory(n, null, now);
+      expect(buildCategoryTree(db).map((r) => r.name)).toEqual(['Zebra', 'AI', 'Game Dev', 'New']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('tolerates a corrupt stored blob', () => {
+    const db = new Database(':memory:');
+    try {
+      db.setState('root_order', '{nope');
+      expect(readRootOrder(db)).toEqual([]);
+    } finally {
+      db.close();
+    }
   });
 });

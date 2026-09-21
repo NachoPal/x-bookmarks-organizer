@@ -303,7 +303,16 @@ counter update walks each id's ancestor chain and applies a total/unread delta o
 deduplicated affected category (`src/web/public/tree-counts.js`, `applyCountDelta` +
 `updateSidebarCounts`/`patchCategoryCountDom` in `app.js`), because a category's rolled-up counts
 include all descendants (`assembleTree` in `src/categorize/tree.ts`) and a multi-category bookmark
-must not double-adjust a shared ancestor. The category tree renders with every node - including
+must not double-adjust a shared ancestor. **Root categories are reorderable** (issue #82): a grip handle (pointer drag, or ArrowUp/ArrowDown on
+the focused handle) on ROOTS only, hidden while a search filters the tree. The order is persisted
+server-side in `run_state` key `root_order` as a list of root NAMES (not ids: `recategorize` clears
+and re-creates every `categories` row, so ids do not survive it, names do), applied by
+`orderRoots`/`assembleTree` in `src/categorize/tree.ts` to roots only - an unsaved root follows
+alphabetically, children stay alphabetical. `PUT /api/categories/root-order` takes the complete
+list of root ids (400 for an unknown/child/duplicate id, 409 for an incomplete/stale list). Pure
+order math lives in `root-order.js` (`XBORootOrder`).
+
+The category tree renders with every node - including
 roots - collapsed by default until the owner expands it or a search match forces ancestors open.
 
 The per-root tree tint (`tree-color.js`) has a paired on/off toggle, persisted in localStorage

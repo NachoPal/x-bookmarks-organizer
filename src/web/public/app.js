@@ -1033,6 +1033,10 @@
 
     const toggle = el("button", "tree-toggle");
     toggle.type = "button";
+    // Only a root, and only in the full (unfiltered) tree, can be reordered:
+    // a search shows a subset, and a position in a subset means nothing.
+    const reorderable = depth === 0 && !searching && !!window.XBORootOrder;
+    if (reorderable) li.dataset.rootId = String(node.id);
     const chev = el("span", "chev", "▶");
     chev.setAttribute("aria-hidden", "true");
     toggle.appendChild(chev);
@@ -1080,15 +1084,142 @@
         if (!searching) expansionState.set(String(node.id), now);
       });
       row.append(toggle, button);
+      if (reorderable) row.prepend(createRootGrip(node));
       li.append(row, childList);
     } else {
       toggle.classList.add("is-leaf");
       toggle.setAttribute("aria-hidden", "true");
       toggle.tabIndex = -1;
       row.append(toggle, button);
+      if (reorderable) row.prepend(createRootGrip(node));
       li.append(row);
     }
     return li;
+  }
+
+  // ---- reorder the ROOT categories (issue #82) -----------------------------
+  // Pointer drag on a grip handle, or ArrowUp/ArrowDown on the focused handle.
+  // The order math is pure (root-order.js); the server persists and re-sorts.
+
+  const rootAnnouncer = document.getElementById("tree-announcer");
+
+  function announceRootOrder(message) {
+    if (rootAnnouncer) rootAnnouncer.textContent = message;
+  }
+
+  function createRootGrip(node) {
+    const grip = el("button", "tree-grip");
+    grip.type = "button";
+    grip.dataset.gripFor = String(node.id);
+    grip.setAttribute("aria-label", `Reorder ${node.name}`);
+    grip.title = "Drag to reorder, or press Up / Down arrow";
+    grip.innerHTML =
+      '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="currentColor">' +
+      '<circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/>' +
+      '<circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/>' +
+      '<circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></g></svg>';
+    grip.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      e.preventDefault();
+      const ids = treeRoots.map((r) => r.id);
+      const next = window.XBORootOrder.moveBy(ids, node.id, e.key === "ArrowUp" ? -1 : 1);
+      if (window.XBORootOrder.sameOrder(ids, next)) {
+        announceRootOrder(`${node.name} is already ${e.key === "ArrowUp" ? "first" : "last"}.`);
+        return;
+      }
+      commitRootOrder(next, node);
+    });
+    grip.addEventListener("pointerdown", (e) => startRootDrag(e, grip, node));
+    return grip;
+  }
+
+  /** Apply a new root order at once, persist it, and roll back if the save fails. */
+  async function commitRootOrder(ids, moved) {
+    const previous = treeRoots;
+    const byId = new Map(treeRoots.map((r) => [r.id, r]));
+    treeRoots = ids.map((id) => byId.get(id));
+    captureExpansionState();
+    renderTree();
+    const grip = treeEl.querySelector(`[data-grip-for="${moved.id}"]`);
+    if (grip) grip.focus();
+    announceRootOrder(`${moved.name} moved to position ${ids.indexOf(moved.id) + 1} of ${ids.length}.`);
+    try {
+      const res = await fetch("/api/categories/root-order", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not save the category order.");
+    } catch (err) {
+      treeRoots = previous;
+      renderTree();
+      announceRootOrder(err.message || "Could not save the category order.");
+      showRootOrderError(err.message || "Could not save the category order.");
+    }
+  }
+
+  function showRootOrderError(message) {
+    const note = el("p", "state state-error tree-order-error", message);
+    note.setAttribute("role", "status");
+    treeEl.prepend(note);
+    setTimeout(() => note.remove(), 6000);
+  }
+
+  function startRootDrag(e, grip, node) {
+    if (e.button !== undefined && e.button !== 0) return;
+    const li = grip.closest("li");
+    const list = li && li.parentElement;
+    if (!li || !list) return;
+    e.preventDefault();
+    try {
+      grip.setPointerCapture(e.pointerId);
+    } catch (_) {
+      /* no active pointer to capture (synthetic event); moves still reach the grip */
+    }
+    const startY = e.clientY;
+    const ids = treeRoots.map((r) => r.id);
+    const others = Array.from(list.children).filter((c) => c !== li);
+    const mids = others.map((c) => {
+      const r = c.getBoundingClientRect();
+      return r.top + r.height / 2;
+    });
+    let target = ids.indexOf(node.id);
+    li.classList.add("is-dragging");
+    treeEl.classList.add("is-reordering");
+
+    const markTarget = () => {
+      others.forEach((c) => c.classList.remove("drop-before", "drop-after"));
+      if (target < others.length) others[target].classList.add("drop-before");
+      else if (others.length) others[others.length - 1].classList.add("drop-after");
+    };
+    const onMove = (ev) => {
+      li.style.transform = `translateY(${ev.clientY - startY}px)`;
+      target = window.XBORootOrder.dropIndex(mids, ev.clientY);
+      markTarget();
+    };
+    const finish = (ev, cancelled) => {
+      grip.removeEventListener("pointermove", onMove);
+      grip.removeEventListener("pointerup", onUp);
+      grip.removeEventListener("pointercancel", onCancel);
+      try {
+        grip.releasePointerCapture(ev.pointerId);
+      } catch (_) {
+        /* capture already gone */
+      }
+      li.classList.remove("is-dragging");
+      li.style.transform = "";
+      treeEl.classList.remove("is-reordering");
+      others.forEach((c) => c.classList.remove("drop-before", "drop-after"));
+      if (cancelled) return;
+      const next = window.XBORootOrder.moveTo(ids, node.id, target);
+      if (!window.XBORootOrder.sameOrder(ids, next)) commitRootOrder(next, node);
+    };
+    const onUp = (ev) => finish(ev, false);
+    const onCancel = (ev) => finish(ev, true);
+    grip.addEventListener("pointermove", onMove);
+    grip.addEventListener("pointerup", onUp);
+    grip.addEventListener("pointercancel", onCancel);
   }
 
   // ---- bookmarks ---------------------------------------------------------
