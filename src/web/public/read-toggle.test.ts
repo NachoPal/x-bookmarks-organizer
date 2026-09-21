@@ -13,7 +13,7 @@ describe("readToggleLabel", () => {
   });
 });
 
-describe("marking read: membership and badges (PR-VB4)", () => {
+describe("marking read: membership and badges (#95)", () => {
   const { survivesFilter } = require("./filter-cache.js");
   const { tabCounts } = require("./tree-counts.js");
 

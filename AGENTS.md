@@ -224,7 +224,7 @@ is a real one: roving tabindex, arrow keys + Home/End, `#bookmark-list` is its o
 its `aria-labelledby` follows the active tab (`renderFilterTabs` in `app.js`). The active tab is
 marked by an underline AND a color, never color alone.
 
-The bar belongs to a SELECTED CATEGORY and is ABSENT otherwise (PR-VB4, reversing #65's
+The bar belongs to a SELECTED CATEGORY and is ABSENT otherwise (PR #95, reversing #65's
 "always visible"): the four tabs are views OF one category, so the never-synced first run and the
 "Select a category" state show no bar at all rather than a zeroed one. `updateToolbarVisibility`
 in `app.js` hides the whole `.toolbar` ROW (not just the tablist - a bare row still paints its
@@ -234,7 +234,7 @@ cannot keep. The decision itself is the pure `XBOCategorization.showFilterTabs`.
 fix for a **Reset** leaving the old category's count badges frozen on screen: a reset returns the
 app to the first run, so the bar and its numbers go with it.
 
-**A sync scrims the first-run view** (PR-VB4). A run takes minutes and cannot be interrupted,
+**A sync scrims the first-run view** (#95). A run takes minutes and cannot be interrupted,
 so while one is active the get-started view sits behind `.first-run-scrim`: `position: fixed` off
 `--header-offset` at `--z-backdrop`, exactly like the drawer's own scrim, which is what leaves the
 top bar, the drawer and the progress strip (raised to `--z-sidebar` for this) usable above it.
@@ -387,7 +387,7 @@ observed to silently desync from the attribute in an automated test session, so 
 icon/visual swap in this viewer should prefer a CSS attribute selector over JS-driven `hidden`/
 `style.display`.
 
-**A card leaving the live view slides out** (PR-VB4): marking a post read in the Unread tab (or
+**A card leaving the live view slides out** (#95): marking a post read in the Unread tab (or
 un-starring one in Favorites) animates the card right while fading, and only then do the posts
 below FLIP up to close the gap - `animateCardExit`/`dropCardFromView` in `app.js`. `transform` and
 `opacity` only; the gap is closed with a FLIP, never by animating a layout property. Three things
@@ -401,7 +401,7 @@ transform resolves in its zoomed space). `.content` carries `overflow-x: hidden`
 travel cannot raise a horizontal scrollbar. Delete keeps its instant hide on purpose: its Undo puts
 the card back, and an exit animation racing that restore buys nothing.
 
-Every dropdown in the app is a NATIVE `<select>` styled with CSS (PR-VB4) - `appearance: none`
+Every dropdown in the app is a NATIVE `<select>` styled with CSS (#95) - `appearance: none`
 plus the chevron its `.select-shell` wrapper draws (`buildField` in `app.js`, `--select-chevron-*`
 in `styles.css`). Styling the native control rather than rebuilding it as a listbox is the whole
 point: the platform's keyboard contract, type-ahead, screen-reader announcement and phone picker

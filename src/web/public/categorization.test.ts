@@ -256,7 +256,7 @@ describe('emptyStateKind', () => {
   });
 });
 
-describe('showFilterTabs (PR-VB4)', () => {
+describe('showFilterTabs (#95)', () => {
   it('shows the bar for an open category in a stocked library', () => {
     expect(XBO.showFilterTabs(12, 3)).toBe(true);
   });

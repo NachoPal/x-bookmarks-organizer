@@ -65,7 +65,7 @@
   --panel-action-height: 2.25rem;
   --panel-action-width: 9.5rem;
 
-  /* The app's own dropdown chevron (PR-VB4): the arm length of the glyph
+  /* The app's own dropdown chevron (#95): the arm length of the glyph
      drawn beside every <select>, plus the room its column takes at the end of
      the field so a long option label never runs underneath it. */
   --select-chevron-size: 0.4rem;
@@ -994,7 +994,7 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  /* A card leaving the view slides out past the content measure (PR-VB4);
+  /* A card leaving the view slides out past the content measure (#95);
      clip that sideways travel rather than letting it raise a horizontal
      scrollbar mid-animation. */
   overflow-x: hidden;
@@ -2577,7 +2577,7 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   background: var(--color-accent-soft);
   color: var(--color-text);
   font-size: var(--text-small);
-  /* Above the first-run sync scrim (PR-VB4): the strip is the one thing
+  /* Above the first-run sync scrim (#95): the strip is the one thing
      that must stay lit and readable while the view behind it is dimmed. */
   position: relative;
   z-index: var(--z-sidebar);
@@ -2718,7 +2718,7 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   font-weight: 600;
 }
 /* Every dropdown in the app is a NATIVE <select> wearing the app's clothes
-   (PR-VB4) - `appearance: none` plus the chevron its shell draws. Styling
+   (#95) - `appearance: none` plus the chevron its shell draws. Styling
    the native control rather than rebuilding it as a listbox is deliberate:
    the platform's keyboard contract, type-ahead, screen-reader announcement
    and phone picker all keep working, and nothing is vendored to get it.
@@ -3265,7 +3265,7 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   gap: var(--space-4);
 }
 /* A sync takes minutes and cannot be interrupted, so the get-started view
-   goes behind a scrim for its duration (PR-VB4): dimmed, click-proof, and
+   goes behind a scrim for its duration (#95): dimmed, click-proof, and
    (from app.js) `inert`, so nothing behind it can be tabbed to or pressed a
    second time.
    It hangs off `--header-offset` at `--z-backdrop`, exactly like the drawer's

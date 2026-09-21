@@ -1658,7 +1658,7 @@
   }
 
   /**
-   * Show or hide the whole tab bar (PR-VB4).
+   * Show or hide the whole tab bar (PR #95).
    *
    * Unread / Read / All / Favorites are views OF a category, so the bar only
    * exists while one is open AND the library has something in it; the
@@ -2461,7 +2461,7 @@
     return widgetsReadyPromise;
   }
 
-  // ---- leaving the live view (PR-VB4) ---------------------------------
+  // ---- leaving the live view (#95) ---------------------------------
   // Marking a post read in the Unread tab used to make it disappear on the
   // spot and the next post jump up into its place. It is now a movement with
   // a direction: the card slides out to the RIGHT while fading, and only then
@@ -4195,7 +4195,7 @@
   let firstRunStatusEl = null;
   let firstRunSyncBtn = null;
   // Everything the sync scrim covers, and whether it is covering it right now
-  // (PR-VB4) - the flag is what makes the hand-off of focus to the progress
+  // (#95) - the flag is what makes the hand-off of focus to the progress
   // strip happen once, on the transition into the run, and not on every poll.
   let firstRunBodyEl = null;
   let firstRunScrimmed = false;
@@ -4252,7 +4252,7 @@
     formHost.appendChild(syncPhase);
     // The scrim is a SIBLING of everything it dims, so it is never itself
     // dimmed or made inert. The body below it is what a running sync takes
-    // out of reach (PR-VB4).
+    // out of reach (#95).
     body.append(intro, formHost);
     firstRunBodyEl = body;
     const scrim = el("div", "first-run-scrim");
