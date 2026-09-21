@@ -221,9 +221,27 @@ directly under the top bar, inside `.main-column` (a flex column holding the too
 scrolling `.content`), so it spans the viewport with the drawer closed and SHRINKS with the column
 when the drawer pushes it. It sits in a `.toolbar` flex parent (the Sync control left it for the top-bar sync popover). The tablist
 is a real one: roving tabindex, arrow keys + Home/End, `#bookmark-list` is its one `tabpanel` and
-its `aria-labelledby` follows the active tab (`renderFilterTabs` in `app.js`). It is always
-visible - hiding it on an empty category would jump the layout. The active tab is marked by an
-underline AND a color, never color alone.
+its `aria-labelledby` follows the active tab (`renderFilterTabs` in `app.js`). The active tab is
+marked by an underline AND a color, never color alone.
+
+The bar belongs to a SELECTED CATEGORY and is ABSENT otherwise (PR-VB4, reversing #65's
+"always visible"): the four tabs are views OF one category, so the never-synced first run and the
+"Select a category" state show no bar at all rather than a zeroed one. `updateToolbarVisibility`
+in `app.js` hides the whole `.toolbar` ROW (not just the tablist - a bare row still paints its
+border), clears the badges on the way out, and takes `role="tabpanel"`/`aria-labelledby` off
+`#bookmark-list` with it, because a panel whose tablist is off screen is a role promise the page
+cannot keep. The decision itself is the pure `XBOCategorization.showFilterTabs`. This is also the
+fix for a **Reset** leaving the old category's count badges frozen on screen: a reset returns the
+app to the first run, so the bar and its numbers go with it.
+
+**A sync scrims the first-run view** (PR-VB4). A run takes minutes and cannot be interrupted,
+so while one is active the get-started view sits behind `.first-run-scrim`: `position: fixed` off
+`--header-offset` at `--z-backdrop`, exactly like the drawer's own scrim, which is what leaves the
+top bar, the drawer and the progress strip (raised to `--z-sidebar` for this) usable above it.
+`.first-run-body` is made `inert` from JS, so nothing behind the scrim can be tabbed to or pressed
+a second time, and focus moves to the strip on the way in. It is driven by
+`firstRunEl.dataset.syncing`, which `updateFirstRun` sets from `syncIsRunning()`; `markSyncRunning`
+exists so an accepted run reaches that status at once instead of a poll interval later.
 
 The **category sidebar RESIZES the two columns on wide screens** (issues #65, #78, #86): at
 `min-width: 821px` `body` is a two-column grid - the sidebar track, then `.viewer` (top bar + tab
@@ -368,6 +386,27 @@ none; }` and the inverse) rather than JS toggling the SVG's `hidden` property - 
 observed to silently desync from the attribute in an automated test session, so any per-state
 icon/visual swap in this viewer should prefer a CSS attribute selector over JS-driven `hidden`/
 `style.display`.
+
+**A card leaving the live view slides out** (PR-VB4): marking a post read in the Unread tab (or
+un-starring one in Favorites) animates the card right while fading, and only then do the posts
+below FLIP up to close the gap - `animateCardExit`/`dropCardFromView` in `app.js`. `transform` and
+`opacity` only; the gap is closed with a FLIP, never by animating a layout property. Three things
+are load-bearing. The card is HIDDEN, never detached, so it stays pooled with its mounted X embeds
+(issues #67, #89) - the animation only borrows it on the way out and releases its fill once it is
+hidden, so a later reveal in another tab is clean. `commit` (the real bookkeeping: hide, splice,
+re-count, re-page) runs exactly ONCE, which is why reduced motion and a browser without the Web
+Animations API both fall straight through to today's instant hide. And a FLIP delta measured in
+screen pixels is divided by `cardZoom` (the post-size setting applies `zoom`, and an element's own
+transform resolves in its zoomed space). `.content` carries `overflow-x: hidden` so the sideways
+travel cannot raise a horizontal scrollbar. Delete keeps its instant hide on purpose: its Undo puts
+the card back, and an exit animation racing that restore buys nothing.
+
+Every dropdown in the app is a NATIVE `<select>` styled with CSS (PR-VB4) - `appearance: none`
+plus the chevron its `.select-shell` wrapper draws (`buildField` in `app.js`, `--select-chevron-*`
+in `styles.css`). Styling the native control rather than rebuilding it as a listbox is the whole
+point: the platform's keyboard contract, type-ahead, screen-reader announcement and phone picker
+all keep working and nothing is vendored. `color-scheme` on `:root` is what carries the theme into
+the option popup, the one part of a select no stylesheet here can reach.
 
 Every bookmark card renders at the same fixed-width column (`--post-card-measure`, centered) no
 matter its post's length - a bug fix from issue #30 after cards had drifted to shrink-wrapping

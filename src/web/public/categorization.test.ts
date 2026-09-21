@@ -255,3 +255,29 @@ describe('emptyStateKind', () => {
     expect(XBO.emptyStateKind(undefined, null)).toBe('none');
   });
 });
+
+describe('showFilterTabs (PR-VB4)', () => {
+  it('shows the bar for an open category in a stocked library', () => {
+    expect(XBO.showFilterTabs(12, 3)).toBe(true);
+  });
+
+  it('hides it in the "select a category" state - absent, not zeroed', () => {
+    expect(XBO.showFilterTabs(12, null)).toBe(false);
+  });
+
+  it('hides it in the never-synced first run', () => {
+    expect(XBO.showFilterTabs(0, null)).toBe(false);
+  });
+
+  it('hides it right after a reset, even with the old category still selected', () => {
+    // A reset empties the library; there is nothing left for a tab to filter,
+    // so no stale badge can survive it.
+    expect(XBO.showFilterTabs(0, 3)).toBe(false);
+  });
+
+  it('still shows it for an open category when the count is unknown', () => {
+    // The viewer could not reach its own server: the tabs are correct for
+    // whatever is rendered, which is all the bar claims.
+    expect(XBO.showFilterTabs(undefined, 3)).toBe(true);
+  });
+});

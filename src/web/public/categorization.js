@@ -207,8 +207,27 @@
     return "none";
   }
 
+  /**
+   * Whether the filter tab bar (Unread / Read / All / Favorites) belongs on
+   * screen at all.
+   *
+   * Those four are views OF one category, so with nothing selected - the
+   * "Select a category" prompt, or the never-synced first run - the bar has
+   * nothing to filter and is ABSENT rather than zeroed. That is also what
+   * stops a Reset (which returns the app to the first run) from leaving the
+   * previous category's count badges frozen on screen.
+   *
+   * An unknown count (the viewer could not reach its own server) still shows
+   * the bar for an open category: the tabs are then correct for the posts
+   * that are actually rendered, which is all the bar claims.
+   */
+  function showFilterTabs(bookmarkCount, selectedCategoryId) {
+    return selectedCategoryId != null && bookmarkCount !== 0;
+  }
+
   var api = {
     emptyStateKind: emptyStateKind,
+    showFilterTabs: showFilterTabs,
     fieldsFor: fieldsFor,
     findProvider: findProvider,
     findMethod: findMethod,

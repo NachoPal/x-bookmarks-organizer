@@ -65,6 +65,12 @@
   --panel-action-height: 2.25rem;
   --panel-action-width: 9.5rem;
 
+  /* The app's own dropdown chevron (PR-VB4): the arm length of the glyph
+     drawn beside every <select>, plus the room its column takes at the end of
+     the field so a long option label never runs underneath it. */
+  --select-chevron-size: 0.4rem;
+  --select-chevron-gutter: 2rem;
+
   /* Radii */
   --radius-sm: 6px;
   /* The rounded data-end of a chart bar (the score breakdown's meters). Its
@@ -988,6 +994,10 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  /* A card leaving the view slides out past the content measure (PR-VB4);
+     clip that sideways travel rather than letting it raise a horizontal
+     scrollbar mid-animation. */
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
 .content:focus {
@@ -2567,6 +2577,17 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   background: var(--color-accent-soft);
   color: var(--color-text);
   font-size: var(--text-small);
+  /* Above the first-run sync scrim (PR-VB4): the strip is the one thing
+     that must stay lit and readable while the view behind it is dimmed. */
+  position: relative;
+  z-index: var(--z-sidebar);
+}
+/* The strip takes focus when the get-started view goes behind the scrim, so
+   the global ring has to sit INSIDE this full-bleed row rather than spilling
+   over the bar above it. */
+.sync-progress:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
 }
 .sync-progress[data-state="error"] {
   background: var(--color-danger-soft);
@@ -2696,30 +2717,79 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   font-size: var(--text-small);
   font-weight: 600;
 }
+/* Every dropdown in the app is a NATIVE <select> wearing the app's clothes
+   (PR-VB4) - `appearance: none` plus the chevron its shell draws. Styling
+   the native control rather than rebuilding it as a listbox is deliberate:
+   the platform's keyboard contract, type-ahead, screen-reader announcement
+   and phone picker all keep working, and nothing is vendored to get it.
+   `color-scheme` on :root is what carries the theme into the option popup,
+   which is the one part of a select no stylesheet here can reach. */
+.select-shell {
+  position: relative;
+  display: block;
+}
+.select-shell::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: var(--space-3);
+  width: var(--select-chevron-size);
+  height: var(--select-chevron-size);
+  margin-top: calc(var(--select-chevron-size) / -1.6);
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  color: var(--color-text-muted);
+  /* Decoration only: every click belongs to the select underneath. */
+  pointer-events: none;
+  transition: color var(--motion-fast) var(--ease);
+}
+.select-shell:hover::after {
+  color: var(--color-text);
+}
+.select-shell:has(.field-select:disabled)::after {
+  opacity: 0.6;
+}
 .field-select {
   width: 100%;
   min-height: 2.5rem;
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--select-chevron-gutter) var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
   color: var(--color-text);
   font: inherit;
   font-size: var(--text-small);
+  /* One line, ellipsized: a long model name must not stretch the panel. */
+  text-overflow: ellipsis;
   cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
   transition: border-color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease);
 }
 .field-select:hover:not(:disabled) {
   background: var(--color-surface-2);
+  border-color: var(--color-accent);
 }
 .field-select:focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 1px;
   border-color: var(--color-accent);
 }
+/* Keyboard focus aside, an OPEN select should read as the active field too. */
+.field-select:active:not(:disabled) {
+  border-color: var(--color-accent);
+}
 .field-select:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+/* Firefox/Windows render the popup from the control's own colors, so state
+   them rather than inheriting the (transparent) default. */
+.field-select option {
+  background: var(--color-surface);
+  color: var(--color-text);
 }
 .field-hint {
   margin: 0;
@@ -3184,13 +3254,40 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 }
 
 .first-run {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
   max-width: 34rem;
   margin: 0 auto;
   padding: var(--space-6) var(--space-2);
   counter-reset: first-run-step;
+}
+.first-run-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+/* A sync takes minutes and cannot be interrupted, so the get-started view
+   goes behind a scrim for its duration (PR-VB4): dimmed, click-proof, and
+   (from app.js) `inert`, so nothing behind it can be tabbed to or pressed a
+   second time.
+   It hangs off `--header-offset` at `--z-backdrop`, exactly like the drawer's
+   own scrim, which is what leaves the three things that must stay usable
+   above it: the top bar (--z-header), the drawer (--z-sidebar) and the
+   progress strip, which is raised to the same layer below. Kept in the DOM at
+   opacity 0 (rather than [hidden]) so it fades both ways; the global
+   reduced-motion block flattens that transition, and opacity is the only
+   thing that moves either way. */
+.first-run-scrim {
+  position: fixed;
+  inset: var(--header-offset) 0 0 0;
+  z-index: var(--z-backdrop);
+  background: var(--color-backdrop);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-slow) var(--ease);
+}
+.first-run[data-syncing="true"] .first-run-scrim {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: progress;
 }
 .first-run-intro {
   display: flex;

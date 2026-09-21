@@ -273,3 +273,24 @@ paid Jev run.
 | `score-chip-graph-dark.png` | **Hover graph**, dark. Same tokens; the meter track is a lighter step of the bar's own hue in both themes. |
 | `score-chip-graph-narrow-dark.png` | **~400px.** The popover is clamped into the viewport's gutters instead of running off the edge, and the page still has no horizontal scroll. |
 | `score-order-top-score.png` | **Order → Top score.** The list re-pages from the top in descending score (7.8, 7.6, 7.5, 7.3 …); unranked bookmarks sort LAST and render no chip at all - never a zero. |
+
+## Viewer batch 4 — tab bar scoped to a category, first-run sync scrim, styled dropdowns, read slide-out
+
+Four fixes. The filter tab bar now belongs to a SELECTED category: the never-synced first run and
+the "Select a category" state show no bar at all rather than a zeroed one, which is also what stops
+a Reset leaving the previous category's count badges frozen on screen. A running sync puts the
+get-started view behind a scrim that is dimmed, click-proof and `inert`, with the progress strip lit
+above it. Every `<select>` is the native control styled with `appearance: none` plus the app's own
+chevron, so the platform's keyboard and screen-reader behaviour is untouched. And a post that leaves
+the live tab slides out to the right while fading, after which the posts below FLIP up to close the
+gap - `transform`/`opacity` only, and the card stays pooled so its X embeds are never reloaded.
+
+| File | What it shows |
+| --- | --- |
+| `viewer-batch4-select-category-no-tabs.png` | **"Select a category"**, light, 1280px. No tab bar and no stray border above the prompt - the four tabs are views of one category, so with none open there is nothing for them to filter. |
+| `viewer-batch4-first-run-no-tabs.png` | **First run after a Reset.** Back to the guided get-started view with the tab bar and its badges gone (absent, not frozen at the previous category's numbers). |
+| `viewer-batch4-tabs-selected-category.png` | **Category open**, Unread tab. The bar is back with live badges (5 / 2 / 7 / 1) and `#bookmark-list` is its `tabpanel` again. |
+| `viewer-batch4-first-run-sync-overlay.png` | **Sync running** over the first-run view. The scrim covers the whole content pane below the progress strip, which stays lit and takes focus; the "Sync my bookmarks" button behind it reads "Syncing…", is disabled, and cannot be tabbed to. |
+| `viewer-batch4-dropdowns-light.png` | **Styled dropdowns**, light, Settings panel. Custom chevron, panel-consistent border/radius, and the keyboard focus ring on "Taxonomy model" - still a native `<select>`. |
+| `viewer-batch4-dropdowns-dark.png` | **Same, dark.** The option popup follows `color-scheme` on `:root`, the one part of a select no stylesheet here can reach. |
+| `viewer-batch4-read-slide-midflight.png` | **Mark-as-read, mid-slide** (animation paused at ~70%). The card has flipped to "Read" and is travelling right at ~0.41 opacity; the posts below then FLIP up to close the gap. |
