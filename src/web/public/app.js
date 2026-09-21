@@ -99,6 +99,11 @@
   let cacheOrder = []; // LRU order of cached category ids, oldest first
   const cardPool = new Map(); // post id -> { bm, card }
   let poolOrder = []; // LRU order of pooled post ids, oldest first
+  // A pooled card holds ONE embed per theme it has been shown under (#90), so
+  // the posts' iframes are bounded separately from the cards: LRU order of
+  // `XBOEmbedTheme.variantKey(postId, theme)`, oldest first. Only a SPARE
+  // (hidden, other-theme) variant is ever released - see touchVariantPool.
+  let variantOrder = [];
   let hostMounted = false;
 
   function touchCategoryCache(categoryId) {
@@ -127,14 +132,21 @@
     for (const { card } of cardPool.values()) card.remove();
     cardPool.clear();
     poolOrder = [];
+    variantOrder = [];
   }
 
-  /** Release one pooled post (deleted, or evicted). */
+  /**
+   * Release one pooled post (deleted, or evicted). Removing the card takes
+   * EVERY theme variant it holds with it, so its keys leave the variant LRU
+   * too - otherwise a long session would accumulate keys pointing at cards
+   * that no longer exist.
+   */
   function dropFromPool(id) {
     const pooled = cardPool.get(id);
     if (pooled) pooled.card.remove();
     cardPool.delete(id);
     poolOrder = poolOrder.filter((x) => x !== id);
+    variantOrder = variantOrder.filter((key) => window.XBOEmbedTheme.parseVariantKey(key).id !== String(id));
   }
 
   /**
@@ -180,8 +192,10 @@
     );
     poolOrder = order;
     for (const id of evicted) dropFromPool(id);
-    // A card pooled under the other theme is rebuilt the moment a view shows
-    // it, so a lazily-revealed post never appears in the wrong theme.
+    // A card pooled under the other theme is switched to its variant for the
+    // current one the moment a view shows it (building that variant only if
+    // this post has never been shown in this theme), so a lazily-revealed
+    // post never appears in the wrong theme.
     rethemeVisibleEmbeds();
   }
 
@@ -829,31 +843,43 @@
       themeToggleBtn.setAttribute("aria-label", isDark ? "Switch to light theme" : "Switch to dark theme");
     }
     // The posts are cross-origin widgets X themes at creation, so the toggle
-    // has to rebuild them to bring them along (issue #89).
+    // switches each visible card to its embed for this theme (issues #89, #90).
     scheduleEmbedRetheme();
   }
 
-  // ---- keeping the posts on the app's theme (issue #89) --------------------
+  // ---- keeping the posts on the app's theme (issues #89, #90) --------------
   // The chrome re-themes from one attribute; the posts cannot. An X embed is a
   // cross-origin iframe whose theme is fixed when `createTweet` is called and
-  // has no API to change afterwards, so following the toggle means building
-  // the embed again. Two rules keep that from being expensive or jarring:
+  // has no API to change afterwards, so a post shown under both themes needs
+  // TWO embeds. They are kept side by side inside the card's one `.embed-slot`
+  // as `.embed-variant` children - exactly one visible, the other hidden but
+  // still MOUNTED, because detaching an iframe and re-attaching it reloads it.
+  // So the first time a post is shown in a theme its variant is built (and
+  // loads, with the skeleton + spinner); every toggle back to a theme already
+  // seen just reveals the variant that is already there, instantly and with no
+  // network at all.
   //
-  //  - only the cards actually ON SCREEN are rebuilt here. The per-post pool
-  //    (#67) holds every card ever loaded, and re-creating dozens of hidden
-  //    widgets would re-fetch them all for nobody; a hidden card carries its
-  //    stale stamp until `paintViewCards` next reveals it, which re-themes it
-  //    then - so a card is never shown under the wrong theme either.
-  //  - the slot keeps the height its finished embed had while the new one
-  //    loads, so the column does not collapse to the skeleton's height and
-  //    yank the reader's scroll position out from under them.
+  // Three rules keep that from being expensive or jarring:
+  //
+  //  - only the cards actually ON SCREEN are touched here. The per-post pool
+  //    (#67) holds every card ever loaded, and building dozens of hidden
+  //    widgets would fetch them all for nobody; a hidden card keeps the
+  //    variant it is showing until `paintViewCards` next reveals it, which
+  //    re-themes it then - so a card is never shown under the wrong theme.
+  //  - while a NEW variant loads, the slot keeps the height the outgoing one
+  //    had, so the column does not collapse to the skeleton's height and yank
+  //    the reader's scroll position out from under them. A reveal needs no
+  //    such reservation - the variant already has its height.
+  //  - the variants are LRU-bounded (`touchVariantPool`), so the two-per-post
+  //    ceiling cannot grow the page without limit over a long session.
   //
   // The card shell, its read/favorite state, its order and every cache entry
-  // are untouched: only the embed inside the slot is rebuilt.
+  // are SHARED by both variants and untouched by a toggle: only which embed
+  // inside the slot is visible changes.
   const RETHEME_DEBOUNCE_MS = 60;
   let rethemeTimer = null;
 
-  /** Coalesce a burst of toggles into ONE rebuild pass. */
+  /** Coalesce a burst of toggles into ONE pass. */
   function scheduleEmbedRetheme() {
     if (rethemeTimer !== null) window.clearTimeout(rethemeTimer);
     rethemeTimer = window.setTimeout(() => {
@@ -862,39 +888,103 @@
     }, RETHEME_DEBOUNCE_MS);
   }
 
+  /** A slot's theme variants, in DOM order. */
+  function embedVariants(slot) {
+    return Array.from(slot.children).filter((node) => node.classList.contains("embed-variant"));
+  }
+
+  /** Show exactly one of a slot's variants; the rest stay mounted but hidden. */
+  function showEmbedVariant(slot, variant) {
+    for (const other of embedVariants(slot)) other.hidden = other !== variant;
+  }
+
   /**
-   * Rebuild the on-screen embeds whose stamp is not the current theme. WHICH
-   * cards that is - and which are only re-stamped or left alone - is decided
-   * by the pure `XBOEmbedTheme.rethemeAction`; this half only carries it out.
+   * Bring every on-screen card onto the current theme. WHICH cards that is -
+   * and whether each one reveals a variant it already has or has to build its
+   * first one for this theme - is decided by the pure
+   * `XBOEmbedTheme.rethemeAction`; this half only carries it out.
    */
   function rethemeVisibleEmbeds() {
-    if (!window.XBOEmbedTheme) return;
     const theme = isDarkTheme() ? "dark" : "light";
-    for (const pooled of cardPool.values()) {
+    const shown = [];
+    for (const [id, pooled] of cardPool) {
       const slot = pooled.card.querySelector(".embed-slot");
       if (!slot) continue;
-      const action = window.XBOEmbedTheme.rethemeAction(
+      const variants = embedVariants(slot);
+      const decision = window.XBOEmbedTheme.rethemeAction(
         {
-          stamp: slot.dataset.embedTheme,
           hidden: pooled.card.hidden,
-          hasFallback: !!slot.querySelector(".embed-fallback"),
+          variants: variants.map((variant) => ({
+            theme: variant.dataset.embedTheme,
+            fallback: variant.dataset.embedFallback === "1",
+            visible: !variant.hidden,
+          })),
         },
         theme,
       );
-      if (action === "restamp") slot.dataset.embedTheme = theme;
-      else if (action === "rebuild") remountEmbed(pooled, slot);
+      if (decision.action === "reveal") {
+        const variant = variants[decision.index];
+        showEmbedVariant(slot, variant);
+        // The revealed variant carries its own height; a reservation left
+        // over from the build that replaced it would only pad the slot.
+        slot.style.minHeight = "";
+        shown.push(window.XBOEmbedTheme.variantKey(id, variant.dataset.embedTheme));
+      } else if (decision.action === "build") {
+        buildThemeVariant(pooled, slot);
+        shown.push(window.XBOEmbedTheme.variantKey(id, theme));
+      }
     }
+    touchVariantPool(shown);
   }
 
-  function remountEmbed(pooled, slot) {
+  /** Add this post's first embed for the current theme, beside the old one. */
+  function buildThemeVariant(pooled, slot) {
     const reserved = slot.offsetHeight;
     if (reserved > 0) slot.style.minHeight = `${reserved}px`;
-    slot.replaceChildren();
     mountEmbed(pooled.bm, pooled.card, slot, {
       onSettled: () => {
         slot.style.minHeight = "";
       },
     });
+  }
+
+  /**
+   * Mark `keys` most recently shown in the variant LRU and release the
+   * coldest variants beyond `XBOEmbedTheme.MAX_POOLED_EMBEDS`. Only a SPARE
+   * variant can go: every card's VISIBLE one is protected, so an eviction
+   * only ever drops an off-screen post's other-theme copy - which that post
+   * rebuilds if it is ever shown under that theme again. Dropping the whole
+   * post (`dropFromPool`) is what releases both of its variants.
+   */
+  function touchVariantPool(keys) {
+    const visible = [];
+    for (const [id, { card }] of cardPool) {
+      const slot = card.querySelector(".embed-slot");
+      if (!slot) continue;
+      for (const variant of embedVariants(slot)) {
+        if (!variant.hidden) visible.push(window.XBOEmbedTheme.variantKey(id, variant.dataset.embedTheme));
+      }
+    }
+    const { order, evicted } = window.XBOFilterCache.touchPool(
+      variantOrder,
+      keys,
+      window.XBOEmbedTheme.MAX_POOLED_EMBEDS,
+      visible,
+    );
+    variantOrder = order;
+    for (const key of evicted) releaseEmbedVariant(key);
+  }
+
+  /** Remove one spare (hidden) theme variant from its card. */
+  function releaseEmbedVariant(key) {
+    const { id, theme } = window.XBOEmbedTheme.parseVariantKey(key);
+    const pooled = cardPool.get(Number(id));
+    if (!pooled) return;
+    const slot = pooled.card.querySelector(".embed-slot");
+    if (!slot) return;
+    for (const variant of embedVariants(slot)) {
+      if (variant.hidden && variant.dataset.embedTheme === theme) variant.remove();
+    }
   }
 
   function initThemeToggle() {
@@ -2016,32 +2106,34 @@
   // forever. whenWidgetsReady already bounds the "never loads" case at 15s.
   const EMBED_RENDER_TIMEOUT_MS = 20000;
 
-  // Each renderEmbed call stamps the slot it owns. A re-theme (below) empties
-  // the slot and mounts a new embed into it, so an older call's promise must
-  // be able to tell that it no longer owns the slot and stay silent - without
-  // this an in-flight createTweet could drop a stale fallback on top of the
-  // embed that replaced it.
-  let embedGeneration = 0;
-
   /**
-   * (Re)mount a card's X embed at the CURRENT theme, recording on the slot
-   * which theme it was built with. That stamp is what `rethemeVisibleEmbeds`
-   * reads: X hands a widget its theme at creation and offers no way to change
-   * it afterwards, so "does this embed match the app" is not otherwise
-   * knowable.
+   * Build this card's embed for the CURRENT theme as a new `.embed-variant`
+   * inside its slot, and show it. Any variant already there (the one for the
+   * other theme) stays MOUNTED and merely hidden, so toggling back reveals it
+   * without reloading - X hands a widget its theme at creation and offers no
+   * way to change it afterwards, which is why a post needs one embed per
+   * theme rather than one embed that follows the toggle (issues #89, #90).
    */
   function mountEmbed(bm, card, slot, opts) {
     const host = slot || card.querySelector(".embed-slot");
     if (!host) return;
-    host.dataset.embedTheme = isDarkTheme() ? "dark" : "light";
-    renderEmbed(host, bm, () => setRead(bm, card, true), opts);
+    const variant = el("div", "embed-variant");
+    variant.dataset.embedTheme = isDarkTheme() ? "dark" : "light";
+    host.appendChild(variant);
+    showEmbedVariant(host, variant);
+    touchVariantPool([window.XBOEmbedTheme.variantKey(bm.id, variant.dataset.embedTheme)]);
+    renderEmbed(variant, bm, () => setRead(bm, card, true), opts);
   }
 
-  function renderEmbed(slot, bm, onOpen, opts) {
+  function renderEmbed(variant, bm, onOpen, opts) {
     const options = opts || {};
-    const generation = String((embedGeneration += 1));
-    slot.dataset.embedGen = generation;
-    const superseded = () => slot.dataset.embedGen !== generation;
+    // A variant can be released while its createTweet is still in flight (the
+    // LRU dropping a spare theme copy, or the whole post leaving the pool).
+    // Such a call must stay silent: settling would clear the `min-height` the
+    // slot is holding for the variant that REPLACED it, collapsing the column
+    // under the reader. The card is still detached while it renders, so this
+    // is only ever consulted from the async paths below.
+    const abandoned = () => !variant.isConnected;
     const settle = () => {
       if (options.onSettled) options.onSettled();
     };
@@ -2059,12 +2151,12 @@
     // The embed renders into its own host (empty, so nothing shows until X is
     // done); the loader sits alongside it and is removed on resolve.
     const embedHost = el("div", "embed-host");
-    slot.append(loader, embedHost);
+    variant.append(loader, embedHost);
 
     let settled = false;
 
     function showFallback() {
-      if (settled || superseded()) return;
+      if (settled || abandoned()) return;
       settled = true;
       loader.remove();
       embedHost.remove();
@@ -2083,12 +2175,13 @@
       link.rel = "noopener noreferrer";
       if (onOpen) link.addEventListener("click", onOpen);
       fallback.appendChild(link);
-      slot.appendChild(fallback);
+      variant.dataset.embedFallback = "1";
+      variant.appendChild(fallback);
       settle();
     }
 
     function showEmbed() {
-      if (settled || superseded()) return;
+      if (settled || abandoned()) return;
       settled = true;
       loader.remove(); // the rendered embed already lives in embedHost
       settle();
@@ -2100,20 +2193,9 @@
     // Wait for it (rather than committing to the fallback) so embeds appear.
     whenWidgetsReady().then((twttr) => {
       if (settled) return;
-      if (superseded()) {
-        // A newer mount owns this slot (a theme change re-created the embed);
-        // it has its own loader and its own reserved height, so this one just
-        // stands down without touching either.
+      if (abandoned()) {
         clearTimeout(backstop);
         settled = true;
-        return;
-      }
-      if (!slot.isConnected) {
-        // Card was replaced (e.g. filter/category change) before we resolved;
-        // stop here so the backstop can't act on a detached node.
-        clearTimeout(backstop);
-        settled = true;
-        settle();
         return;
       }
       if (!twttr) {
@@ -2123,7 +2205,7 @@
       }
       twttr.widgets
         .createTweet(bm.postId, embedHost, {
-          theme: slot.dataset.embedTheme === "dark" ? "dark" : "light",
+          theme: variant.dataset.embedTheme === "dark" ? "dark" : "light",
           conversation: "none",
         })
         .then((embedded) => {
