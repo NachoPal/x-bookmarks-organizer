@@ -61,6 +61,10 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
+  /* The radius X's own embedded-tweet card is drawn with. The embed host is
+     clipped to exactly this so the iframe's (light) canvas cannot show at the
+     corners behind the rounded post - the white corners of issue #89. */
+  --radius-embed: 12px;
 
   /* Elevation */
   --shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.06), 0 1px 3px rgba(20, 24, 31, 0.08);
@@ -82,6 +86,12 @@
   --motion-med: 200ms;
   --motion-slow: 260ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Category tree: the drag handle's column (roots only, issue #82) and the
+     per-level indent. Children clear the handle AND step in past it, so a
+     subtree still reads as sitting inside its root (issue #89). */
+  --tree-grip-width: 1.5rem;
+  --tree-indent: var(--space-4);
 
   /* Layout */
   --header-height: 3.5rem;
@@ -302,6 +312,9 @@ body {
   justify-content: flex-end;
 }
 .topbar-center {
+  /* `relative` anchors the crumb overflow menu, which must hang OUTSIDE the
+     title (the title clips its own overflow to stay on one line). */
+  position: relative;
   flex: 0 1 auto;
   min-width: 0;
   display: flex;
@@ -337,8 +350,111 @@ body {
 }
 .topbar-crumb {
   max-width: 40%;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  white-space: nowrap;
   color: var(--color-text-muted);
   font-weight: 500;
+}
+
+/* ---- Clickable breadcrumb (issue #89) ----------------------------------
+   Every segment of the open category's path selects that category, and the
+   collapsed middle of a deep path is a real control that reveals what it hid.
+   The segments are buttons so they carry the keyboard contract for free; they
+   are styled as text so the bar still reads as a title, with hover/focus
+   telling the owner they are live. */
+.crumb-link {
+  flex: 0 1 auto;
+  min-width: 0;
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: var(--space-1) var(--space-1);
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.crumb-link:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+.crumb-link:active {
+  background: var(--color-border);
+}
+.crumb-link:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+/* The open category: the full-strength text the bar already showed. */
+.crumb-current {
+  color: var(--color-text);
+  font-weight: inherit;
+}
+.crumb-sep {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+}
+/* The "…" standing in for the ancestors that did not fit. Wider than its one
+   glyph so it is a real target next to its neighbours. */
+.crumb-overflow {
+  flex: 0 0 auto;
+  min-width: 1.75rem;
+  text-align: center;
+  line-height: 1;
+}
+.crumb-overflow[aria-expanded="true"] {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+.crumb-menu {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 1;
+  min-width: 11rem;
+  max-width: min(22rem, calc(100vw - 2 * var(--space-4)));
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+}
+.crumb-menu-item {
+  appearance: none;
+  border: 0;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  font: inherit;
+  font-size: var(--text-body);
+  font-weight: 500;
+  color: var(--color-text);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.crumb-menu-item:hover {
+  background: var(--color-surface-2);
+}
+.crumb-menu-item:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
 }
 .sync-status {
   min-width: 0;
@@ -1036,6 +1152,21 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   .topbar-crumb {
     display: none;
   }
+  /* A popover anchored to its own icon runs off the edge once the icon is not
+     the rightmost one (the ranking icon, issue #89). At this width they span
+     the viewport's gutters instead, which is also the easier tap target. */
+  /* The compound selectors out-specify the per-panel widths further down the
+     file, which would otherwise keep their desktop value here. */
+  .settings-panel,
+  .settings-panel.sync-panel,
+  .settings-panel.rank-panel {
+    position: fixed;
+    top: calc(var(--header-offset) + var(--space-2));
+    left: var(--space-2);
+    right: var(--space-2);
+    width: auto;
+    max-width: none;
+  }
   /* Four tabs share ~400px: trim their padding rather than their labels. */
   .filter-tab {
     gap: var(--space-1);
@@ -1062,11 +1193,20 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   margin: 0;
   padding: 0;
 }
-/* Nested lists indent with a subtle guide line. */
+/* Nested lists indent with a subtle guide line. The guide sits where the
+   parent's own chevron column starts, and the padding is the step that makes
+   a child read as being INSIDE its parent rather than beside it. */
 .tree ul ul {
-  margin-left: 0.6rem;
-  padding-left: var(--space-3);
+  margin-left: var(--space-1);
+  padding-left: var(--tree-indent);
   border-left: 1px solid var(--color-border);
+}
+/* Roots carry a drag handle (issue #82) that their children do not, so a
+   root's subtree would otherwise start LEFT of its own chevron and read as a
+   sibling. Its first level clears that column first, then takes the same
+   step as every deeper level. */
+.tree > ul > li > ul {
+  margin-left: calc(var(--tree-grip-width) + var(--space-1));
 }
 .tree-row {
   display: flex;
@@ -1100,7 +1240,7 @@ body:not([data-sidebar="collapsed"]) .sidebar {
    so it is a comfortable target; touch-action none lets a finger drag it. */
 .tree-grip {
   flex: 0 0 auto;
-  width: 1.5rem;
+  width: var(--tree-grip-width);
   height: 2.25rem;
   display: inline-flex;
   align-items: center;
@@ -1472,12 +1612,29 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   width: 100%;
 }
 /* Contain the official X embed so its iframe never overflows the card, and
-   center it (its own intrinsic width is often narrower than the slot). */
+   center it (its own intrinsic width is often narrower than the slot).
+
+   The radius is what fixes the white corners (issue #89): X draws the post as
+   a rounded card inside a SQUARE iframe whose document canvas is light, so in
+   dark mode four white corners peeked out from behind it. That canvas belongs
+   to a cross-origin document and cannot be restyled from here - it can only be
+   clipped, which is exactly what matching X's own 12px radius does. The
+   surface background underneath covers the same corners for an embed that ever
+   renders transparent instead. */
 .embed-slot :where(iframe, .twitter-tweet, .twitter-tweet-rendered) {
   max-width: 100% !important;
   margin-top: 0 !important;
   margin-bottom: 0 !important;
   margin-inline: auto !important;
+  border-radius: var(--radius-embed);
+  overflow: hidden;
+  background-color: var(--color-surface);
+}
+/* The slot's own host, rounded and clipped for the same reason. */
+.embed-host {
+  border-radius: var(--radius-embed);
+  overflow: hidden;
+  background-color: var(--color-surface);
 }
 /* Loading placeholder shown in an embed slot until X's widgets.js reports the
    tweet fully rendered (then revealed) or the post can't embed (link fallback).
@@ -2670,35 +2827,49 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   }
 }
 
-/* ---- In-app ranking run (PAID, confirm-gated - issue #80) ---------------- */
-/* Sits in the sync popover between the Sync button and Reset: the same kind of
-   deliberate, whole-library action, and like Reset it never fires on one
-   press - the button opens a confirmation that names the cost first. */
-.sync-rank {
-  display: flex;
-  flex-direction: column;
+/* ---- In-app ranking run (PAID, confirm-gated - issues #80, #89) ---------- */
+/* Its own top-bar icon and popover, to the LEFT of sync (issue #89): ranking
+   is not part of syncing, and a paid, whole-library action deserves a panel
+   that is only about itself. Like Reset it never fires on one press - the
+   button opens a confirmation that names the cost first. */
+.rank-panel {
+  width: min(20rem, calc(100vw - 2 * var(--space-4)));
+  gap: var(--space-3);
   align-items: flex-start;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border);
 }
-.sync-subheading {
+.rank-panel .rank-btn {
+  align-self: flex-start;
+}
+/* A run keeps going with the panel closed, so the icon carries that state
+   too - by a slow pulse AND the title, never by color alone. The global
+   reduced-motion block at the end of this file flattens the animation. */
+.rank-toggle.is-ranking {
+  color: var(--color-accent);
+  animation: rank-pulse 1.6s ease-in-out infinite;
+}
+@keyframes rank-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+.rank-note {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--text-small);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  line-height: var(--leading-body);
 }
-.sync-rank-note {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-small);
+/* Inside a popover the progress strip is a card, not the full-bleed band it
+   is under the toolbar. */
+.panel-progress {
+  align-self: stretch;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
 }
 /* Why the button is disabled, in the panel itself - a disabled control whose
    only explanation is a tooltip is a dead end on touch. */
-.sync-rank-blocker {
+.rank-blocker {
   margin: 0;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
@@ -2706,17 +2877,59 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   color: var(--color-text);
   font-size: var(--text-small);
   line-height: var(--leading-body);
-  /* The credential chain writes these messages as deliberate lines - "what is
-     wrong", then "the command that fixes it", then "what is unaffected". HTML
-     would collapse them into one block of prose, so the breaks are kept. */
-  white-space: pre-line;
   /* `break-word`, not `anywhere`: a long env var name must not overflow the
      panel, but it should move to the next line intact before it is split. */
+  overflow-wrap: break-word;
+}
+.rank-blocker-headline {
+  margin: 0;
+  font-weight: 600;
+}
+.rank-blocker-more {
+  margin-top: var(--space-1);
+}
+.rank-blocker-summary {
+  /* Left at the default `list-item` so the disclosure marker survives - it is
+     what says there is more to read. */
+  width: fit-content;
+  padding: var(--space-1) 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  cursor: pointer;
+}
+.rank-blocker-summary:hover {
+  color: var(--color-text);
+}
+.rank-blocker-summary:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.rank-blocker-detail {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  /* The credential chain writes this as deliberate lines - "what is wrong",
+     then the places a secret can come from, then what is unaffected. HTML
+     would collapse them into one block of prose, so the breaks are kept.
+     Scoped to the detail: on the wrapper it also preserved the newlines
+     BETWEEN its child elements, which showed up as a stray blank line. */
+  white-space: pre-line;
   overflow-wrap: break-word;
 }
 .rank-btn.is-ranking {
   cursor: progress;
   opacity: 1;
+}
+/* A blocked paid action must not still LOOK pressable: the accent fill at 55%
+   opacity (the generic `.btn:disabled`) still reads as "go". The muted surface
+   says otherwise, and the blocker beneath it says why. */
+.rank-btn:disabled {
+  opacity: 1;
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  box-shadow: none;
 }
 
 /* The confirmation's cost callout. Amber, not red: spending money is not an

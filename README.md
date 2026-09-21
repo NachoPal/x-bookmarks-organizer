@@ -233,11 +233,11 @@ local DB. Idempotent - re-running removes 0:
 node dist/index.js clear-summaries
 ```
 
-Score stored bookmarks by learning value (opt-in and **paid** - see "Ranking bookmarks by learning
-value" below):
+Score stored bookmarks by learning value (**paid**, needs `TYPESAFE_API_KEY` - see "Ranking
+bookmarks by learning value" below):
 
 ```
-XBOOKMARKS_RANKER=typesafe node dist/index.js rank --dry-run
+node dist/index.js rank --dry-run
 ```
 
 ## Structured bookmark content (for a ranking/scoring tool)
@@ -304,7 +304,7 @@ interface BookmarkContent {
 | `XBOOKMARKS_TYPESAFE_MULTILABEL` | `0.6`         | Score floor for keeping an ADDITIONAL category |
 | `XBOOKMARKS_TYPESAFE_MAX_LABELS` | `3`           | Cap on categories per bookmark            |
 | `XBOOKMARKS_TYPESAFE_CONCURRENCY` | `8`          | Bookmarks classified in parallel          |
-| `XBOOKMARKS_RANKER`      | `off`                  | Turn the **ranking** pass on (`typesafe`, **paid**, see below) |
+| `XBOOKMARKS_RANKER`      | `typesafe`             | The **ranking** pass (**paid**, needs `TYPESAFE_API_KEY`; `off` disables it, see below) |
 | `XBOOKMARKS_RANKER_MODEL` | `jev-latest`          | TypeSafe model for the ranking pass       |
 | `XBOOKMARKS_RANKER_INTERESTS` | -                 | What you care about, in your own words; adds a relevance question to the rubric |
 | `XBOOKMARKS_RANKER_CONCURRENCY` | `6`             | Bookmarks scored in parallel              |
@@ -397,19 +397,24 @@ that and lets the viewer order by it. It runs on the TypeSafe/Jev API's `Score` 
 same structured `BookmarkContent` above - which is what that shape was built for.
 
 ```
-XBOOKMARKS_RANKER=typesafe node dist/index.js rank --dry-run   # how many would be scored; no API call
-XBOOKMARKS_RANKER=typesafe node dist/index.js rank             # score them
-XBOOKMARKS_RANKER=typesafe node dist/index.js rank --limit 50  # a cost ceiling for a first look
-XBOOKMARKS_RANKER=typesafe node dist/index.js rank --all       # re-score everything, not just what is missing
-node dist/index.js clear-scores                                # drop every stored score (no key needed)
+node dist/index.js rank --dry-run   # how many would be scored; no API call
+node dist/index.js rank             # score them
+node dist/index.js rank --limit 50  # a cost ceiling for a first look
+node dist/index.js rank --all       # re-score everything, not just what is missing
+node dist/index.js clear-scores     # drop every stored score (no key needed)
 ```
 
-**It is off by default and never runs on its own.** It needs BOTH `XBOOKMARKS_RANKER=typesafe` and a
-`TYPESAFE_API_KEY` resolved through the usual credential chain, and the opt-in is checked first - a
-key left over from a categorization experiment cannot turn `rank` into a paid run by itself. Every
-run prints how it is billed before making a call, and `--dry-run` makes none at all. Nothing else in
-the tool reads any of this: syncing, categorizing, summaries and browsing are untouched whether it
-is on or off. As with the paid categorizer, your bookmark text is sent to a third-party hosted API.
+It can also be started from the app: the ranking icon in the top bar opens a panel with a
+**Rank now** button, which always opens a confirmation naming the cost before anything runs.
+
+**It never runs on its own.** Ranking is available by default, but the only thing that makes a run
+possible is a `TYPESAFE_API_KEY` resolved through the usual credential chain - without one, `rank`
+refuses and the in-app button is disabled with "TypeSafe API key missing". Having a key is still
+not spending: `rank` only runs when you invoke it, the in-app run additionally requires the explicit
+confirmation above, and every run prints how it is billed before making a call (`--dry-run` makes
+none at all). Set `XBOOKMARKS_RANKER=off` to remove ranking from the app entirely. Nothing else in
+the tool reads any of this: syncing, categorizing, summaries and browsing are untouched either way.
+As with the paid categorizer, your bookmark text is sent to a third-party hosted API.
 
 The rubric asks four well-scoped questions per bookmark - **learning value**, **insight density**,
 **durability** and **actionability** - plus a **relevance** question when you set

@@ -237,3 +237,19 @@ toggle moved next to the sidebar's "Categories" heading, and the stray last-sync
 | `sidebar-colors-toggle-light.png` | Sidebar with the colors toggle beside "Categories" (colors on). |
 | `sync-panel-dark-400.png` | Sync popover, dark, narrow. |
 | `sidebar-colors-toggle-dark-400.png` | Sidebar colors toggle, dark, narrow. |
+
+## Viewer batch 2 — live post theming, breadcrumb, ranking panel
+
+Visual evidence for the six-fix viewer batch: X embeds that follow the light/dark
+toggle live, the white corners behind a dark post, a clickable top-bar breadcrumb,
+ranking's own icon + popover, and deeper child indentation in the tree. Same seeded
+dataset, never real bookmarks.
+
+| File | What it shows |
+| --- | --- |
+| `batch2-dark-card-corners-before.png` | **Before**, dark mode, card zoomed. X draws the post as a rounded card inside a square iframe whose canvas is light, so four white corners peek out from behind it. |
+| `batch2-dark-card-corners-after.png` | **After.** The embed host is clipped to X's own 12px radius, so nothing light shows at the corners. The post itself is dark because the toggle re-created it - no reload. |
+| `batch2-breadcrumb-overflow-dark.png` | **Breadcrumb**, 4-level path. Every segment selects that category; the collapsed `…` opens a menu of the ancestors it hid (arrow keys + Escape), and the bar stays on one line. |
+| `batch2-rank-panel-dark.png` | **Ranking panel**, opened from its own top-bar icon left of sync. Holds "Rank now" and the run's progress; with no `TYPESAFE_API_KEY` the button is disabled and the panel names the cause, with the credential chain's how-to behind a disclosure. |
+| `batch2-rank-panel-narrow-400-dark.png` | **~400px.** The popover spans the viewport gutters rather than running off the edge (its icon is no longer the rightmost one). |
+| `batch2-sidebar-indent-light.png` | **Tree indentation.** Children clear the root's drag handle and then step in again, so nesting reads clearly at every depth. |

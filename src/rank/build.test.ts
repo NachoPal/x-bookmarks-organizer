@@ -23,32 +23,33 @@ function config(env: NodeJS.ProcessEnv): Config {
   return loadConfig(env);
 }
 
-describe('ranking opt-in', () => {
-  it('is off with an empty environment', () => {
-    expect(config({}).ranker.id).toBe('off');
+describe('ranking availability', () => {
+  it('is on with an empty environment (issue #80: the key is the gate, not an env opt-in)', () => {
+    expect(config({}).ranker.id).toBe('typesafe');
   });
 
-  it('treats an unrecognized XBOOKMARKS_RANKER as off, never as an opt-in', () => {
-    // The failure mode of a typo must be "no ranking", not "unexpected spend".
-    expect(config({ XBOOKMARKS_RANKER: 'jev' }).ranker.id).toBe('off');
+  it('is off only when asked for explicitly; anything unrecognized keeps the default', () => {
+    expect(config({ XBOOKMARKS_RANKER: 'off' }).ranker.id).toBe('off');
+    expect(config({ XBOOKMARKS_RANKER: 'jev' }).ranker.id).toBe('typesafe');
     expect(config({ XBOOKMARKS_RANKER: 'typesafe ' }).ranker.id).toBe('typesafe');
   });
 
-  it('refuses to build while off, even with a key sitting in the environment', () => {
-    expect(() => buildRanker(config({}), store({ TYPESAFE_API_KEY: 'k' }))).toThrow(
-      /Ranking is off/,
-    );
+  it('refuses to build while explicitly off, even with a key in the environment', () => {
+    expect(() =>
+      buildRanker(config({ XBOOKMARKS_RANKER: 'off' }), store({ TYPESAFE_API_KEY: 'k' })),
+    ).toThrow(/Ranking is turned off/);
   });
 
-  it('refuses to build with the opt-in but no resolvable key', () => {
-    expect(() => buildRanker(config({ XBOOKMARKS_RANKER: 'typesafe' }), store())).toThrow(
-      /TYPESAFE_API_KEY/,
-    );
+  it('refuses to build with no resolvable key, leading with the one clear cause', () => {
+    // The in-app blocker is this message's first line, so it must name the
+    // missing key rather than an env opt-in the owner no longer has to set.
+    expect(() => buildRanker(config({}), store())).toThrow(/TypeSafe API key missing/);
+    expect(() => buildRanker(config({}), store())).toThrow(/TYPESAFE_API_KEY/);
   });
 
-  it('builds the scorer and the rubric once both gates pass', () => {
+  it('builds the scorer and the rubric once the key resolves', () => {
     const built = buildRanker(
-      config({ XBOOKMARKS_RANKER: 'typesafe', XBOOKMARKS_RANKER_INTERESTS: 'compilers' }),
+      config({ XBOOKMARKS_RANKER_INTERESTS: 'compilers' }),
       store({ TYPESAFE_API_KEY: 'k' }),
     );
     expect(built.scorer).toBeDefined();

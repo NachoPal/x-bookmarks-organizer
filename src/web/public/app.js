@@ -180,6 +180,9 @@
     );
     poolOrder = order;
     for (const id of evicted) dropFromPool(id);
+    // A card pooled under the other theme is rebuilt the moment a view shows
+    // it, so a lazily-revealed post never appears in the wrong theme.
+    rethemeVisibleEmbeds();
   }
 
   /** Add server rows to the current view, reusing pooled cards. */
@@ -572,11 +575,15 @@
     });
   }
 
-  // ---- top-bar popovers: sync + settings (issues #37, #71) -----------------
-  // Two icon buttons in the bar's right region, each opening a panel anchored
-  // under it. Settings holds post size, order and categorization; Sync holds
-  // the last-synced time and the Sync button. Opening one closes the other.
+  // ---- top-bar popovers: ranking + sync + settings (issues #37, #71, #89) ---
+  // Icon buttons in the bar's right region, each opening a panel anchored
+  // under it, in the bar's own order. Settings holds post size, order and
+  // categorization; Sync holds the last-synced time and the Sync button;
+  // Ranking - to the LEFT of sync - holds "Rank now" and the run's progress,
+  // which used to sit inside the sync panel and does not belong to syncing.
+  // Opening one closes the others.
   const popovers = [
+    { toggle: document.getElementById("rank-toggle"), panel: document.getElementById("rank-panel"), name: "ranking" },
     { toggle: document.getElementById("sync-toggle"), panel: document.getElementById("sync-panel"), name: "sync" },
     { toggle: document.getElementById("settings-toggle"), panel: document.getElementById("settings-panel"), name: "settings" },
   ].filter((p) => p.toggle && p.panel);
@@ -655,7 +662,7 @@
   // ---- list ordering (issue #62) -----------------------------------------
   // This control only chooses how to ORDER what has already been scored; it
   // never starts a run. Starting one lives behind the confirm-gated "Rank now"
-  // in the sync popover (issue #80), which is where the paid decision belongs.
+  // in the ranking popover (issues #80, #89), where the paid decision belongs.
   const sortOrderEl = document.getElementById("sort-order");
   const sortOrderHintEl = document.getElementById("sort-order-hint");
 
@@ -679,7 +686,7 @@
       sortOrderHintEl.textContent =
         total === 0
           ? "Nothing is ranked yet."
-          : `None of your ${total} bookmarks are ranked yet. Ranking is paid per token; start a run from "Rank now" in the sync panel.`;
+          : `None of your ${total} bookmarks are ranked yet. Ranking is paid per token; start a run from "Rank now" in the ranking panel.`;
       return;
     }
     sortOrderHintEl.textContent =
@@ -821,6 +828,73 @@
       themeToggleBtn.setAttribute("aria-pressed", String(isDark));
       themeToggleBtn.setAttribute("aria-label", isDark ? "Switch to light theme" : "Switch to dark theme");
     }
+    // The posts are cross-origin widgets X themes at creation, so the toggle
+    // has to rebuild them to bring them along (issue #89).
+    scheduleEmbedRetheme();
+  }
+
+  // ---- keeping the posts on the app's theme (issue #89) --------------------
+  // The chrome re-themes from one attribute; the posts cannot. An X embed is a
+  // cross-origin iframe whose theme is fixed when `createTweet` is called and
+  // has no API to change afterwards, so following the toggle means building
+  // the embed again. Two rules keep that from being expensive or jarring:
+  //
+  //  - only the cards actually ON SCREEN are rebuilt here. The per-post pool
+  //    (#67) holds every card ever loaded, and re-creating dozens of hidden
+  //    widgets would re-fetch them all for nobody; a hidden card carries its
+  //    stale stamp until `paintViewCards` next reveals it, which re-themes it
+  //    then - so a card is never shown under the wrong theme either.
+  //  - the slot keeps the height its finished embed had while the new one
+  //    loads, so the column does not collapse to the skeleton's height and
+  //    yank the reader's scroll position out from under them.
+  //
+  // The card shell, its read/favorite state, its order and every cache entry
+  // are untouched: only the embed inside the slot is rebuilt.
+  const RETHEME_DEBOUNCE_MS = 60;
+  let rethemeTimer = null;
+
+  /** Coalesce a burst of toggles into ONE rebuild pass. */
+  function scheduleEmbedRetheme() {
+    if (rethemeTimer !== null) window.clearTimeout(rethemeTimer);
+    rethemeTimer = window.setTimeout(() => {
+      rethemeTimer = null;
+      rethemeVisibleEmbeds();
+    }, RETHEME_DEBOUNCE_MS);
+  }
+
+  /**
+   * Rebuild the on-screen embeds whose stamp is not the current theme. WHICH
+   * cards that is - and which are only re-stamped or left alone - is decided
+   * by the pure `XBOEmbedTheme.rethemeAction`; this half only carries it out.
+   */
+  function rethemeVisibleEmbeds() {
+    if (!window.XBOEmbedTheme) return;
+    const theme = isDarkTheme() ? "dark" : "light";
+    for (const pooled of cardPool.values()) {
+      const slot = pooled.card.querySelector(".embed-slot");
+      if (!slot) continue;
+      const action = window.XBOEmbedTheme.rethemeAction(
+        {
+          stamp: slot.dataset.embedTheme,
+          hidden: pooled.card.hidden,
+          hasFallback: !!slot.querySelector(".embed-fallback"),
+        },
+        theme,
+      );
+      if (action === "restamp") slot.dataset.embedTheme = theme;
+      else if (action === "rebuild") remountEmbed(pooled, slot);
+    }
+  }
+
+  function remountEmbed(pooled, slot) {
+    const reserved = slot.offsetHeight;
+    if (reserved > 0) slot.style.minHeight = `${reserved}px`;
+    slot.replaceChildren();
+    mountEmbed(pooled.bm, pooled.card, slot, {
+      onSettled: () => {
+        slot.style.minHeight = "";
+      },
+    });
   }
 
   function initThemeToggle() {
@@ -1234,7 +1308,7 @@
     selectedCategoryId = node.id;
     persistSelection();
 
-    renderTitle(node.path);
+    renderTitle(node.id);
 
     // On narrow screens the sidebar still overlays the content; picking a
     // category should reveal what it covers.
@@ -1245,6 +1319,7 @@
 
   /** The bar's title with nothing selected: a button that opens the sidebar. */
   function renderEmptyTitle() {
+    closeCrumbMenu();
     const prompt = el("button", "topbar-prompt", "Select a category");
     prompt.type = "button";
     prompt.setAttribute("aria-controls", "sidebar");
@@ -1253,19 +1328,181 @@
     titleEl.removeAttribute("title");
   }
 
+  // ---- the top bar's breadcrumb (issue #89) --------------------------------
+  // The path used to be one dead string the CSS ellipsized, so the "…" an
+  // owner saw was an artefact they could not click. It is a real breadcrumb
+  // now: every segment selects that category - the SAME action as picking it
+  // in the sidebar, routed through `selectCategoryById` - and the collapsed
+  // middle of a deep path is a control that opens a menu of what it hid.
+  // Which segments show is decided in `breadcrumb.js`; this half is markup,
+  // focus and the menu's keyboard contract.
+
+  const crumbMenuEl = document.getElementById("crumb-menu");
+  let crumbMenuTrigger = null;
+
   /**
-   * The bar's centered title. The ancestor crumb and the leaf are separate
-   * spans so a long path ellipsizes the crumb (flex-shrink is weighted
-   * toward it in styles.css) and keeps the leaf - the part that actually
-   * names the open category - readable on the one line it gets.
+   * Select a category by id, exactly as clicking it in the tree does: the
+   * sidebar button IS the selection's owner (it carries `aria-current`), so
+   * the breadcrumb drives that button rather than duplicating its work. A
+   * collapsed ancestor is expanded first so the tree agrees with the bar.
    */
-  function renderTitle(path) {
-    titleEl.replaceChildren();
-    if (path.length > 1) {
-      titleEl.appendChild(el("span", "topbar-crumb", `${path.slice(0, -1).join(" › ")} › `));
+  async function selectCategoryById(id) {
+    const node = categoryIndex.get(id);
+    const button = treeEl.querySelector(`[data-category-id="${id}"]`);
+    if (!node || !button) return;
+    expandAncestors(button);
+    await selectCategory(node, button);
+  }
+
+  /** One clickable path segment. The open category is marked, not disabled. */
+  function renderCrumbLink(segment) {
+    const btn = el("button", "crumb-link", segment.name);
+    btn.type = "button";
+    btn.dataset.categoryId = String(segment.id);
+    if (segment.current) {
+      btn.classList.add("crumb-current");
+      btn.setAttribute("aria-current", "true");
     }
-    titleEl.appendChild(el("span", "topbar-leaf", path[path.length - 1]));
-    titleEl.title = path.join(" › ");
+    btn.addEventListener("click", () => {
+      closeCrumbMenu();
+      void selectCategoryById(segment.id);
+    });
+    return btn;
+  }
+
+  function crumbSeparator() {
+    const sep = el("span", "crumb-sep", "›");
+    sep.setAttribute("aria-hidden", "true");
+    return sep;
+  }
+
+  /**
+   * The bar's centered title, as a breadcrumb.
+   *
+   * Everything but the open category lives in `.topbar-crumb`, which is what
+   * the CSS caps and what the <=560px bar drops: the leaf - the part that
+   * actually names what is open - always survives the one line it gets.
+   */
+  function renderTitle(categoryId) {
+    closeCrumbMenu();
+    const path = window.XBOBreadcrumb
+      ? window.XBOBreadcrumb.trail(categoryIndex, categoryId)
+      : [];
+    if (path.length === 0) {
+      renderEmptyTitle();
+      return;
+    }
+    const segments = window.XBOBreadcrumb.layout(path);
+    titleEl.replaceChildren();
+
+    const ancestors = el("span", "topbar-crumb");
+    for (const segment of segments.slice(0, -1)) {
+      ancestors.appendChild(
+        segment.kind === "overflow" ? renderCrumbOverflow(segment.items) : renderCrumbLink(segment),
+      );
+      ancestors.appendChild(crumbSeparator());
+    }
+    if (ancestors.childElementCount > 0) titleEl.appendChild(ancestors);
+
+    const leaf = renderCrumbLink(segments[segments.length - 1]);
+    leaf.classList.add("topbar-leaf");
+    titleEl.appendChild(leaf);
+    titleEl.title = window.XBOBreadcrumb.pathLabel(path);
+  }
+
+  /** The "…" control standing in for the ancestors the bar could not fit. */
+  function renderCrumbOverflow(items) {
+    const btn = el("button", "crumb-link crumb-overflow", "…");
+    btn.type = "button";
+    btn.setAttribute("aria-haspopup", "menu");
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-controls", "crumb-menu");
+    btn.setAttribute(
+      "aria-label",
+      `Show ${items.length} more ${items.length === 1 ? "category" : "categories"} in this path`,
+    );
+    btn.title = window.XBOBreadcrumb.pathLabel(items);
+    btn.addEventListener("click", () => {
+      if (crumbMenuTrigger === btn && !crumbMenuEl.hidden) closeCrumbMenu();
+      else openCrumbMenu(btn, items);
+    });
+    return btn;
+  }
+
+  function crumbMenuItems() {
+    return crumbMenuEl ? [...crumbMenuEl.querySelectorAll(".crumb-menu-item")] : [];
+  }
+
+  function openCrumbMenu(trigger, items) {
+    if (!crumbMenuEl) return;
+    crumbMenuEl.replaceChildren(
+      ...items.map((segment) => {
+        const item = el("button", "crumb-menu-item", segment.name);
+        item.type = "button";
+        item.setAttribute("role", "menuitem");
+        item.tabIndex = -1;
+        item.addEventListener("click", () => {
+          closeCrumbMenu();
+          void selectCategoryById(segment.id);
+        });
+        return item;
+      }),
+    );
+    crumbMenuEl.hidden = false;
+    crumbMenuTrigger = trigger;
+    trigger.setAttribute("aria-expanded", "true");
+    const first = crumbMenuItems()[0];
+    if (first) first.focus();
+  }
+
+  /** Close it and hand focus back to the "…" that opened it. */
+  function closeCrumbMenu(opts) {
+    if (!crumbMenuEl || crumbMenuEl.hidden) return;
+    const options = opts || {};
+    const trigger = crumbMenuTrigger;
+    crumbMenuEl.hidden = true;
+    crumbMenuEl.replaceChildren();
+    crumbMenuTrigger = null;
+    if (trigger && trigger.isConnected) {
+      trigger.setAttribute("aria-expanded", "false");
+      if (options.returnFocus) trigger.focus();
+    }
+  }
+
+  function isCrumbMenuOpen() {
+    return !!crumbMenuEl && !crumbMenuEl.hidden;
+  }
+
+  function initCrumbMenu() {
+    if (!crumbMenuEl) return;
+    crumbMenuEl.addEventListener("keydown", (e) => {
+      const items = crumbMenuItems();
+      const move = window.XBOBreadcrumb.menuMove(e.key, items.indexOf(document.activeElement), items.length);
+      if (move !== null) {
+        e.preventDefault();
+        items[move].focus();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        // The menu owns Escape while it is open: without this the sidebar's
+        // and the popovers' document-level handlers would close too.
+        e.stopPropagation();
+        closeCrumbMenu({ returnFocus: true });
+      }
+    });
+    // Tabbing out of the menu, or a click anywhere else, dismisses it; it is a
+    // menu, not a dialog, so it must never hold focus hostage.
+    crumbMenuEl.addEventListener("focusout", () => {
+      window.setTimeout(() => {
+        if (isCrumbMenuOpen() && !crumbMenuEl.contains(document.activeElement)) closeCrumbMenu();
+      }, 0);
+    });
+    document.addEventListener("pointerdown", (e) => {
+      if (!isCrumbMenuOpen()) return;
+      if (crumbMenuEl.contains(e.target) || (crumbMenuTrigger && crumbMenuTrigger.contains(e.target))) return;
+      closeCrumbMenu();
+    });
   }
 
   /** Per-tab counts for the selected category, derived from categoryCounts. */
@@ -1560,9 +1797,8 @@
 
     // Embed slot with link fallback. Opening the fallback link also marks read.
     const slot = el("div", "embed-slot");
-    renderEmbed(slot, bm, () => setRead(bm, card, true));
-
     card.append(actions, slot);
+    mountEmbed(bm, card, slot);
 
     // X-native Article card (x.com/i/article/...): X's embed shows these as a
     // bare link, so render the Article's cover/title/preview from the X API
@@ -1780,7 +2016,35 @@
   // forever. whenWidgetsReady already bounds the "never loads" case at 15s.
   const EMBED_RENDER_TIMEOUT_MS = 20000;
 
-  function renderEmbed(slot, bm, onOpen) {
+  // Each renderEmbed call stamps the slot it owns. A re-theme (below) empties
+  // the slot and mounts a new embed into it, so an older call's promise must
+  // be able to tell that it no longer owns the slot and stay silent - without
+  // this an in-flight createTweet could drop a stale fallback on top of the
+  // embed that replaced it.
+  let embedGeneration = 0;
+
+  /**
+   * (Re)mount a card's X embed at the CURRENT theme, recording on the slot
+   * which theme it was built with. That stamp is what `rethemeVisibleEmbeds`
+   * reads: X hands a widget its theme at creation and offers no way to change
+   * it afterwards, so "does this embed match the app" is not otherwise
+   * knowable.
+   */
+  function mountEmbed(bm, card, slot, opts) {
+    const host = slot || card.querySelector(".embed-slot");
+    if (!host) return;
+    host.dataset.embedTheme = isDarkTheme() ? "dark" : "light";
+    renderEmbed(host, bm, () => setRead(bm, card, true), opts);
+  }
+
+  function renderEmbed(slot, bm, onOpen, opts) {
+    const options = opts || {};
+    const generation = String((embedGeneration += 1));
+    slot.dataset.embedGen = generation;
+    const superseded = () => slot.dataset.embedGen !== generation;
+    const settle = () => {
+      if (options.onSettled) options.onSettled();
+    };
     // Show a skeleton + spinner immediately and reveal only the finished
     // result: the official embed once widgets.js reports it fully rendered, or
     // the text+link fallback on failure/timeout/non-embeddable post. This
@@ -1800,7 +2064,7 @@
     let settled = false;
 
     function showFallback() {
-      if (settled) return;
+      if (settled || superseded()) return;
       settled = true;
       loader.remove();
       embedHost.remove();
@@ -1820,12 +2084,14 @@
       if (onOpen) link.addEventListener("click", onOpen);
       fallback.appendChild(link);
       slot.appendChild(fallback);
+      settle();
     }
 
     function showEmbed() {
-      if (settled) return;
+      if (settled || superseded()) return;
       settled = true;
       loader.remove(); // the rendered embed already lives in embedHost
+      settle();
     }
 
     const backstop = setTimeout(showFallback, EMBED_RENDER_TIMEOUT_MS);
@@ -1834,11 +2100,20 @@
     // Wait for it (rather than committing to the fallback) so embeds appear.
     whenWidgetsReady().then((twttr) => {
       if (settled) return;
+      if (superseded()) {
+        // A newer mount owns this slot (a theme change re-created the embed);
+        // it has its own loader and its own reserved height, so this one just
+        // stands down without touching either.
+        clearTimeout(backstop);
+        settled = true;
+        return;
+      }
       if (!slot.isConnected) {
         // Card was replaced (e.g. filter/category change) before we resolved;
         // stop here so the backstop can't act on a detached node.
         clearTimeout(backstop);
         settled = true;
+        settle();
         return;
       }
       if (!twttr) {
@@ -1848,7 +2123,7 @@
       }
       twttr.widgets
         .createTweet(bm.postId, embedHost, {
-          theme: isDarkTheme() ? "dark" : "light",
+          theme: slot.dataset.embedTheme === "dark" ? "dark" : "light",
           conversation: "none",
         })
         .then((embedded) => {
@@ -2714,10 +2989,11 @@
   // than around convenience. Three things stand between a press and a bill,
   // and all three are load-bearing:
   //
-  //   1. The server's own gates: ranking must be opted into
-  //      (XBOOKMARKS_RANKER=typesafe) AND the key must resolve. When either is
-  //      missing the button is disabled and the panel SAYS WHY, in the
-  //      credential chain's own words - a blocker message, not a dead control.
+  //   1. The server's own gate: TYPESAFE_API_KEY must resolve. Ranking itself
+  //      is ON by default now (issue #89) - the key is what decides whether a
+  //      run is possible, and when it is missing the button is disabled and
+  //      the panel SAYS WHY, in the credential chain's own words ("TypeSafe
+  //      API key missing…") - a blocker message, not a dead control.
   //   2. An explicit confirmation dialog that names the price before the
   //      scope, and whose confirm button restates how many bookmarks are
   //      covered. This is the in-app equivalent of deliberately typing `rank`.
@@ -2730,6 +3006,9 @@
   const rankOpenBtn = document.getElementById("rank-open");
   const rankCoverageEl = document.getElementById("rank-coverage");
   const rankBlockerEl = document.getElementById("rank-blocker");
+  const rankBlockerHeadlineEl = document.getElementById("rank-blocker-headline");
+  const rankBlockerMoreEl = document.getElementById("rank-blocker-more");
+  const rankBlockerDetailEl = document.getElementById("rank-blocker-detail");
   const rankModalEl = document.getElementById("rank-modal");
   const rankBackdropEl = document.getElementById("rank-backdrop");
   const rankCostTextEl = document.getElementById("rank-modal-cost-text");
@@ -2752,6 +3031,8 @@
   // paid control OFF, never accidentally enabled.
   const NO_RANKING = {
     rankBlocker: () => "Ranking is unavailable in this viewer.",
+    blockerHeadline: (m) => m,
+    blockerDetail: () => "",
     canRank: () => false,
     isRunning: () => false,
     coverageLine: () => "",
@@ -2775,6 +3056,13 @@
     const blocker = state ? ranking().rankBlocker(state) : "Ranking status is unavailable.";
 
     rankOpenBtn.classList.toggle("is-ranking", running);
+    // The progress strip lives inside the popover now, so the icon itself has
+    // to carry "a run is going" for an owner who closed the panel.
+    const rankToggleBtn = document.getElementById("rank-toggle");
+    if (rankToggleBtn) {
+      rankToggleBtn.classList.toggle("is-ranking", running);
+      rankToggleBtn.title = running ? "Ranking in progress" : "Ranking";
+    }
     rankOpenBtn.disabled = running || blocker !== null;
     const label = rankOpenBtn.querySelector(".rank-btn-label");
     if (label) label.textContent = running ? "Ranking\u2026" : "Rank now";
@@ -2790,9 +3078,17 @@
     }
     // The reason lives in the panel, not only in a tooltip: a tooltip is a
     // dead end on touch, and this one is the owner's whole fix-it instruction.
+    // The CAUSE is stated outright; the credential chain's list of places a
+    // secret may live is a procedure, so it waits behind a disclosure rather
+    // than burying the sentence it explains.
     if (rankBlockerEl) {
-      rankBlockerEl.textContent = !running && blocker ? blocker : "";
-      rankBlockerEl.hidden = running || !blocker;
+      const show = !running && !!blocker;
+      rankBlockerEl.hidden = !show;
+      const headline = show ? ranking().blockerHeadline(blocker) : "";
+      const detail = show ? ranking().blockerDetail(blocker) : "";
+      if (rankBlockerHeadlineEl) rankBlockerHeadlineEl.textContent = headline;
+      if (rankBlockerMoreEl) rankBlockerMoreEl.hidden = !detail;
+      if (rankBlockerDetailEl) rankBlockerDetailEl.textContent = detail;
     }
   }
 
@@ -2808,8 +3104,8 @@
       updateRankControl();
       return;
     }
-    const syncPopover = popovers.find((p) => p.name === "sync");
-    if (syncPopover && isPopoverOpen(syncPopover)) setPopoverOpen(syncPopover, false, { returnFocus: false });
+    const rankPopover = popovers.find((p) => p.name === "ranking");
+    if (rankPopover && isPopoverOpen(rankPopover)) setPopoverOpen(rankPopover, false, { returnFocus: false });
 
     if (rankCostTextEl) rankCostTextEl.textContent = ranking().confirmCost(state);
     if (rankConfirmBtn) rankConfirmBtn.textContent = ranking().confirmLabel(state);
@@ -2825,13 +3121,13 @@
     rankModalEl.hidden = true;
     rankBackdropEl.hidden = true;
     // Focus goes back to a trigger the owner can actually see. "Rank now"
-    // lives INSIDE the sync popover, which opening the dialog closed, so it is
-    // usually not focusable by the time we get here - focusing it then would
-    // silently drop focus to <body> and strand a keyboard user. The popover's
-    // own toggle is the visible thing that stands for it.
+    // lives INSIDE the ranking popover, which opening the dialog closed, so it
+    // is usually not focusable by the time we get here - focusing it then
+    // would silently drop focus to <body> and strand a keyboard user. The
+    // popover's own toggle is the visible thing that stands for it.
     const visible = (elm) => !!elm && !elm.disabled && elm.offsetParent !== null;
     const target =
-      focusTarget || (visible(rankOpenBtn) ? rankOpenBtn : document.getElementById("sync-toggle"));
+      focusTarget || (visible(rankOpenBtn) ? rankOpenBtn : document.getElementById("rank-toggle"));
     if (target) target.focus();
   }
 
@@ -3665,6 +3961,7 @@
 
   // ---- init --------------------------------------------------------------
   initSidebar();
+  initCrumbMenu();
   initSettingsPanel();
   initPostScale();
   initSortOrder();

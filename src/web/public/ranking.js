@@ -30,10 +30,10 @@
 
   /**
    * Why a ranking run cannot start, or null when one can. In order: the viewer
-   * has no ranking wiring at all, then the server's own gate (ranking not
-   * opted into, or the key missing), then "there is nothing to score" - which
-   * is a blocker precisely because a paid run that would do nothing should
-   * never be startable.
+   * has no ranking wiring at all, then the server's own gate (in practice the
+   * missing TYPESAFE_API_KEY - ranking itself is on by default), then "there is
+   * nothing to score" - which is a blocker precisely because a paid run that
+   * would do nothing should never be startable.
    */
   function rankBlocker(ranking) {
     var r = state(ranking);
@@ -97,6 +97,26 @@
     return "Rank " + plural(state(ranking).pending, "bookmark", "bookmarks");
   }
 
+  /**
+   * The blocker split in two: its leading paragraph - the one clear cause, e.g.
+   * "TypeSafe API key missing…" - and everything after it, which is the
+   * credential chain's list of PLACES a secret can come from.
+   *
+   * They are separated because they answer different questions. The cause is
+   * what the panel must state outright next to the disabled button; the rest is
+   * a procedure, and a procedure shown before it is asked for buries the cause
+   * it explains. `app.js` renders the first as text and the second behind a
+   * disclosure.
+   */
+  function blockerHeadline(message) {
+    return String(message || "").split(/\n\s*\n/)[0].trim();
+  }
+
+  function blockerDetail(message) {
+    var parts = String(message || "").split(/\n\s*\n/);
+    return parts.slice(1).join("\n\n").trim();
+  }
+
   /** The one line the progress strip shows for a ranking status, per state. */
   function progressLine(status) {
     if (!status) return "";
@@ -124,6 +144,8 @@
     coverageLine: coverageLine,
     confirmCost: confirmCost,
     confirmLabel: confirmLabel,
+    blockerHeadline: blockerHeadline,
+    blockerDetail: blockerDetail,
     progressLine: progressLine,
   };
 

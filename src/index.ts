@@ -61,12 +61,14 @@ Usage:
   node dist/index.js rank [--all] [--dry-run] [--limit N]
                                   Score stored bookmarks by learning value with
                                   the TypeSafe/Jev API and store the score, so
-                                  the viewer can sort by it. PAID per token and
-                                  OFF unless XBOOKMARKS_RANKER=typesafe is set
-                                  AND TYPESAFE_API_KEY resolves; --dry-run says
-                                  how many would be scored without calling the
-                                  API. Scores only what is missing, so it is
-                                  resumable; --all re-scores everything.
+                                  the viewer can sort by it. PAID per token; it
+                                  runs only when you invoke it, and only when
+                                  TYPESAFE_API_KEY resolves (set
+                                  XBOOKMARKS_RANKER=off to disable ranking
+                                  entirely). --dry-run says how many would be
+                                  scored without calling the API. Scores only
+                                  what is missing, so it is resumable; --all
+                                  re-scores everything.
   node dist/index.js clear-scores
                                   Delete every stored ranking score. No
                                   secrets, no network - just the DB.
@@ -467,7 +469,7 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
   const rankBlocker = createRankWiring({ db, store, config: baseConfig }).blocker();
   console.log(
     rankBlocker
-      ? 'Ranking: off (set XBOOKMARKS_RANKER=typesafe and provide TYPESAFE_API_KEY to enable "Rank now").'
+      ? `Ranking: "Rank now" is disabled - ${rankBlocker.split('\n')[0]}`
       : `Ranking: "Rank now" is available in the app - ${billingLabel('per-token')}, and every run is confirmed before it starts.`,
   );
   console.log('Press Ctrl+C to stop.');

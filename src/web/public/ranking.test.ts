@@ -14,6 +14,8 @@ const ranking = require('./ranking.js') as {
   coverageLine: (r: unknown) => string;
   confirmCost: (r: unknown) => string;
   confirmLabel: (r: unknown) => string;
+  blockerHeadline: (m: unknown) => string;
+  blockerDetail: (m: unknown) => string;
   progressLine: (s: unknown) => string;
 };
 
@@ -148,5 +150,42 @@ describe('progressLine', () => {
       summary: { candidates: 5, scored: 3, skipped: 0, failed: 2, inputTokens: 300 },
     });
     expect(line).toContain('2 failures');
+  });
+});
+
+describe('blockerHeadline / blockerDetail', () => {
+  // The server's blocker is the credential chain's own message: one clear
+  // cause, then the list of places a secret can live. The panel states the
+  // cause and holds the procedure behind a disclosure, so the split has to be
+  // exact - a headline that swallowed the list would be the wall of text this
+  // replaced.
+  const blocker = [
+    'TypeSafe API key missing - add your key to enable ranking.',
+    'Missing required secret(s): TYPESAFE_API_KEY. Provide them any of these ways:\n  - the environment\n  - a `.env` file',
+    'Ranking scores bookmarks through the TypeSafe/Jev API, which is PAID per token.',
+  ].join('\n\n');
+
+  it('leads with the one clear cause', () => {
+    expect(ranking.blockerHeadline(blocker)).toBe(
+      'TypeSafe API key missing - add your key to enable ranking.',
+    );
+  });
+
+  it('keeps every following paragraph, and their line breaks, in the detail', () => {
+    const detail = ranking.blockerDetail(blocker);
+    expect(detail).toContain('Missing required secret(s)');
+    expect(detail).toContain('  - a `.env` file');
+    expect(detail).toContain('PAID per token');
+    expect(detail).not.toContain('add your key to enable ranking');
+  });
+
+  it('has no detail for a single-paragraph blocker, so nothing empty is shown', () => {
+    expect(ranking.blockerHeadline('Sync your library first.')).toBe('Sync your library first.');
+    expect(ranking.blockerDetail('Sync your library first.')).toBe('');
+  });
+
+  it('tolerates a missing message', () => {
+    expect(ranking.blockerHeadline(null)).toBe('');
+    expect(ranking.blockerDetail(undefined)).toBe('');
   });
 });
