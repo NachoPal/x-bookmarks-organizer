@@ -184,6 +184,31 @@ describe('bookmark_scores storage (issue #62)', () => {
         db.getBookmarksForCategory(categoryId, { sort: 'score', filter: 'unread' }).map((b) => b.postId),
       ).toEqual(['low', 'none']);
     });
+
+    it('flips to lowest-first on dir=asc, and STILL leaves the unscored one last', () => {
+      // Issue #97. An absent score means never ranked, which is not a low
+      // score - asking for the lowest scores first must not float it to the
+      // top as if the model had judged it worst of all.
+      expect(
+        db.getBookmarksForCategory(categoryId, { sort: 'score', dir: 'asc' }).map((b) => b.postId),
+      ).toEqual(['low', 'high', 'none']);
+    });
+
+    it('pages the ascending score order consistently too', () => {
+      const first = db.getBookmarksForCategory(categoryId, { sort: 'score', dir: 'asc', offset: 0, limit: 2 });
+      const second = db.getBookmarksForCategory(categoryId, { sort: 'score', dir: 'asc', offset: 2, limit: 2 });
+      expect(first.map((b) => b.postId)).toEqual(['low', 'high']);
+      expect(second.map((b) => b.postId)).toEqual(['none']);
+    });
+
+    it('reverses recency on dir=asc, and leaves it alone on the default', () => {
+      expect(
+        db.getBookmarksForCategory(categoryId, { sort: 'recent', dir: 'asc' }).map((b) => b.postId),
+      ).toEqual(['low', 'high', 'none']);
+      expect(
+        db.getBookmarksForCategory(categoryId, { sort: 'recent', dir: 'desc' }).map((b) => b.postId),
+      ).toEqual(['none', 'high', 'low']);
+    });
   });
 
   it('adds bookmark_scores to a database that predates it, idempotently and without losing data', () => {

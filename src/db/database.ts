@@ -37,20 +37,35 @@ export interface CategoryBookmarkCounts {
 }
 
 /**
- * How a paged bookmark list is ordered.
+ * WHAT a paged bookmark list is ordered by.
  *
  * `recent` is the default everywhere and is what the viewer has always done.
- * `score` orders by the opt-in ranking pass's stored score, highest first
- * (issue #62); a bookmark with no score row sorts LAST rather than as a zero,
- * because "never ranked" is not the same claim as "ranked worthless". Both
- * orders break ties on the original recency ordering, so paging is stable.
+ * `score` orders by the opt-in ranking pass's stored score (issue #62); a
+ * bookmark with no score row sorts LAST rather than as a zero, because "never
+ * ranked" is not the same claim as "ranked worthless". Both orders break ties
+ * on the original recency ordering, so paging is stable.
  */
 export type BookmarkSortOrder = 'recent' | 'score';
+
+/**
+ * WHICH WAY that field runs (issue #97).
+ *
+ * `desc` is the default for both fields and is what the viewer has always
+ * done: newest first for `recent`, highest first for `score`. `asc` flips it
+ * to oldest first / lowest first.
+ *
+ * The direction applies to the FIELD only. Under `score` the "unranked sorts
+ * last" rule is direction-independent - an absent score means never ranked,
+ * which is not a low score, so it must not float to the top when the owner
+ * asks for the lowest scores first.
+ */
+export type BookmarkSortDirection = 'asc' | 'desc';
 
 /** Paging + filtering options for {@link Database.getBookmarksForCategory}. */
 export interface BookmarkPageOptions {
   filter?: BookmarkFilter;
   sort?: BookmarkSortOrder;
+  dir?: BookmarkSortDirection;
   offset?: number;
   limit?: number;
 }
@@ -388,6 +403,16 @@ export class Database {
     // Sorting by score is a LEFT JOIN, not an inner one: an unranked bookmark
     // must still appear in the list, just after every ranked one.
     const scored = opts.sort === 'score';
+    const asc = opts.dir === 'asc';
+    // `sc.score IS NULL` is 0 for a ranked row and 1 for an unranked one, and
+    // it is sorted ASCENDING in BOTH directions - which is what keeps the
+    // never-ranked bookmarks last whether the owner asked for the highest
+    // scores or the lowest (issue #97). Only the score itself flips.
+    const scoreKeys = scored ? `sc.score IS NULL, sc.score ${asc ? 'ASC' : 'DESC'}, ` : '';
+    // Recency is the ordering under `recent` (so it flips with the direction)
+    // and only the tie-break under `score` (where it stays newest-first, so
+    // two equally-scored posts keep one stable, familiar sequence).
+    const recency = scored || !asc ? 'b.ingested_at DESC, b.id DESC' : 'b.ingested_at ASC, b.id ASC';
     let sql = `WITH RECURSIVE subtree(id) AS (
          SELECT ?
          UNION
@@ -396,7 +421,7 @@ export class Database {
        SELECT b.* FROM bookmarks b
        ${scored ? 'LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id' : ''}
        WHERE ${where.join(' AND ')}
-       ORDER BY ${scored ? 'sc.score IS NULL, sc.score DESC, ' : ''}b.ingested_at DESC, b.id DESC`;
+       ORDER BY ${scoreKeys}${recency}`;
     const params: (number | string)[] = [categoryId];
     if (opts.limit != null) {
       sql += ' LIMIT ? OFFSET ?';

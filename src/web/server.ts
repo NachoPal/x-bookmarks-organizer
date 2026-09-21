@@ -1,7 +1,12 @@
 import path from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
-import type { BookmarkFilter, BookmarkSortOrder, Database } from '../db/database';
+import type {
+  BookmarkFilter,
+  BookmarkSortDirection,
+  BookmarkSortOrder,
+  Database,
+} from '../db/database';
 import { buildCategoryTree, writeRootOrder } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
 import { articleRecordFromResult, HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
@@ -239,6 +244,15 @@ function parseBookmarkFilter(raw: unknown): BookmarkFilter {
  */
 function parseBookmarkSort(raw: unknown): BookmarkSortOrder {
   return raw === 'score' ? 'score' : 'recent';
+}
+
+/**
+ * Which way the ordering runs (issue #97). Both fields default to `desc` -
+ * newest first / highest first - which is the only ordering that existed
+ * before this parameter, so a client that never sends `dir` is unchanged.
+ */
+function parseBookmarkDirection(raw: unknown): BookmarkSortDirection {
+  return raw === 'asc' ? 'asc' : 'desc';
 }
 
 /** Parse a non-negative integer query param, falling back to {@link fallback}. */
@@ -558,7 +572,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // filtered set server-side keeps a large category from shipping all at once.
   app.get<{
     Params: { id: string };
-    Querystring: { filter?: string; sort?: string; offset?: string; limit?: string };
+    Querystring: { filter?: string; sort?: string; dir?: string; offset?: string; limit?: string };
   }>(
     '/api/categories/:id/bookmarks',
     async (req, reply) => {
@@ -569,6 +583,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       // Ordering is server-side because paging is: sorting one page in the
       // client would only shuffle whichever 20 rows happened to arrive.
       const sort = parseBookmarkSort(req.query.sort);
+      const dir = parseBookmarkDirection(req.query.dir);
       const offset = parseNonNegInt(req.query.offset, 0);
       // Clamp the client-supplied limit to the configured page size so no
       // request can pull the whole category down in one shot.
@@ -584,7 +599,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
             : filter === 'favorite'
               ? counts.favorite
               : counts.total;
-      const bookmarks = db.getBookmarksForCategory(id, { filter, sort, offset, limit });
+      const bookmarks = db.getBookmarksForCategory(id, { filter, sort, dir, offset, limit });
       const categoryIdsByBookmark = db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id));
 
       return {
@@ -593,6 +608,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         offset,
         limit,
         sort,
+        dir,
         total: filteredTotal,
         hasMore: offset + bookmarks.length < filteredTotal,
       };

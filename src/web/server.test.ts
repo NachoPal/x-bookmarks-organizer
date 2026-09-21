@@ -899,6 +899,40 @@ describe('ranking score on the bookmark API (issue #62)', () => {
     expect(body.bookmarks.map((b) => b.postId)).toEqual(['high', 'low']);
   });
 
+  it('flips either field with ?dir=asc, keeping the unranked ones last (issue #97)', async () => {
+    score('low', 0.1);
+    score('high', 0.9);
+    db.storeCategorizedBatch([bm('unranked')], () => [categoryId], '2024-01-03T00:00:00.000Z');
+
+    const byScore = await app.inject({
+      url: `/api/categories/${categoryId}/bookmarks?sort=score&dir=asc`,
+    });
+    const scoreBody = byScore.json() as { sort: string; dir: string; bookmarks: { postId: string }[] };
+    expect(scoreBody).toMatchObject({ sort: 'score', dir: 'asc' });
+    // Lowest score first - but "never ranked" is still not a low score.
+    expect(scoreBody.bookmarks.map((b) => b.postId)).toEqual(['low', 'high', 'unranked']);
+
+    const byDate = await app.inject({
+      url: `/api/categories/${categoryId}/bookmarks?sort=recent&dir=asc`,
+    });
+    const dateBody = byDate.json() as { dir: string; bookmarks: { postId: string }[] };
+    expect(dateBody.dir).toBe('asc');
+    expect(dateBody.bookmarks.map((b) => b.postId)).toEqual(['low', 'high', 'unranked']);
+  });
+
+  it('defaults the direction to desc, so a client that never sends one is unchanged', async () => {
+    score('low', 0.1);
+    score('high', 0.9);
+    for (const url of [
+      `/api/categories/${categoryId}/bookmarks?sort=score`,
+      `/api/categories/${categoryId}/bookmarks?sort=score&dir=sideways`,
+    ]) {
+      const body = (await app.inject({ url })).json() as { dir: string; bookmarks: { postId: string }[] };
+      expect(body.dir).toBe('desc');
+      expect(body.bookmarks.map((b) => b.postId)).toEqual(['high', 'low']);
+    }
+  });
+
   it('keeps the filter and the counts intact when sorting by score', async () => {
     score('high', 0.9);
     db.markRead(db.getBookmarkByPostId('high')!.id);

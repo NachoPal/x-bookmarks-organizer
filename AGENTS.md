@@ -281,7 +281,9 @@ settings panel's Save is centred, with its status stacked under it rather than b
 "why it failed" message cannot pull the button off centre.
 
 The **settings popover** (gear, issue #37) holds the post-size control plus the theme and
-category-color switches. Post size resizes the POST, not the app's chrome - scaling the viewer's own
+category-color switches. It no longer holds the list's Order - that moved out to the floating sort
+selector in #97 (below), which is now the app's only sort UI.
+Post size resizes the POST, not the app's chrome - scaling the viewer's own
 text was the first cut and is what browser zoom already does. It is one `--post-scale` multiplier
 applied as **`zoom` on `.bookmark-card`**: `zoom` and not `transform: scale`, because it scales the
 LAYOUT box as well as the rendering (transform leaves the original box behind, so scaled-down cards
@@ -767,18 +769,20 @@ cannot parse degrades to no dimensions, never to an exception), and `rubric_vers
 is load-bearing: `getBookmarksToScore` re-selects a row scored under a DIFFERENT rubric, which is
 what stops two scales being sorted against each other, and it is why `buildRubric` hashes
 `XBOOKMARKS_RANKER_INTERESTS` into the tag. **An absent row means "never ranked", never "scored
-zero"** - every consumer must honor that, which is why `sort=score` puts unranked bookmarks LAST and
-the viewer renders no chip at all rather than a zero.
+zero"** - every consumer must honor that, which is why `sort=score` puts unranked bookmarks LAST -
+in BOTH directions, since #97 (`sc.score IS NULL` is sorted ascending whichever way the score
+itself runs; flipping it would claim the model judged an unjudged post worst of all) - and the
+viewer renders no chip at all rather than a zero.
 
 Surface: `score` on every listed bookmark (a pure cache read in `toViewerBookmarks`, empty when
 ranking was never run), `?sort=score` on `/api/categories/:id/bookmarks` (server-side, because
 paging is), a `ranking` block on `/api/setup` (`scored`/`total`, plus what the in-app trigger needs
-- see issue #80 below), and in the viewer an **Order** segmented control in the settings popover
-plus a `.score-chip` on each ranked card.
+- see issue #80 below), and in the viewer the floating sort selector (#97, below) plus a
+`.score-chip` on each ranked card.
 `src/web/public/sort-order.js` (`XBOSortOrder`) is the pure, unit-tested half (guarded persistence,
-the query param, the rating/breakdown formatting) in the same style as `post-scale.js`. Changing the
-order DROPS every cached view (`viewCaches`) wholesale - they were paged under the old order - the
-same way a completed sync does.
+the query params, the direction's per-field wording, the rating/breakdown formatting) in the same
+style as `post-scale.js`. Changing the ordering DROPS every cached view (`viewCaches`) wholesale -
+they were paged under the old one - the same way a completed sync does.
 
 The chip **draws** the rubric breakdown rather than stating it in a native `title`: one shared
 `#score-detail` popover (a meter per question, `renderScoreDetail`/`positionScoreDetail` in
@@ -803,6 +807,47 @@ Tests are entirely offline and must stay that way: `client.test.ts` drives the R
 injectable `Fetch`, `integration.test.ts` runs the REAL ranker against a local `http` server
 standing in for the API and then asserts the viewer API's ordering. Never let a test reach
 `api.typesafe.ai`, and never make a real Jev call to validate a change here.
+
+## The floating sort selector (issue #97)
+
+Sort is ONE control, and it is not in Settings. The old "Order" segmented control was removed from
+the settings popover (the owner's call): an ordering control belongs beside what it orders, not
+among post-size and theme switches. What replaced it is `#sort-bar`, a `position: sticky` pill that
+is the FIRST child of `.content-inner` - so it starts in flow under the pane's top padding, clear
+of the first post, and pins itself a hair below the tab bar once the list scrolls past it. The pill
+is the only opaque part, so the posts visibly travel UNDER it; `#sort-sentinel` (zero height) is
+what an IntersectionObserver watches to add `.is-stuck` (the elevation) rather than a scroll
+listener, and its root margin is READ from the bar's own `top` instead of being restated in JS.
+Being inside `.content-inner` is load-bearing: that block's width is fixed at `--content-measure`,
+so the selector cannot change a card's box and cannot re-lay-out the X embeds (the #86 constraint).
+
+It carries two dimensions, both persisted through `XBOSortOrder`'s guarded storage and both applied
+SERVER-side because paging is: the FIELD (`sort=recent|score`, a native radiogroup - arrow keys and
+type-ahead for free) and the DIRECTION (`dir=asc|desc`, one toggle button). The direction is named
+in the FIELD's own words - "Newest first"/"Oldest first", "Highest first"/"Lowest first" - because
+"descending" means neither; `directionToggleLabel` opens the accessible name with that visible
+label so it still contains it (WCAG 2.5.3). Direction applies to the field ONLY: unranked bookmarks
+stay last under Top score either way (see the ranking section above).
+
+**Top score is disabled until something is ranked** (`/api/setup` `ranking.scored === 0`), because
+ordering by a score nothing has is a control that silently does nothing. `scoreOrderAvailable`
+fails CLOSED like `ranking.js`, and `resolveSortOrder` sends a stored "score" back to recency while
+it is blocked - the stored CHOICE is untouched, so it returns by itself after the first run.
+A disabled radio cannot take focus, so the explanation is not a tooltip alone: `.sort-note` renders
+it as visible text AND is the radiogroup's `aria-describedby`, with a `title` for the pointer.
+`applySetupState` re-runs this on every `/api/setup` read, which is how a finished rank run and a
+reset both keep it in sync with no extra wiring.
+
+**Changing the sort is a CONTENT-only refresh** - that was the visible glitch. `repageForSort`
+calls `fetchAndRenderFirstPage({ sameCategory: true })`: the `sameCategory` flag keeps the posts on
+screen (dimmed) instead of blanking them AND, the actual fix, skips `clearTabCounts()`, so the
+filter tabs' badges are never emptied and repainted. `renderCountLine` additionally guards every
+write on the value changing - a category's counts do not depend on its ordering, so re-paging must
+not touch the tab bar's DOM at all (measured: zero mutations under a `MutationObserver` on
+`#toolbar`, badges identical across 90 frames). The card POOL is kept, so re-paging only
+re-sequences cards that are already mounted and no X embed reloads. The persisted page snapshot is
+keyed by `sortKey(field, direction)`, not the field alone - a snapshot that survived a direction
+flip would hydrate the list backwards.
 
 ## In-app ranking run (issue #80)
 
