@@ -350,3 +350,28 @@ against the dev seed.
 | `101-confirm-child-light.png` | **The same dialog for a sub-category**, where "Don't ask again for sub-categories" is offered (guarded localStorage). It silences later sub-category deletes only; the counts are still computed and shown whenever the dialog does appear. |
 | `101-dark.png` | **Dark.** The bin is muted at rest and turns danger-red on hover/focus - a column of red bins reads as an alarm about the tree rather than as a control. |
 | `101-mobile-dark.png` | **Narrow, dark.** The per-level indent step narrows so the bin column and a deep name both still fit; names wrap rather than overflow, and the tree scrolls vertically only. |
+
+## Issue #102 - the Jev rules (rubric) editor: named, versioned sets of ranking rules
+
+The rubric stops being a constant in the repository and becomes named sets of rules the owner
+authors. The built-in rubric is the DEFAULT set - always present, never editable or deletable -
+so an owner who never opens this dialog runs exactly what they ran before, under the same version
+tag, and is never re-billed. Each set's `rubric_version` is derived from its full content
+(questions, levels, weights), and `bookmark_scores` is keyed by `(bookmark, rubric_version)`, so
+each set keeps its OWN verdicts: switching to one already ranked under shows its scores at once,
+and switching to a new one surfaces the library as unranked and offers a re-rank.
+
+Captured against the dev seed with a LOCAL STUB standing in for `api.typesafe.ai` - no real call,
+nothing billed. The whole dialog is free: only `POST /api/rank` and `POST /api/bookmarks/:id/rank`
+spend, both behind the existing `{ confirm: true }` dialog.
+
+| File | What it shows |
+| --- | --- |
+| `102-rubric-presets-light.png` | **The saved sets**, light, 1280px. A native radiogroup - exactly one ranks. The built-in set offers Duplicate only (clone-to-edit); its line states coverage PER SET ("62 of 92 bookmarks ranked under these rules"), which is what a switch actually changes. Below it, what switching would leave unranked, as a sentence and never a button: selecting a set is free. |
+| `102-rubric-authoring-light.png` | **Authoring one set.** Per dimension: name, weight (shown as the share of the score it actually carries, since weights are ratios), the question, and the ordered levels - the real tuning surface, so they are a labelled list of auto-growing fields rather than one comma-separated box. Move up/down/remove sit in the card's own header, where they read as acting on the whole dimension. |
+| `102-rubric-validation-light.png` | **Inline validation.** One actionable sentence per problem, all at once, in the same region the server's own messages land in - the client's rules deliberately mirror `src/rank/presets.ts`, which stays authoritative. Nothing was saved. |
+| `102-rubric-active-switch-light.png` | **After saving.** The new set is active (radio + border + tint, never colour alone), carries its own version, and reads "Nothing ranked under these rules yet" - 92 bookmarks would read as unranked until a paid run, which is stated rather than started. |
+| `102-rubric-presets-dark.png` | **Dark**, with the cards behind it: one post carries a filled chip (it was ranked under the active set) and the rest wear the hollow "not ranked" badge - the #98 affordance, now scoped to the active set. |
+| `102-rubric-authoring-dark.png` | **Authoring, dark.** |
+| `102-rubric-presets-400.png` | **~400px.** Each set's actions wrap to a row of their own rather than squeezing the name. |
+| `102-rubric-authoring-400.png` | **Authoring at ~400px.** Name and weight stay side by side while they fit and wrap on their own when they do not; the level fields keep their full text visible. |

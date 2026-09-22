@@ -144,19 +144,22 @@ describe("describeScore", () => {
       confidence: 0.62,
       dimensions: { learning_value: 0.9, durability: 0.5 },
     });
-    expect(text).toContain("Learning value 7.5 of 10");
+    expect(text).toContain("Ranking score 7.5 of 10");
     expect(text).toContain("confidence 62%");
     expect(text).toContain("learning 9.0");
     expect(text).toContain("lasting 5.0");
   });
 
   it("omits what it does not have, without inventing zeros", () => {
-    expect(describeScore({ value: 0.5 })).toBe("Learning value 5.0 of 10.");
+    expect(describeScore({ value: 0.5 })).toBe("Ranking score 5.0 of 10.");
   });
 
-  it("falls back to a raw dimension key it has no label for", () => {
-    expect(describeScore({ value: 0.5, dimensions: { future_thing: 1 } })).toContain(
-      "future_thing 10.0",
+  it("labels an owner-authored dimension from its own key (issue #102)", () => {
+    // The rubric is authorable, so a dimension this build has no descriptor
+    // for is a normal thing to meet - it is named, never dropped and never
+    // shown as a raw key.
+    expect(describeScore({ value: 0.5, dimensions: { signal_density: 1 } })).toContain(
+      "signal density 10.0",
     );
   });
 
@@ -205,10 +208,20 @@ describe("scoreBreakdown", () => {
     expect(breakdown.dimensions.map((d) => d.id)).toEqual(["learning_value"]);
   });
 
-  it("still shows a dimension this build has no label for, keyed by its id", () => {
-    const breakdown = scoreBreakdown({ value: 0.5, dimensions: { future_thing: 1 } }) as Breakdown;
+  it("names an owner-authored dimension from its own key, keeping the key itself", () => {
+    // Issue #102: the rubric is authored, so most graphs will hold questions
+    // this build has no nicer name for. The KEY is what the stored breakdown
+    // is keyed by and must survive untouched; only the LABEL is prettied.
+    const breakdown = scoreBreakdown({ value: 0.5, dimensions: { signal_density: 1 } }) as Breakdown;
     expect(breakdown.dimensions).toEqual([
-      { id: "future_thing", label: "future_thing", short: "future_thing", value: 1, rating: "10.0", percent: 100 },
+      {
+        id: "signal_density",
+        label: "Signal density",
+        short: "signal density",
+        value: 1,
+        rating: "10.0",
+        percent: 100,
+      },
     ]);
   });
 

@@ -673,7 +673,7 @@
       // the dialog AND collapsed the drawer behind it - which for the
       // category editor also stranded focus, because the pencil it returns
       // the keyboard to is inside the drawer that just went `inert`.
-      if (isCatEditorOpen() || isCatDeleteOpen() || isMovePickerOpen()) return;
+      if (isCatEditorOpen() || isCatDeleteOpen() || isMovePickerOpen() || isRubricOpen()) return;
       setCollapsed(true);
     });
   }
@@ -4682,6 +4682,739 @@
     catDeleteConfirmBtn.addEventListener("click", () => void confirmCatDelete());
   }
 
+  // ---- the Jev rules (rubric) editor (issue #102) --------------------------
+  //
+  // One dialog with two views: the saved sets of rules (a native radiogroup -
+  // exactly one ranks) and the authoring form for one of them. `app.js` owns
+  // only the markup and the round trips; every RULE - what is valid, what a
+  // weight is as a share of the score, what switching would leave unranked -
+  // is the pure `rubric-editor.js`.
+  //
+  // The paid-safety line, and it is the whole reason this dialog may exist at
+  // all: nothing in here spends anything. Authoring, saving, switching and
+  // deleting are free server-side (`/api/rubric*` never calls TypeSafe), so
+  // the re-rank a new set of rules invites is surfaced as a SENTENCE, never as
+  // an action. Spending still happens in exactly one place: the confirmation
+  // dialog above, behind `{ confirm: true }`.
+  const rubricModalEl = document.getElementById("rubric-modal");
+  const rubricBackdropEl = document.getElementById("rubric-backdrop");
+  const rubricOpenBtn = document.getElementById("rubric-open");
+  const rubricCloseBtn = document.getElementById("rubric-close");
+  const rubricDoneBtn = document.getElementById("rubric-done");
+  const rubricNewBtn = document.getElementById("rubric-new");
+  const rubricCancelBtn = document.getElementById("rubric-cancel");
+  const rubricSaveBtn = document.getElementById("rubric-save");
+  const rubricListViewEl = document.getElementById("rubric-list-view");
+  const rubricEditViewEl = document.getElementById("rubric-edit-view");
+  const rubricListEl = document.getElementById("rubric-list");
+  const rubricSwitchNoteEl = document.getElementById("rubric-switch-note");
+  const rubricListActionsEl = document.getElementById("rubric-list-actions");
+  const rubricEditActionsEl = document.getElementById("rubric-edit-actions");
+  const rubricNameInput = document.getElementById("rubric-name");
+  const rubricDimensionsEl = document.getElementById("rubric-dimensions");
+  const rubricAddDimensionBtn = document.getElementById("rubric-add-dimension");
+  const rubricErrorEl = document.getElementById("rubric-error");
+  const rubricAnnouncerEl = document.getElementById("rubric-announcer");
+  const rubricRulesActiveEl = document.getElementById("rank-rules-active");
+
+  /** The last `/api/rubric` payload. */
+  let rubricState = null;
+  /** The preset being authored, or null while the list is showing. */
+  let rubricDraft = null;
+  /** The id being edited; undefined while authoring a brand-new set. */
+  let rubricDraftId;
+  let rubricTrigger = null;
+  let rubricBusy = false;
+  /** The preset id whose Delete is one press from happening. */
+  let rubricPendingDelete = null;
+
+  const NO_RUBRIC_EDITOR = {
+    blankDraft: () => ({ name: "", dimensions: [] }),
+    blankDimension: () => ({ label: "", instructions: "", levels: ["", ""], weight: 1 }),
+    draftFromPreset: (p) => ({ name: (p && p.name) || "", dimensions: [] }),
+    moveItem: (list) => list,
+    weightShares: (list) => (list || []).map(() => 0),
+    validate: () => [],
+    toPayload: (d) => d,
+    canEdit: () => false,
+    canDelete: () => false,
+    presetLabel: (p) => (p && p.name) || "Ranking rules",
+    coverageLine: () => "",
+    switchWarning: () => null,
+    activePreset: () => undefined,
+  };
+
+  function rubricApi() {
+    return window.XBORubricEditor || NO_RUBRIC_EDITOR;
+  }
+
+  function isRubricOpen() {
+    return !!rubricModalEl && !rubricModalEl.hidden;
+  }
+
+  function rubricAnnounce(message) {
+    if (rubricAnnouncerEl) rubricAnnouncerEl.textContent = message;
+  }
+
+  function showRubricError(message) {
+    if (!rubricErrorEl) return;
+    rubricErrorEl.textContent = message || "";
+    rubricErrorEl.hidden = !message;
+  }
+
+  /**
+   * The active set of rules, named in the ranking popover.
+   *
+   * It reads off `/api/setup`'s ranking block, not off `/api/rubric`, so the
+   * line is correct before the editor has ever been opened - and stays correct
+   * after a run, since every path that re-reads setup passes through here.
+   */
+  function updateRubricSummary() {
+    if (!rubricRulesActiveEl) return;
+    const preset = setupState && setupState.ranking && setupState.ranking.preset;
+    if (!preset) {
+      rubricRulesActiveEl.textContent = "Ranking rules are unavailable.";
+      return;
+    }
+    rubricRulesActiveEl.textContent = `Ranking with: ${rubricApi().presetLabel(preset)}`;
+  }
+
+  async function openRubricEditor(triggerEl) {
+    if (!rubricModalEl) return;
+    rubricTrigger = triggerEl || null;
+    rubricDraft = null;
+    rubricDraftId = undefined;
+    rubricPendingDelete = null;
+    showRubricError("");
+    // The popover the button lives in is closed on the way out: a dialog over
+    // a popover leaves the popover unreachable but still painted.
+    const rankPopover = popovers.find((p) => p.name === "ranking");
+    if (rankPopover && isPopoverOpen(rankPopover)) setPopoverOpen(rankPopover, false, { returnFocus: false });
+
+    rubricModalEl.hidden = false;
+    rubricBackdropEl.hidden = false;
+    rubricCloseBtn.focus();
+    document.addEventListener("keydown", onRubricKeydown);
+    renderRubricList();
+    await loadRubricState();
+  }
+
+  function closeRubricEditor() {
+    if (!isRubricOpen()) return;
+    rubricModalEl.hidden = true;
+    rubricBackdropEl.hidden = true;
+    document.removeEventListener("keydown", onRubricKeydown);
+    rubricDraft = null;
+    rubricDraftId = undefined;
+    rubricPendingDelete = null;
+    const trigger = rubricTrigger;
+    rubricTrigger = null;
+    // Back to where it was opened from, but only while that control is still
+    // on screen: the ranking popover was closed on the way in, so its button
+    // is usually not focusable by now and focusing it would strand focus on
+    // <body>. The popover's own toggle is the visible thing that stands for it.
+    const visible = (node) => !!node && !node.disabled && node.offsetParent !== null;
+    const fallback = visible(trigger) ? trigger : document.getElementById("rank-toggle");
+    if (fallback) fallback.focus();
+  }
+
+  async function loadRubricState() {
+    try {
+      rubricState = await getJSON("/api/rubric");
+    } catch (_) {
+      rubricState = null;
+      showRubricError("Could not load your ranking rules. Please try again.");
+      return;
+    }
+    if (rubricDraft) renderRubricEdit();
+    else renderRubricList();
+  }
+
+  function rubricPresets() {
+    return (rubricState && rubricState.presets) || [];
+  }
+
+  function rubricTotal() {
+    return (rubricState && rubricState.total) || 0;
+  }
+
+  function setRubricView(editing) {
+    rubricListViewEl.hidden = editing;
+    rubricEditViewEl.hidden = !editing;
+    rubricListActionsEl.hidden = editing;
+    rubricEditActionsEl.hidden = !editing;
+  }
+
+  // --- view A: the saved sets ----------------------------------------------
+
+  function renderRubricList() {
+    setRubricView(false);
+    if (!rubricState) {
+      rubricListEl.replaceChildren(el("p", "rubric-item-meta", "Loading your ranking rules…"));
+      if (rubricSwitchNoteEl) rubricSwitchNoteEl.hidden = true;
+      return;
+    }
+
+    const api = rubricApi();
+    const group = el("div", "rubric-list-group");
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-label", "Which ranking rules to score with");
+    group.append(...rubricPresets().map((preset) => renderRubricItem(preset)));
+    rubricListEl.replaceChildren(group);
+
+    // What switching has already cost the library, stated once for the ACTIVE
+    // set rather than repeated under every row.
+    const active = api.activePreset(rubricState);
+    const warning = active ? api.switchWarning(active, rubricTotal()) : null;
+    if (rubricSwitchNoteEl) {
+      rubricSwitchNoteEl.textContent = warning || "";
+      rubricSwitchNoteEl.hidden = !warning;
+    }
+  }
+
+  function renderRubricItem(preset) {
+    const api = rubricApi();
+    const active = rubricState && rubricState.activeId === preset.id;
+    const item = el("div", "rubric-item");
+    if (active) item.classList.add("is-active");
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.className = "rubric-radio";
+    radio.name = "rubric-active";
+    radio.id = `rubric-preset-${preset.id}`;
+    radio.value = preset.id;
+    radio.checked = !!active;
+    radio.disabled = rubricBusy;
+    radio.addEventListener("change", () => {
+      if (radio.checked) void activateRubricPreset(preset.id);
+    });
+
+    const main = el("div", "rubric-item-main");
+    const name = el("label", "rubric-item-name", api.presetLabel(preset));
+    name.htmlFor = radio.id;
+    const questions = (preset.dimensions || []).length;
+    const meta = el(
+      "p",
+      "rubric-item-meta",
+      `${questions} question${questions === 1 ? "" : "s"} · ${api.coverageLine(preset, rubricTotal())}`,
+    );
+    meta.id = `${radio.id}-meta`;
+    radio.setAttribute("aria-describedby", meta.id);
+    main.append(name, meta);
+
+    const actions = el("div", "rubric-item-actions");
+    // The built-in set is the fallback everything else depends on, so it is
+    // offered as clone-to-edit rather than edited in place.
+    const duplicate = el("button", "rubric-link", "Duplicate");
+    duplicate.type = "button";
+    duplicate.disabled = rubricBusy;
+    duplicate.addEventListener("click", () => startRubricEdit(preset, { clone: true }));
+    actions.append(duplicate);
+
+    if (api.canEdit(preset)) {
+      const edit = el("button", "rubric-link", "Edit");
+      edit.type = "button";
+      edit.disabled = rubricBusy;
+      edit.addEventListener("click", () => startRubricEdit(preset, { clone: false }));
+      actions.append(edit);
+    }
+    if (api.canDelete(preset)) {
+      // Two presses, inline: deleting a set of rules destroys no posts and no
+      // scores (they are keyed by the rules' CONTENT, so re-creating the same
+      // rules finds them again), which makes a whole confirmation dialog
+      // heavier than the act deserves - but not so light it happens by
+      // accident.
+      const pending = rubricPendingDelete === preset.id;
+      const remove = el("button", "rubric-link is-danger", pending ? "Confirm delete" : "Delete");
+      remove.type = "button";
+      remove.disabled = rubricBusy;
+      remove.setAttribute(
+        "aria-label",
+        pending
+          ? `Confirm deleting the ranking rules "${preset.name}"`
+          : `Delete the ranking rules "${preset.name}"`,
+      );
+      remove.addEventListener("click", () => {
+        if (pending) {
+          void deleteRubricPreset(preset);
+          return;
+        }
+        rubricPendingDelete = preset.id;
+        renderRubricList();
+        // Focus follows the button through the re-render, so the second press
+        // is where the first one left the keyboard.
+        const again = Array.from(rubricListEl.querySelectorAll(".rubric-radio")).find(
+          (input) => input.value === preset.id,
+        );
+        const btn = again && again.closest(".rubric-item").querySelector(".is-danger");
+        if (btn) btn.focus();
+        rubricAnnounce(`Press again to delete "${preset.name}". Your scores are kept.`);
+      });
+      actions.append(remove);
+    }
+
+    item.append(radio, main, actions);
+    return item;
+  }
+
+  async function activateRubricPreset(id) {
+    if (rubricBusy) return;
+    rubricBusy = true;
+    showRubricError("");
+    try {
+      const body = await sendRubric("PUT", "/api/rubric/active", { id });
+      await afterRubricChange(body);
+      const preset = rubricApi().activePreset(rubricState);
+      rubricAnnounce(`Now ranking with ${rubricApi().presetLabel(preset)}.`);
+    } catch (err) {
+      showRubricError(err.message);
+    } finally {
+      rubricBusy = false;
+      renderRubricList();
+    }
+  }
+
+  async function deleteRubricPreset(preset) {
+    if (rubricBusy) return;
+    rubricBusy = true;
+    showRubricError("");
+    try {
+      const body = await sendRubric("DELETE", `/api/rubric/presets/${encodeURIComponent(preset.id)}`);
+      await afterRubricChange(body);
+      rubricAnnounce(`Deleted "${preset.name}". Any scores it produced are kept.`);
+    } catch (err) {
+      showRubricError(err.message);
+    } finally {
+      rubricBusy = false;
+      rubricPendingDelete = null;
+      renderRubricList();
+      if (rubricNewBtn) rubricNewBtn.focus();
+    }
+  }
+
+  // --- view B: authoring one set -------------------------------------------
+
+  function startRubricNew() {
+    rubricDraft = rubricApi().blankDraft();
+    rubricDraftId = undefined;
+    showRubricError("");
+    renderRubricEdit();
+    if (rubricNameInput) rubricNameInput.focus();
+  }
+
+  function startRubricEdit(preset, opts) {
+    const clone = !!(opts && opts.clone);
+    // A duplicate is a NEW set: it carries the source's questions and gets its
+    // own name, so the original keeps its scores untouched.
+    rubricDraft = rubricApi().draftFromPreset(
+      clone ? { ...preset, builtIn: true } : preset,
+      rubricPresets(),
+    );
+    rubricDraftId = clone ? undefined : preset.id;
+    rubricPendingDelete = null;
+    showRubricError("");
+    renderRubricEdit();
+    if (rubricNameInput) rubricNameInput.focus();
+  }
+
+  function cancelRubricEdit() {
+    rubricDraft = null;
+    rubricDraftId = undefined;
+    showRubricError("");
+    renderRubricList();
+    if (rubricNewBtn) rubricNewBtn.focus();
+  }
+
+  function renderRubricEdit() {
+    if (!rubricDraft) return;
+    setRubricView(true);
+    rubricNameInput.value = rubricDraft.name || "";
+    const shares = rubricApi().weightShares(rubricDraft.dimensions);
+    rubricDimensionsEl.replaceChildren(
+      ...rubricDraft.dimensions.map((dim, index) => renderRubricDimension(dim, index, shares[index])),
+    );
+    const max = (rubricState && rubricState.limits && rubricState.limits.maxDimensions) || 12;
+    rubricAddDimensionBtn.disabled = rubricDraft.dimensions.length >= max;
+    rubricAddDimensionBtn.title = rubricAddDimensionBtn.disabled
+      ? `A set of rules can hold at most ${max} dimensions.`
+      : "";
+    rubricSaveBtn.textContent = rubricDraftId ? "Save rules" : "Create rules";
+  }
+
+  function renderRubricDimension(dim, index, share) {
+    const card = el("section", "rubric-dimension");
+    const titleId = `rubric-dim-${index}-title`;
+    // Named by its own dimension, not by the word "Dimension": a form of five
+    // identically-labelled regions tells a screen-reader user nothing about
+    // which one they have landed in.
+    const describeCard = () => {
+      const label = (dim.label || "").trim();
+      card.setAttribute("aria-label", label ? `Dimension ${index + 1}: ${label}` : `Dimension ${index + 1}`);
+    };
+    describeCard();
+
+    // The card's own header: which dimension this is, and the three controls
+    // that act on the WHOLE dimension. They sat beside the name input in a
+    // first cut, where they read as acting on the name.
+    const head = el("div", "rubric-dim-head");
+    const position = el("span", "rubric-dim-position", `Dimension ${index + 1}`);
+    head.append(
+      position,
+      renderRubricRowTools(index, rubricDraft.dimensions.length, {
+        move: (delta) => {
+          rubricDraft.dimensions = rubricApi().moveItem(rubricDraft.dimensions, index, delta);
+          renderRubricEdit();
+          focusDimensionTool(index + delta, delta);
+        },
+        remove: () => {
+          rubricDraft.dimensions.splice(index, 1);
+          renderRubricEdit();
+          focusAfterRemoval();
+        },
+        name: dim.label || `dimension ${index + 1}`,
+        canRemove: rubricDraft.dimensions.length > 1,
+      }),
+    );
+
+    const fields = el("div", "rubric-dim-fields");
+    const nameField = el("div", "field");
+    // "Name", not "Dimension": the card's own header already says which
+    // dimension this is, and repeating it labels the field with its container.
+    const nameLabel = el("label", "field-label", "Name");
+    nameLabel.id = titleId;
+    nameLabel.htmlFor = `rubric-dim-${index}-name`;
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "field-input";
+    nameInput.id = nameLabel.htmlFor;
+    nameInput.value = dim.label || rubricApi().humanizeKey(dim.id);
+    nameInput.maxLength = 40;
+    nameInput.autocomplete = "off";
+    nameInput.addEventListener("input", () => {
+      dim.label = nameInput.value;
+      describeCard();
+      relabelRowTools(card, dim.label || `dimension ${index + 1}`);
+    });
+    nameField.append(nameLabel, nameInput);
+
+    const weightField = el("div", "field rubric-dim-weight");
+    const weightLabel = el("label", "field-label", "Weight");
+    weightLabel.htmlFor = `rubric-dim-${index}-weight`;
+    const weightInput = document.createElement("input");
+    weightInput.type = "number";
+    weightInput.className = "field-input";
+    weightInput.id = weightLabel.htmlFor;
+    weightInput.min = "0.5";
+    weightInput.max = "100";
+    weightInput.step = "0.5";
+    weightInput.value = String(dim.weight);
+    const weightHint = el("p", "field-hint", shareLabel(share));
+    weightHint.id = `${weightInput.id}-hint`;
+    weightInput.setAttribute("aria-describedby", weightHint.id);
+    weightInput.addEventListener("input", () => {
+      dim.weight = Number(weightInput.value);
+      // Only ratios matter, so every share moves when one weight does - they
+      // are repainted in place rather than by re-rendering, which would take
+      // the caret out of the field being typed in.
+      refreshWeightShares();
+    });
+    weightField.append(weightLabel, weightInput, weightHint);
+
+    fields.append(nameField, weightField);
+
+    const questionField = el("div", "field");
+    const questionLabel = el("label", "field-label", "Question");
+    questionLabel.htmlFor = `rubric-dim-${index}-question`;
+    const question = document.createElement("textarea");
+    question.className = "field-textarea";
+    question.id = questionLabel.htmlFor;
+    question.rows = 2;
+    question.value = dim.instructions || "";
+    const questionHint = el(
+      "p",
+      "field-hint",
+      "One specific thing to judge. A question weighing several independent factors scores worse than two questions do.",
+    );
+    questionHint.id = `${question.id}-hint`;
+    question.setAttribute("aria-describedby", questionHint.id);
+    question.addEventListener("input", () => {
+      dim.instructions = question.value;
+      autoGrow(question);
+    });
+    growWhenMounted(question);
+    questionField.append(questionLabel, question, questionHint);
+
+    card.append(head, fields, questionField, renderRubricLevels(dim, index));
+    return card;
+  }
+
+  /**
+   * Grow a prose field to its content.
+   *
+   * The levels ARE the tuning surface - the model reads them, not the weights -
+   * so a field that shows two of their four lines hides the thing the editor
+   * exists for. `resize: vertical` still lets the owner shrink one back.
+   */
+  function autoGrow(field) {
+    field.style.height = "auto";
+    field.style.height = `${field.scrollHeight}px`;
+  }
+
+  /**
+   * The same, once the field is actually in the document: `scrollHeight` is 0
+   * on an element that has never been laid out, so sizing it at build time
+   * would collapse every field to nothing.
+   */
+  function growWhenMounted(field) {
+    requestAnimationFrame(() => {
+      if (field.isConnected) autoGrow(field);
+    });
+  }
+
+  /** Keep the row tools' accessible names in step with a renamed dimension. */
+  function relabelRowTools(card, name) {
+    const tools = card.querySelectorAll(".rubric-dim-head .rubric-icon-btn");
+    const labels = [`Move ${name} up`, `Move ${name} down`, `Remove ${name}`];
+    tools.forEach((btn, i) => btn.setAttribute("aria-label", labels[i]));
+  }
+
+  function shareLabel(share) {
+    return `${share || 0}% of the score`;
+  }
+
+  function refreshWeightShares() {
+    const shares = rubricApi().weightShares(rubricDraft.dimensions);
+    rubricDimensionsEl.querySelectorAll(".rubric-dim-weight .field-hint").forEach((hint, i) => {
+      hint.textContent = shareLabel(shares[i]);
+    });
+  }
+
+  /**
+   * The levels: the ordered descriptions of what each score MEANS, lowest
+   * first. They are the real tuning surface - the model reads these, not the
+   * weights - which is why they get a labelled list of their own rather than
+   * one comma-separated field.
+   */
+  function renderRubricLevels(dim, dimIndex) {
+    const wrap = el("div", "rubric-levels");
+    const head = el("div", "rubric-levels-head");
+    const heading = el("span", "field-label", "Levels, lowest first");
+    heading.id = `rubric-dim-${dimIndex}-levels`;
+    const min = (rubricState && rubricState.limits && rubricState.limits.minLevels) || 2;
+    const max = (rubricState && rubricState.limits && rubricState.limits.maxLevels) || 10;
+    head.append(heading, el("span", "field-hint", `${min}–${max}; the model reads these`));
+
+    const list = el("div", "rubric-level-list");
+    list.setAttribute("role", "group");
+    list.setAttribute("aria-labelledby", heading.id);
+    dim.levels.forEach((level, index) => {
+      const row = el("div", "rubric-level-row");
+      const position = el("span", "rubric-level-index", String(index + 1));
+      position.setAttribute("aria-hidden", "true");
+      // A textarea, not an input: a level is a sentence describing what that
+      // score MEANS, and a single-line field shows the owner the first six
+      // words of the thing they came here to tune.
+      const input = document.createElement("textarea");
+      input.className = "field-textarea rubric-level-input";
+      input.rows = 2;
+      input.value = level;
+      input.setAttribute("aria-label", `Level ${index + 1} of dimension ${dimIndex + 1}`);
+      input.addEventListener("input", () => {
+        dim.levels[index] = input.value;
+        autoGrow(input);
+      });
+      growWhenMounted(input);
+      row.append(
+        position,
+        input,
+        renderRubricRowTools(index, dim.levels.length, {
+          move: (delta) => {
+            dim.levels = rubricApi().moveItem(dim.levels, index, delta);
+            renderRubricEdit();
+            focusLevel(dimIndex, index + delta);
+          },
+          remove: () => {
+            dim.levels.splice(index, 1);
+            renderRubricEdit();
+            focusLevel(dimIndex, Math.max(0, index - 1));
+          },
+          what: "level",
+          name: `level ${index + 1}`,
+          canRemove: dim.levels.length > min,
+        }),
+      );
+      list.append(row);
+    });
+
+    const add = el("button", "rubric-add");
+    add.type = "button";
+    add.append(el("span", "rubric-plus", "+"), document.createTextNode("Add a level"));
+    add.querySelector(".rubric-plus").setAttribute("aria-hidden", "true");
+    add.disabled = dim.levels.length >= max;
+    add.addEventListener("click", () => {
+      dim.levels.push("");
+      renderRubricEdit();
+      focusLevel(dimIndex, dim.levels.length - 1);
+    });
+
+    wrap.append(head, list, add);
+    return wrap;
+  }
+
+  /** Move up / move down / remove, the same three controls at both depths. */
+  function renderRubricRowTools(index, count, opts) {
+    const tools = el("div", "rubric-dim-tools");
+    const button = (glyph, label, disabled, onClick, danger) => {
+      const btn = el("button", `rubric-icon-btn${danger ? " is-danger" : ""}`, glyph);
+      btn.type = "button";
+      btn.setAttribute("aria-label", label);
+      btn.disabled = disabled;
+      btn.addEventListener("click", onClick);
+      return btn;
+    };
+    tools.append(
+      button("↑", `Move ${opts.name} up`, index === 0, () => opts.move(-1)),
+      button("↓", `Move ${opts.name} down`, index === count - 1, () => opts.move(1)),
+      button("×", `Remove ${opts.name}`, !opts.canRemove, () => opts.remove(), true),
+    );
+    return tools;
+  }
+
+  /** Keep the keyboard on the control that just moved, not back at the top. */
+  function focusDimensionTool(index, delta) {
+    const cards = rubricDimensionsEl.querySelectorAll(".rubric-dimension");
+    const card = cards[index];
+    if (!card) return;
+    const buttons = card.querySelectorAll(".rubric-dim-head .rubric-icon-btn");
+    const target = delta < 0 ? buttons[0] : buttons[1];
+    if (target && !target.disabled) target.focus();
+    else if (card.querySelector(".rubric-dim-fields .field-input")) {
+      card.querySelector(".rubric-dim-fields .field-input").focus();
+    }
+  }
+
+  function focusAfterRemoval() {
+    const first = rubricDimensionsEl.querySelector(".rubric-dim-fields .field-input");
+    if (first) first.focus();
+    else if (rubricAddDimensionBtn) rubricAddDimensionBtn.focus();
+  }
+
+  function focusLevel(dimIndex, levelIndex) {
+    const card = rubricDimensionsEl.querySelectorAll(".rubric-dimension")[dimIndex];
+    if (!card) return;
+    const input = card.querySelectorAll(".rubric-level-row .rubric-level-input")[levelIndex];
+    if (input) input.focus();
+  }
+
+  async function saveRubricDraft() {
+    if (!rubricDraft || rubricBusy) return;
+    rubricDraft.name = rubricNameInput.value;
+    const others = rubricPresets().filter((p) => p.id !== rubricDraftId);
+    const errors = rubricApi().validate(rubricDraft, others, rubricState);
+    if (errors.length > 0) {
+      showRubricError(errors.join("\n"));
+      rubricAnnounce(`${errors.length} problem${errors.length === 1 ? "" : "s"} to fix.`);
+      return;
+    }
+
+    rubricBusy = true;
+    rubricSaveBtn.disabled = true;
+    showRubricError("");
+    try {
+      const payload = rubricApi().toPayload(rubricDraft);
+      const body = rubricDraftId
+        ? await sendRubric("PUT", `/api/rubric/presets/${encodeURIComponent(rubricDraftId)}`, payload)
+        : await sendRubric("POST", "/api/rubric/presets", payload);
+      await afterRubricChange(body);
+      rubricDraft = null;
+      rubricDraftId = undefined;
+      // Cleared BEFORE the list is rendered: every control in it is disabled
+      // while a request is in flight, and rendering inside the busy window
+      // painted the whole list - radios included - greyed out.
+      rubricBusy = false;
+      renderRubricList();
+      rubricAnnounce("Ranking rules saved.");
+      if (rubricNewBtn) rubricNewBtn.focus();
+    } catch (err) {
+      showRubricError(err.message);
+    } finally {
+      rubricBusy = false;
+      rubricSaveBtn.disabled = false;
+    }
+  }
+
+  async function sendRubric(method, url, payload) {
+    const res = await fetch(url, {
+      method,
+      ...(payload === undefined
+        ? {}
+        : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // The server's own sentences, which are written to be shown: one per
+      // problem, naming the field and what is wrong with it.
+      throw new Error((body.errors && body.errors.join("\n")) || body.error || "That did not work. Please try again.");
+    }
+    return body;
+  }
+
+  /**
+   * Put the viewer back in step with a change to the rules.
+   *
+   * Which scores are CURRENT is a function of the active set of rules, so a
+   * change here has exactly the consequences a finished ranking run has: the
+   * chips, the unranked dot and the "Top score" order all move, and every
+   * cached page was fetched under the old answer. `refreshAfterRank` is that
+   * refresh, reused rather than restated - no bookmark, category or count is
+   * touched either way.
+   */
+  async function afterRubricChange(body) {
+    if (body && body.rubric) rubricState = body.rubric;
+    if (body && body.ranking && setupState) setupState.ranking = body.ranking;
+    await refreshAfterRank();
+  }
+
+  function onRubricKeydown(e) {
+    if (!isRubricOpen()) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      // One level at a time: from the form, Escape goes back to the list
+      // rather than discarding the draft AND the dialog in one press.
+      if (rubricDraft) cancelRubricEdit();
+      else closeRubricEditor();
+      return;
+    }
+    trapModalFocus(rubricModalEl, e);
+  }
+
+  function initRubricEditor() {
+    if (!rubricOpenBtn || !rubricModalEl) return;
+    rubricOpenBtn.addEventListener("click", () => void openRubricEditor(rubricOpenBtn));
+    rubricCloseBtn.addEventListener("click", () => closeRubricEditor());
+    rubricDoneBtn.addEventListener("click", () => closeRubricEditor());
+    rubricBackdropEl.addEventListener("click", () => closeRubricEditor());
+    rubricNewBtn.addEventListener("click", () => startRubricNew());
+    rubricCancelBtn.addEventListener("click", () => cancelRubricEdit());
+    rubricSaveBtn.addEventListener("click", () => void saveRubricDraft());
+    rubricAddDimensionBtn.addEventListener("click", () => {
+      if (!rubricDraft) return;
+      rubricDraft.dimensions.push(rubricApi().blankDimension());
+      renderRubricEdit();
+      const cards = rubricDimensionsEl.querySelectorAll(".rubric-dimension");
+      const last = cards[cards.length - 1];
+      const field = last && last.querySelector(".rubric-dim-fields .field-input");
+      if (field) field.focus();
+    });
+    if (rubricNameInput) {
+      rubricNameInput.addEventListener("input", () => {
+        if (rubricDraft) rubricDraft.name = rubricNameInput.value;
+      });
+    }
+  }
+
   // ---- summary modal -------------------------------------------------------
   // Fetches (or serves from cache) an on-demand LLM summary of a bookmark's
   // content - the post text, plus its extracted article when available - in
@@ -5053,6 +5786,7 @@
   function applySetupState() {
     updateSyncButton();
     updateRankControl();
+    updateRubricSummary();
     updateEmptyLibraryState();
     updateToolbarVisibility();
     updateSortAvailability();
@@ -6433,6 +7167,7 @@
   initRanking();
   initMovePicker();
   initCategoryEditor();
+  initRubricEditor();
   void restoreLastView();
   window.addEventListener("pagehide", persistViewSnapshot);
   document.addEventListener("visibilitychange", () => {
@@ -6446,8 +7181,6 @@
     if (syncIsRunning()) pollSync();
     // A ranking run started in another tab (or before a reload) owns the strip
     // just as a sync does - it is the same one-at-a-time server job.
-    if (ranking().isRunning(rankState())) pollRank();
-    // A run started in another tab (or before a reload) keeps reporting here.
     if (ranking().isRunning(rankState())) pollRank();
   });
 })();

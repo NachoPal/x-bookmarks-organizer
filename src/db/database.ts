@@ -3,6 +3,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import {
   ARTICLE_LINK_METADATA_ADDED_COLUMNS,
+  BOOKMARK_SCORES_REKEY_SQL,
   BOOKMARKS_ADDED_COLUMNS,
   CATEGORIES_ADDED_COLUMNS,
   SCHEMA_SQL,
@@ -96,6 +97,14 @@ export interface BookmarkPageOptions {
   dir?: BookmarkSortDirection;
   offset?: number;
   limit?: number;
+  /**
+   * Which rubric's scores `sort: 'score'` orders by - the ACTIVE preset's
+   * version (issue #102). Omitted, any stored score counts, which is only
+   * right for a caller with no notion of an active preset (a test, a one-off
+   * script). A viewer that left this out would sort one preset's list by
+   * another preset's verdicts.
+   */
+  rubricVersion?: string;
 }
 
 interface BookmarkRow {
@@ -344,6 +353,37 @@ export class Database {
     this.addMissingColumns('article_link_metadata', ARTICLE_LINK_METADATA_ADDED_COLUMNS);
     this.addMissingColumns('bookmarks', BOOKMARKS_ADDED_COLUMNS);
     this.addMissingColumns('categories', CATEGORIES_ADDED_COLUMNS);
+    this.rekeyBookmarkScores();
+  }
+
+  /**
+   * Widen `bookmark_scores`' primary key to `(bookmark_id, rubric_version)` on
+   * a database that predates rubric presets (issue #102). Lossless - every
+   * existing row is copied, so a library already ranked keeps its verdicts and
+   * is not re-billed - and a no-op once done.
+   *
+   * Foreign keys are switched OFF around the rebuild, which is SQLite's own
+   * documented procedure for a table recreation: the DROP would otherwise be
+   * evaluated against the child rows that are about to be re-parented. The
+   * pragma cannot be changed inside a transaction, so it brackets it.
+   */
+  private rekeyBookmarkScores(): void {
+    const columns = this.db.prepare('PRAGMA table_info(bookmark_scores)').all() as {
+      name: string;
+      pk: number;
+    }[];
+    const version = columns.find((c) => c.name === 'rubric_version');
+    if (!version || version.pk !== 0) return;
+
+    this.db.pragma('foreign_keys = OFF');
+    try {
+      this.db.exec(`BEGIN; ${BOOKMARK_SCORES_REKEY_SQL} COMMIT;`);
+    } catch (err) {
+      this.db.exec('ROLLBACK;');
+      throw err;
+    } finally {
+      this.db.pragma('foreign_keys = ON');
+    }
   }
 
   private addMissingColumns(table: string, columns: { name: string; ddl: string }[]): void {
@@ -437,6 +477,14 @@ export class Database {
     // never-ranked bookmarks last whether the owner asked for the highest
     // scores or the lowest (issue #97). Only the score itself flips.
     const scoreKeys = scored ? `sc.score IS NULL, sc.score ${asc ? 'ASC' : 'DESC'}, ` : '';
+    // The join is scoped to ONE rubric, in the join condition rather than in
+    // WHERE, so a bookmark scored only under some other preset stays in the
+    // list and sorts as unranked - which is what it is, under these rules.
+    const scoreJoin = scored
+      ? `LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id${
+          opts.rubricVersion ? ' AND sc.rubric_version = ?' : ''
+        }`
+      : '';
     // Recency is the ordering under `recent` (so it flips with the direction)
     // and only the tie-break under `score` (where it stays newest-first, so
     // two equally-scored posts keep one stable, familiar sequence).
@@ -447,10 +495,13 @@ export class Database {
          SELECT c.id FROM categories c JOIN subtree s ON c.parent_id = s.id
        )
        SELECT b.* FROM bookmarks b
-       ${scored ? 'LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id' : ''}
+       ${scoreJoin}
        WHERE ${where.join(' AND ')}
        ORDER BY ${scoreKeys}${recency}`;
+    // Parameter order follows the STATEMENT, not the call: the join's version
+    // is bound after the CTE's category id and before the page window.
     const params: (number | string)[] = [categoryId];
+    if (scored && opts.rubricVersion) params.push(opts.rubricVersion);
     if (opts.limit != null) {
       sql += ' LIMIT ? OFFSET ?';
       params.push(opts.limit, opts.offset ?? 0);
@@ -1214,44 +1265,65 @@ export class Database {
     return this.db.prepare('DELETE FROM summaries WHERE bookmark_id = ?').run(bookmarkId).changes > 0;
   }
 
-  // --- Ranking scores (issue #62) -----------------------------------------
+  // --- Ranking scores (issues #62, #102) ----------------------------------
+  //
+  // Every read below takes an OPTIONAL `rubricVersion`. Passing one is what a
+  // consumer that shows or sorts scores must do: a row exists per (bookmark,
+  // rubric), and a verdict from a preset that is not active is not this
+  // library's current opinion of that bookmark. Omitting it means "whatever
+  // this bookmark was last scored as, under any rubric", which is only useful
+  // to a caller that genuinely does not care which scale it gets - a count of
+  // rows, a test, a cleanup.
 
-  /** The stored ranking verdict for one bookmark, if it has been ranked. */
-  getBookmarkScore(bookmarkId: number): BookmarkScoreRecord | undefined {
-    const row = this.db
-      .prepare('SELECT * FROM bookmark_scores WHERE bookmark_id = ?')
-      .get(bookmarkId) as BookmarkScoreRow | undefined;
+  /** The stored ranking verdict for one bookmark, under a rubric (or the latest). */
+  getBookmarkScore(bookmarkId: number, rubricVersion?: string): BookmarkScoreRecord | undefined {
+    const row = rubricVersion
+      ? (this.db
+          .prepare('SELECT * FROM bookmark_scores WHERE bookmark_id = ? AND rubric_version = ?')
+          .get(bookmarkId, rubricVersion) as BookmarkScoreRow | undefined)
+      : (this.db
+          .prepare(
+            'SELECT * FROM bookmark_scores WHERE bookmark_id = ? ORDER BY scored_at DESC LIMIT 1',
+          )
+          .get(bookmarkId) as BookmarkScoreRow | undefined);
     return row ? toBookmarkScoreRecord(row) : undefined;
   }
 
   /**
    * The stored ranking verdicts for a page of bookmarks, keyed by bookmark id.
-   * Absent ids simply have no entry - the viewer renders those as unranked.
+   * Absent ids simply have no entry - the viewer renders those as unranked,
+   * which under a given `rubricVersion` is exactly what a bookmark scored only
+   * by some OTHER preset is.
    */
-  getBookmarkScores(bookmarkIds: number[]): Map<number, BookmarkScoreRecord> {
+  getBookmarkScores(bookmarkIds: number[], rubricVersion?: string): Map<number, BookmarkScoreRecord> {
     const map = new Map<number, BookmarkScoreRecord>();
     if (bookmarkIds.length === 0) return map;
     const placeholders = bookmarkIds.map(() => '?').join(',');
-    const rows = this.db
-      .prepare(`SELECT * FROM bookmark_scores WHERE bookmark_id IN (${placeholders})`)
-      .all(...bookmarkIds) as BookmarkScoreRow[];
+    // Newest last with no version filter, so the most recent verdict wins the
+    // slot - the same "latest" rule the single-bookmark read applies.
+    const sql = rubricVersion
+      ? `SELECT * FROM bookmark_scores
+           WHERE bookmark_id IN (${placeholders}) AND rubric_version = ?`
+      : `SELECT * FROM bookmark_scores
+           WHERE bookmark_id IN (${placeholders}) ORDER BY scored_at ASC`;
+    const params = rubricVersion ? [...bookmarkIds, rubricVersion] : bookmarkIds;
+    const rows = this.db.prepare(sql).all(...params) as BookmarkScoreRow[];
     for (const row of rows) map.set(row.bookmark_id, toBookmarkScoreRecord(row));
     return map;
   }
 
-  /** Store (or replace) one bookmark's ranking verdict. */
+  /** Store (or replace) one bookmark's ranking verdict under its rubric. */
   saveBookmarkScore(record: BookmarkScoreRecord): void {
     this.db
       .prepare(
         `INSERT INTO bookmark_scores
            (bookmark_id, score, confidence, dimensions, model, rubric_version, scored_at)
          VALUES (@bookmarkId, @score, @confidence, @dimensions, @model, @rubricVersion, @scoredAt)
-         ON CONFLICT(bookmark_id) DO UPDATE SET
+         ON CONFLICT(bookmark_id, rubric_version) DO UPDATE SET
            score = excluded.score,
            confidence = excluded.confidence,
            dimensions = excluded.dimensions,
            model = excluded.model,
-           rubric_version = excluded.rubric_version,
            scored_at = excluded.scored_at`,
       )
       .run({ ...record, dimensions: JSON.stringify(record.dimensions) });
@@ -1261,10 +1333,12 @@ export class Database {
    * The bookmarks a ranking run should score, oldest-ingested first so a run
    * interrupted partway through resumes in a stable order.
    *
-   * By default that is every bookmark with no score row, plus any scored by a
-   * DIFFERENT rubric version - mixing two rubrics' scales in one sort would
-   * make the ordering meaningless. `rescoreAll` returns every bookmark instead,
-   * which is the only way to re-spend on rows that are already current.
+   * By default that is every bookmark with no row under THIS rubric version -
+   * mixing two rubrics' scales in one sort would make the ordering meaningless,
+   * and since issue #102 a bookmark may well hold a perfectly good verdict from
+   * a different preset that simply does not answer the active one's questions.
+   * `rescoreAll` returns every bookmark instead, which is the only way to
+   * re-spend on rows that are already current.
    */
   getBookmarksToScore(opts: {
     rubricVersion: string;
@@ -1274,10 +1348,15 @@ export class Database {
     // Positional params, bound only for the clauses actually emitted:
     // better-sqlite3 rejects a bound value the statement has no slot for.
     const params: (string | number)[] = [];
-    let sql = `SELECT b.* FROM bookmarks b
-         LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id`;
+    let sql = 'SELECT b.* FROM bookmarks b';
     if (!opts.rescoreAll) {
-      sql += ' WHERE sc.bookmark_id IS NULL OR sc.rubric_version <> ?';
+      // NOT EXISTS rather than a LEFT JOIN: with the version in the key a
+      // bookmark can hold several rows, and a join would return it once per
+      // rubric it has ever been scored under.
+      sql += ` WHERE NOT EXISTS (
+         SELECT 1 FROM bookmark_scores sc
+          WHERE sc.bookmark_id = b.id AND sc.rubric_version = ?
+       )`;
       params.push(opts.rubricVersion);
     }
     sql += ' ORDER BY b.ingested_at ASC, b.id ASC';
@@ -1289,16 +1368,28 @@ export class Database {
     return rows.map(toStoredBookmark);
   }
 
-  /** How many bookmarks currently carry a ranking score. */
-  countScoredBookmarks(): number {
-    return (this.db.prepare('SELECT COUNT(*) AS n FROM bookmark_scores').get() as { n: number }).n;
+  /**
+   * How many bookmarks carry a ranking score under `rubricVersion` - or, with
+   * none given, under any rubric at all. The viewer passes the ACTIVE preset's
+   * version, which is what makes "N of M unranked" (issue #98) a statement
+   * about the rules currently in force rather than about the table.
+   */
+  countScoredBookmarks(rubricVersion?: string): number {
+    const sql = rubricVersion
+      ? 'SELECT COUNT(*) AS n FROM bookmark_scores WHERE rubric_version = ?'
+      : 'SELECT COUNT(DISTINCT bookmark_id) AS n FROM bookmark_scores';
+    const params = rubricVersion ? [rubricVersion] : [];
+    return (this.db.prepare(sql).get(...params) as { n: number }).n;
   }
 
   /**
    * Delete every stored ranking score. Explicit-only and idempotent - the way
    * to abandon a rubric rather than a migration, mirroring `clear-summaries`.
    */
-  clearBookmarkScores(): number {
-    return this.db.prepare('DELETE FROM bookmark_scores').run().changes;
+  clearBookmarkScores(rubricVersion?: string): number {
+    return rubricVersion
+      ? this.db.prepare('DELETE FROM bookmark_scores WHERE rubric_version = ?').run(rubricVersion)
+          .changes
+      : this.db.prepare('DELETE FROM bookmark_scores').run().changes;
   }
 }

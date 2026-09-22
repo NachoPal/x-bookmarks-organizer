@@ -7,15 +7,18 @@
  */
 import { requireRankerCredentials, type Config } from '../config';
 import type { CredentialStore } from '../creds/resolve';
+import type { Database } from '../db/database';
 import { billingLabel } from '../llm/factory';
 import { DEFAULT_TYPESAFE_MODEL, JevStateScorer, type StateScorer } from './client';
-import { buildRubric, type Rubric } from './rubric';
+import { resolveActiveRubric } from './preset-store';
+import { type Rubric } from './rubric';
 
 /** Where a build/billing line goes; the CLI prints it. */
 export type Log = (message: string) => void;
 
 export interface BuiltRanker {
   scorer: StateScorer;
+  /** The ACTIVE preset's rubric (issue #102) - what this run scores against. */
   rubric: Rubric;
 }
 
@@ -29,8 +32,14 @@ export interface BuiltRanker {
  * caller announces its billing (and, in the app, asks for an explicit
  * confirmation) before a call is made. The key's value is handed straight to
  * the client and never logged.
+ *
+ * The rubric comes from the database - the ACTIVE preset (issue #102) - rather
+ * than from a constant, so the CLI and the in-app run score against the rules
+ * the owner selected in the editor. With no preset ever saved that resolves to
+ * the built-in rubric under its original version tag, which is why an owner who
+ * never opens the editor is neither behaving differently nor re-billed.
  */
-export function buildRanker(config: Config, store: CredentialStore): BuiltRanker {
+export function buildRanker(config: Config, store: CredentialStore, db: Database): BuiltRanker {
   const apiKey = requireRankerCredentials(config, store);
   const { ranker } = config;
   return {
@@ -39,7 +48,7 @@ export function buildRanker(config: Config, store: CredentialStore): BuiltRanker
       model: ranker.model,
       baseURL: ranker.baseUrl,
     }),
-    rubric: buildRubric(ranker.interests),
+    rubric: resolveActiveRubric(db, ranker.interests),
   };
 }
 

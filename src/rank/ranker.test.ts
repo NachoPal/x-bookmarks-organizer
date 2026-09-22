@@ -111,7 +111,11 @@ describe('rankBookmarks', () => {
     const revised = new FakeScorer();
     await rankBookmarks({ db, scorer: revised }, { rubric: { ...rubric, version: 'v-test-2' } });
     expect(revised.states).toHaveLength(1);
-    expect(db.getBookmarkScore(db.getBookmarkByPostId('1')!.id)!.rubricVersion).toBe('v-test-2');
+    // Both verdicts survive since issue #102 - a score is keyed by (bookmark,
+    // rubric), so the old scale is still there to return to and never re-billed.
+    const id = db.getBookmarkByPostId('1')!.id;
+    expect(db.getBookmarkScore(id, 'v-test-2')!.rubricVersion).toBe('v-test-2');
+    expect(db.getBookmarkScore(id, rubric.version)!.rubricVersion).toBe(rubric.version);
   });
 
   it('honors a limit, so a first look has a cost ceiling', async () => {

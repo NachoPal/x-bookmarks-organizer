@@ -73,9 +73,9 @@ describe('createRankWiring', () => {
       db,
       store,
       config,
-      buildRanker: (cfg, st) => {
+      buildRanker: (cfg, st, database) => {
         // The REAL gate, then the fake scorer. Nothing here can reach the API.
-        const built = buildRanker(cfg, st);
+        const built = buildRanker(cfg, st, database);
         return { scorer, rubric: built.rubric };
       },
     });
@@ -160,7 +160,7 @@ describe('createRankWiring', () => {
         db,
         store: fakeStore({ TYPESAFE_API_KEY: 'k' }),
         config: loadConfig({ XBOOKMARKS_RANKER: 'typesafe' }),
-        buildRanker: (cfg, st) => ({ scorer, rubric: buildRanker(cfg, st).rubric }),
+        buildRanker: (cfg, st, database) => ({ scorer, rubric: buildRanker(cfg, st, database).rubric }),
         rank: async (_deps, options) => {
           seen.push(options as unknown as Record<string, unknown>);
           return { candidates: 0, scored: 0, skipped: 0, failed: 0, inputTokens: 0 };

@@ -62,13 +62,18 @@
  *   Never holds a quoted post that turned out to host an X Article - that
  *   body stays solely in `x_articles`, so it is not duplicated here.
  * - `bookmark_scores` holds the opt-in Jev ranking pass's verdict for a
- *   bookmark (issue #62), keyed by bookmark: one overall 0..1 `score`, the
- *   model's own `confidence`, and the per-dimension 0..1 scores the rubric
- *   asked for, kept individually so the weighting can be retuned (or a single
- *   dimension surfaced) without re-spending on a paid pass. A row exists only
- *   for a bookmark the owner actually paid to rank, so every consumer must
- *   treat an absent row as "not scored" rather than "scored zero" - which is
- *   why the viewer sorts unscored bookmarks last instead of first.
+ *   bookmark (issue #62), keyed by bookmark AND `rubric_version`: one overall
+ *   0..1 `score`, the model's own `confidence`, and the per-dimension 0..1
+ *   scores the rubric asked for, kept individually so the weighting can be
+ *   retuned (or a single dimension surfaced) without re-spending on a paid
+ *   pass. The version is part of the key since issue #102: each rubric preset
+ *   keeps its own verdicts, so switching to a preset already ranked under
+ *   shows its scores at once and switching back never re-bills. A row exists
+ *   only for a bookmark the owner actually paid to rank UNDER THAT RUBRIC, so
+ *   every consumer must treat an absent row as "not scored" rather than
+ *   "scored zero" - which is why the viewer sorts unscored bookmarks last
+ *   instead of first - and must scope its read to the ACTIVE preset's version
+ *   rather than to any row that happens to exist.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -172,18 +177,59 @@ CREATE TABLE IF NOT EXISTS quoted_posts (
 );
 
 CREATE TABLE IF NOT EXISTS bookmark_scores (
-  bookmark_id     INTEGER PRIMARY KEY REFERENCES bookmarks(id) ON DELETE CASCADE,
+  bookmark_id     INTEGER NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,
   score           REAL NOT NULL,
   confidence      REAL NOT NULL,
   dimensions      TEXT NOT NULL,
   model           TEXT NOT NULL,
   rubric_version  TEXT NOT NULL,
-  scored_at       TEXT NOT NULL
+  scored_at       TEXT NOT NULL,
+  PRIMARY KEY (bookmark_id, rubric_version)
 );
 
 -- Sorting a category by score is a paged server-side query, so the ordering
--- column is indexed rather than sorted in the client.
-CREATE INDEX IF NOT EXISTS idx_bookmark_scores_score ON bookmark_scores(score);
+-- column is indexed rather than sorted in the client. The version leads the
+-- index because every such query is scoped to ONE rubric (the active preset).
+CREATE INDEX IF NOT EXISTS idx_bookmark_scores_version_score
+  ON bookmark_scores(rubric_version, score);
+`;
+
+/**
+ * Rebuild `bookmark_scores` with a `(bookmark_id, rubric_version)` primary key
+ * (issue #102).
+ *
+ * Before rubric presets existed there was one rubric, so one score row per
+ * bookmark was the whole truth and `bookmark_id` alone was the key. With named
+ * presets the owner's decision is that each preset keeps ITS OWN scores:
+ * switching to a preset already ranked under shows its verdicts instantly, and
+ * switching back does not re-bill. A single-row-per-bookmark table cannot hold
+ * that - the second preset's run would overwrite the first's - so the key has
+ * to widen, which SQLite can only do by rebuilding the table.
+ *
+ * Lossless and idempotent: every existing row is copied verbatim (they all
+ * carry their `rubric_version` already, which is why nothing has to be
+ * re-computed or re-paid for), and {@link needsScoreKeyMigration} skips the
+ * whole thing on a database that has already been through it.
+ */
+export const BOOKMARK_SCORES_REKEY_SQL = `
+CREATE TABLE bookmark_scores_rekeyed (
+  bookmark_id     INTEGER NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,
+  score           REAL NOT NULL,
+  confidence      REAL NOT NULL,
+  dimensions      TEXT NOT NULL,
+  model           TEXT NOT NULL,
+  rubric_version  TEXT NOT NULL,
+  scored_at       TEXT NOT NULL,
+  PRIMARY KEY (bookmark_id, rubric_version)
+);
+INSERT INTO bookmark_scores_rekeyed
+  (bookmark_id, score, confidence, dimensions, model, rubric_version, scored_at)
+  SELECT bookmark_id, score, confidence, dimensions, model, rubric_version, scored_at
+    FROM bookmark_scores;
+DROP TABLE bookmark_scores;
+ALTER TABLE bookmark_scores_rekeyed RENAME TO bookmark_scores;
+CREATE INDEX IF NOT EXISTS idx_bookmark_scores_version_score
+  ON bookmark_scores(rubric_version, score);
 `;
 
 /**

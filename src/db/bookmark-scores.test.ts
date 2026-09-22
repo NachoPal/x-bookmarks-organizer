@@ -51,14 +51,45 @@ describe('bookmark_scores storage (issue #62)', () => {
     expect(db.countScoredBookmarks()).toBe(1);
   });
 
-  it('replaces an existing row rather than accumulating rows per bookmark', () => {
+  it('replaces a row for the SAME rubric rather than accumulating rows', () => {
     db.storeCategorizedBatch([bookmark('1')], () => []);
     const id = db.getBookmarkByPostId('1')!.id;
     db.saveBookmarkScore(record(id, { score: 0.2 }));
-    db.saveBookmarkScore(record(id, { score: 0.9, rubricVersion: 'v2' }));
+    db.saveBookmarkScore(record(id, { score: 0.9 }));
 
+    expect(db.countScoredBookmarks('v1')).toBe(1);
+    expect(db.getBookmarkScore(id, 'v1')).toMatchObject({ score: 0.9, rubricVersion: 'v1' });
+  });
+
+  // Issue #102: each rubric preset keeps its OWN verdicts, so switching back to
+  // a preset already ranked under shows its scores at once and never re-bills.
+  it('keeps one row per (bookmark, rubric version), so two presets never overwrite each other', () => {
+    db.storeCategorizedBatch([bookmark('1')], () => []);
+    const id = db.getBookmarkByPostId('1')!.id;
+    db.saveBookmarkScore(record(id, { score: 0.2, rubricVersion: 'v1' }));
+    db.saveBookmarkScore(record(id, { score: 0.9, rubricVersion: 'v1-rabc' }));
+
+    expect(db.getBookmarkScore(id, 'v1')).toMatchObject({ score: 0.2 });
+    expect(db.getBookmarkScore(id, 'v1-rabc')).toMatchObject({ score: 0.9 });
+    // One bookmark, judged twice: the per-rubric counts are one each, and the
+    // unfiltered count is DISTINCT bookmarks rather than rows.
+    expect(db.countScoredBookmarks('v1')).toBe(1);
+    expect(db.countScoredBookmarks('v1-rabc')).toBe(1);
     expect(db.countScoredBookmarks()).toBe(1);
-    expect(db.getBookmarkScore(id)).toMatchObject({ score: 0.9, rubricVersion: 'v2' });
+    // A rubric nothing was scored under reads as entirely unranked.
+    expect(db.getBookmarkScores([id], 'v1-other').size).toBe(0);
+    expect(db.countScoredBookmarks('v1-other')).toBe(0);
+  });
+
+  it('clears one rubric\'s scores without touching another\'s', () => {
+    db.storeCategorizedBatch([bookmark('1')], () => []);
+    const id = db.getBookmarkByPostId('1')!.id;
+    db.saveBookmarkScore(record(id, { rubricVersion: 'v1' }));
+    db.saveBookmarkScore(record(id, { rubricVersion: 'v1-rabc' }));
+
+    expect(db.clearBookmarkScores('v1')).toBe(1);
+    expect(db.getBookmarkScore(id, 'v1')).toBeUndefined();
+    expect(db.getBookmarkScore(id, 'v1-rabc')).toBeDefined();
   });
 
   it('has no entry for an unranked bookmark, so an absent score is never read as zero', () => {
@@ -251,6 +282,64 @@ describe('bookmark_scores storage (issue #62)', () => {
         } finally {
           raw2.close();
         }
+      } finally {
+        second.close();
+      }
+    } finally {
+      for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${dbPath}${suffix}`, { force: true });
+    }
+  });
+
+  // Issue #102: the key widened from `bookmark_id` to
+  // `(bookmark_id, rubric_version)` so each preset keeps its own verdicts. The
+  // rebuild has to be lossless - an existing library is one an owner already
+  // PAID to rank, and re-billing it would be the worst possible upgrade.
+  it('re-keys bookmark_scores on a database that predates rubric presets, losslessly', () => {
+    const dbPath = path.join(os.tmpdir(), `xbookmarks-score-rekey-${Date.now()}-${Math.random()}.db`);
+    try {
+      const raw = new BetterSqlite3(dbPath);
+      raw.exec(`
+        CREATE TABLE bookmarks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT NOT NULL UNIQUE,
+          author_username TEXT NOT NULL DEFAULT '', author_name TEXT NOT NULL DEFAULT '',
+          text TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, post_created_at TEXT NOT NULL DEFAULT '',
+          ingested_at TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0, read_at TEXT
+        );
+        -- The pre-#102 shape: one score row per bookmark.
+        CREATE TABLE bookmark_scores (
+          bookmark_id INTEGER PRIMARY KEY REFERENCES bookmarks(id) ON DELETE CASCADE,
+          score REAL NOT NULL, confidence REAL NOT NULL, dimensions TEXT NOT NULL,
+          model TEXT NOT NULL, rubric_version TEXT NOT NULL, scored_at TEXT NOT NULL
+        );
+        INSERT INTO bookmarks (post_id, url, ingested_at)
+          VALUES ('old', 'https://x.com/a/status/old', '2026-01-01');
+        INSERT INTO bookmark_scores
+          (bookmark_id, score, confidence, dimensions, model, rubric_version, scored_at)
+          VALUES (1, 0.42, 0.8, '{"learning_value":0.5}', 'jev', 'v1', '2026-01-01');
+      `);
+      raw.close();
+
+      const first = new Database(dbPath);
+      try {
+        // The old verdict is still there, under the version it was written with.
+        expect(first.getBookmarkScore(1, 'v1')).toMatchObject({ score: 0.42 });
+        // And the widened key now admits a second preset's verdict beside it.
+        first.saveBookmarkScore(record(1, { score: 0.9, rubricVersion: 'v1-rabc' }));
+        expect(first.getBookmarkScore(1, 'v1')).toMatchObject({ score: 0.42 });
+        expect(first.getBookmarkScore(1, 'v1-rabc')).toMatchObject({ score: 0.9 });
+      } finally {
+        first.close();
+      }
+
+      // Re-opening is a no-op: the rebuild is guarded on the key's shape.
+      const second = new Database(dbPath);
+      try {
+        expect(second.getBookmarkScore(1, 'v1')).toMatchObject({ score: 0.42 });
+        expect(second.getBookmarkScore(1, 'v1-rabc')).toMatchObject({ score: 0.9 });
+        // The cascade survived the rebuild, so a deleted bookmark still takes
+        // every one of its scores with it.
+        second.deleteBookmark(1);
+        expect(second.countScoredBookmarks()).toBe(0);
       } finally {
         second.close();
       }

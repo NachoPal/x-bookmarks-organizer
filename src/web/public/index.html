@@ -271,6 +271,16 @@
                 Scoring is paid per token. A run always asks you to confirm the cost first.
                 Its progress appears in the strip under the filter tabs, next to a sync's.
               </p>
+              <!-- The rubric editor's entry point (issue #102). The rules are
+                   what a run asks; editing them is free, so this sits beside
+                   the paid action rather than behind its confirmation. -->
+              <div class="rank-rules">
+                <h3 class="rank-rules-title">Ranking rules</h3>
+                <p id="rank-rules-active" class="rank-note">Loading&hellip;</p>
+                <button id="rubric-open" class="btn btn-secondary panel-action" type="button">
+                  Edit ranking rules
+                </button>
+              </div>
             </div>
           </div>
 
@@ -748,6 +758,90 @@
       </div>
     </div>
 
+    <!-- The Jev rules (rubric) editor (issue #102).
+
+         Two views in one dialog rather than two dialogs: the preset LIST and
+         the authoring form for one preset. They are the same task at two
+         depths, and a ~400px viewport has no room for them side by side.
+         Nothing in here spends anything - only a rank run does, behind the
+         confirmation above. -->
+    <div id="rubric-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="rubric-modal"
+      class="reader-modal setup-modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="rubric-title"
+      aria-describedby="rubric-intro"
+    >
+      <div class="setup-panel rubric-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="rubric-title" class="setup-title">Ranking rules</h2>
+            <p id="rubric-intro" class="setup-step-hint">
+              The questions a ranking run asks about every bookmark. Save several sets and pick
+              which one ranks. Editing rules is free; only running a ranking pass is paid.
+            </p>
+          </div>
+          <div class="reader-header-actions">
+            <button
+              id="rubric-close"
+              class="icon-btn reader-close"
+              type="button"
+              aria-label="Close the ranking rules editor"
+            >
+              <span class="icon-x" aria-hidden="true"></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- View A: the saved sets of rules, and which one ranks. -->
+        <div id="rubric-list-view" class="rubric-view">
+          <div id="rubric-list" class="rubric-list"></div>
+          <p id="rubric-switch-note" class="rubric-switch-note" role="status" hidden></p>
+        </div>
+
+        <!-- View B: authoring one set of rules. -->
+        <div id="rubric-edit-view" class="rubric-view" hidden>
+          <div class="rubric-edit-body">
+            <div class="field">
+              <label class="field-label" for="rubric-name">Name</label>
+              <input
+                id="rubric-name"
+                class="field-input"
+                type="text"
+                autocomplete="off"
+                maxlength="60"
+                aria-describedby="rubric-name-hint"
+              />
+              <p id="rubric-name-hint" class="field-hint">
+                How this set of rules is listed. Renaming it keeps its scores.
+              </p>
+            </div>
+            <div id="rubric-dimensions" class="rubric-dimensions"></div>
+            <button id="rubric-add-dimension" class="rubric-add" type="button">
+              <span class="rubric-plus" aria-hidden="true">+</span>
+              Add a dimension
+            </button>
+          </div>
+        </div>
+
+        <div class="rubric-footer">
+          <p id="rubric-error" class="setup-error" hidden></p>
+          <div id="rubric-list-actions" class="rubric-actions">
+            <button id="rubric-new" class="btn btn-primary" type="button">New ranking rules</button>
+            <button id="rubric-done" class="btn btn-secondary" type="button">Done</button>
+          </div>
+          <div id="rubric-edit-actions" class="rubric-actions" hidden>
+            <button id="rubric-cancel" class="btn btn-secondary" type="button">Cancel</button>
+            <button id="rubric-save" class="btn btn-primary" type="button">Save rules</button>
+          </div>
+        </div>
+        <p id="rubric-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
+      </div>
+    </div>
+
     <!-- Move a post to another category (issue #92). The keyboard-accessible
          equivalent of dragging a card's handle onto the sidebar: the same
          tree and the same search filter, minus the roots' reorder grips
@@ -967,6 +1061,7 @@
     <script src="embed-theme.js" defer></script>
     <script src="categorization.js" defer></script>
     <script src="category-editor.js" defer></script>
+    <script src="rubric-editor.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

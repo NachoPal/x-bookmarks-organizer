@@ -900,12 +900,16 @@ anything by itself - it only makes `rank` runnable and the button pressable, and
 announce and/or confirm before a call. `rank --dry-run` reports the size of a run while making no
 call.
 
-Storage is `bookmark_scores` (`src/db/schema.ts`), keyed by bookmark: normalized 0..1 `score`, the
-model's own `confidence`, the per-dimension breakdown as JSON (read tolerantly - a blob this build
-cannot parse degrades to no dimensions, never to an exception), and `rubric_version`. That version
-is load-bearing: `getBookmarksToScore` re-selects a row scored under a DIFFERENT rubric, which is
-what stops two scales being sorted against each other, and it is why `buildRubric` hashes
-`XBOOKMARKS_RANKER_INTERESTS` into the tag. **An absent row means "never ranked", never "scored
+Storage is `bookmark_scores` (`src/db/schema.ts`), keyed by bookmark AND `rubric_version` since
+issue #102: normalized 0..1 `score`, the model's own `confidence`, the per-dimension breakdown as
+JSON (read tolerantly - a blob this build cannot parse degrades to no dimensions, never to an
+exception), and `rubric_version`. That version is load-bearing: `getBookmarksToScore` re-selects a
+bookmark with no row under THIS rubric, which is what stops two scales being sorted against each
+other, and it is why `buildRubric` hashes `XBOOKMARKS_RANKER_INTERESTS` into the tag. **Every
+consumer that shows or sorts scores must scope its read to the ACTIVE preset's version** - the
+`rubricVersion` argument on `getBookmarkScore(s)`, `countScoredBookmarks`, `clearBookmarkScores`
+and `getBookmarksForCategory`; omitting it means "any rubric at all", which is only right for a
+caller with no notion of an active preset. **An absent row means "never ranked", never "scored
 zero"** - every consumer must honor that, which is why `sort=score` puts unranked bookmarks LAST -
 in BOTH directions, since #97 (`sc.score IS NULL` is sorted ascending whichever way the score
 itself runs; flipping it would claim the model judged an unjudged post worst of all) - and the
@@ -1089,6 +1093,55 @@ selection rather than bypassing it, so a second press on a bookmark already curr
 rubric is a free no-op. When ranking is blocked the badge spends nothing and opens the ranking
 panel, which is where the cause is stated in full - never a dead control and never a bare tooltip.
 The chip is patched in place (`patchScoreChip`), so no X embed reloads.
+
+## The rubric editor: named, versioned ranking rules (issue #102)
+
+The rubric is no longer a constant in this repository. It is **named presets** the owner authors in
+the ranking popover ("Edit ranking rules"), and two decisions of the owner's shape everything here:
+FULL authoring (question, levels and weight per dimension, plus add/remove/reorder), and **scores
+kept per preset** - a switch never wipes anything.
+
+- **The built-in preset is synthesized, never stored** (`src/rank/preset-store.ts`). That is what
+  makes it impossible to lose, keeps it following `XBOOKMARKS_RANKER_INTERESTS` as it always has,
+  and gives a fresh install a complete answer with no document at all. It cannot be renamed, edited
+  or deleted; the editor offers it as clone-to-edit, and deleting the ACTIVE preset falls back to
+  it (never to "the next one", which would not be the same answer twice).
+- **A version is derived from CONTENT, never from identity** (`rubricVersionFor` in
+  `src/rank/rubric.ts`). Renaming a preset is free; changing a question, a level or a weight makes
+  it a different scale. Two presets with identical rules therefore SHARE a version - correct, and
+  what stops the owner paying twice for one scale. The one deliberate alias: dimensions equal to
+  the built-in set resolve to the tag it has always carried (`v1`, or `v1-i<digest>` with
+  interests), so a library already ranked is not re-billed just because the rubric became editable.
+  **Preserve that alias**, and keep the dev seed writing under `buildRubric().version` - a seeded
+  row under any other tag correctly renders as unranked.
+- **Interests augment the BUILT-IN preset only.** A custom preset shows every question it asks in
+  the editor, so nothing may be appended to it behind the owner's back.
+- **`resolveActiveRubric(db, interests)` is the ONE place the active rubric is resolved** - the
+  CLI (`buildRanker`), the in-app run (`pending`) and the viewer (`ServerOptions.rankerInterests`)
+  all call it, so the three cannot disagree about which scale is current. `cmdServe` must keep
+  passing `rankerInterests`, or a viewer started with interests set reads a freshly-ranked library
+  as unranked.
+- **Validation is `validatePreset` (`src/rank/presets.ts`), pure**: >=1 dimension, each with a
+  non-empty question, >=2 levels and a positive weight, unique keys, unique name, plus cost caps.
+  `rubric-editor.js` mirrors the same rules and wording so a problem shows before the round trip;
+  the server stays authoritative.
+- **Paid-safety is unchanged and is the reason this dialog may exist.** `/api/rubric*` (list,
+  create, update, delete, select) needs nothing but `db`, is fully live on a `buildServer(db)`, and
+  NEVER calls TypeSafe. Selecting a preset nothing was scored under only surfaces those bookmarks
+  as unranked (the #98 dot, the hollow badge, `/api/setup`'s `ranking.scored`, the #97 Top-score
+  gate) and offers a re-rank - it does not start one. `rubric-api.test.ts` counts scoring attempts
+  and asserts zero across every editor action; keep that assertion. A write is refused 409 while a
+  sync or a ranking run is going, since a run in flight is writing rows keyed by the active version.
+- Frontend: `src/web/public/rubric-editor.js` (`XBORubricEditor`) is the pure, unit-tested half;
+  `app.js` owns the markup - one dialog with two views (the sets, and the authoring form), because
+  a ~400px viewport has no room for both. A change to the rules has exactly a finished run's
+  consequences, so it reuses `refreshAfterRank` rather than restating the refresh. Levels are
+  auto-growing textareas, not inputs: they are the tuning surface the model reads, and a field
+  showing two of their four lines hides the thing the editor exists for.
+- `sort-order.js`'s `DIMENSIONS` is now a register of NICER NAMES for the questions this tool
+  ships with, not the set of questions that can exist: an authored dimension is labelled from its
+  own key (`humanizeDimensionId`) and the chip says "Ranking score", not "Learning value" - the
+  owner writes the questions, so the chip cannot claim to know what the number measures.
 
 ## Categorizer comparison (`eval-categorizers`, issue #83)
 
