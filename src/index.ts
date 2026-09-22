@@ -263,7 +263,7 @@ async function cmdRank(config: Config, db: Database, store: CredentialStore): Pr
   const parsedLimit = limitArg === -1 ? NaN : Number.parseInt(process.argv[limitArg + 1] ?? '', 10);
   const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
 
-  const { scorer, rubric } = buildRanker(config, store);
+  const { scorer, rubric } = buildRanker(config, store, db);
   const options = {
     rubric,
     concurrency: config.ranker.concurrency,
@@ -444,6 +444,11 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // are deliberately NOT settings-panel choices: turning ranking on stays an
     // explicit server-side act, which is the first of its paid gates.
     ranking: createRankWiring({ db, store, config: baseConfig }),
+    // The built-in preset's relevance question (issue #102 / `rubric.ts`), so
+    // the viewer resolves the ACTIVE preset to the SAME version tag the runs it
+    // starts will write under - otherwise a viewer started with interests set
+    // would read a freshly-ranked library as unranked.
+    rankerInterests: baseConfig.ranker.interests,
     credentials: store,
     xLogin: async () => {
       const current = applySettingsToConfig(

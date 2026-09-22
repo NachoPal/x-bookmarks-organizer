@@ -36,8 +36,8 @@ import { requireRankerCredentials, type Config } from '../config';
 import type { CredentialStore } from '../creds/resolve';
 import type { Database } from '../db/database';
 import { buildRanker as defaultBuildRanker, reportRankerBilling, type BuiltRanker } from '../rank/build';
+import { resolveActiveRubric } from '../rank/preset-store';
 import { planRanking, rankBookmarks as defaultRankBookmarks, type RankSummary } from '../rank/ranker';
-import { buildRubric } from '../rank/rubric';
 import type { RankJob } from './rank';
 
 export interface RankJobDeps {
@@ -45,7 +45,7 @@ export interface RankJobDeps {
   store: CredentialStore;
   config: Config;
   /** Test seam: constructs the scorer + rubric. Defaults to the real paid gate. */
-  buildRanker?: (config: Config, store: CredentialStore) => BuiltRanker;
+  buildRanker?: (config: Config, store: CredentialStore, db: Database) => BuiltRanker;
   /** Test seam: the ranking pass itself. Defaults to the real `rankBookmarks`. */
   rank?: typeof defaultRankBookmarks;
 }
@@ -84,7 +84,7 @@ export function createRankWiring(deps: RankJobDeps): RankWiring {
 
   return {
     job: async (log) => {
-      const { scorer, rubric } = build(config, store);
+      const { scorer, rubric } = build(config, store, db);
       reportRankerBilling(config, rubric, log);
       return rank(
         { db, scorer, logger: log },
@@ -98,7 +98,7 @@ export function createRankWiring(deps: RankJobDeps): RankWiring {
     // `bookmarkIds`, which NARROWS the normal selection - an already-scored id
     // is still not a candidate, so this can never pay twice for one bookmark.
     rankOne: async (bookmarkId, log) => {
-      const { scorer, rubric } = build(config, store);
+      const { scorer, rubric } = build(config, store, db);
       reportRankerBilling(config, rubric, log);
       return rank({ db, scorer, logger: log }, { rubric, concurrency: 1, bookmarkIds: [bookmarkId] });
     },
@@ -112,11 +112,16 @@ export function createRankWiring(deps: RankJobDeps): RankWiring {
       }
     },
 
-    // The rubric is pure (no SDK, no clock, no network), so the same selection
-    // `rank --dry-run` reports is available to the dialog for free - which is
-    // what lets it name the size of the bill before the owner authorizes it.
+    // The rubric is pure (no SDK, no clock, no network) and the active preset
+    // is one `run_state` read, so the same selection `rank --dry-run` reports
+    // is available to the dialog for free - which is what lets it name the size
+    // of the bill before the owner authorizes it. Reading the ACTIVE preset
+    // here is also what makes selecting a preset nothing has been scored under
+    // say how much a re-rank would cost, without spending anything to find out.
     pending: () =>
-      planRanking(db, { rubric: buildRubric(config.ranker.interests), concurrency: config.ranker.concurrency })
-        .length,
+      planRanking(db, {
+        rubric: resolveActiveRubric(db, config.ranker.interests),
+        concurrency: config.ranker.concurrency,
+      }).length,
   };
 }

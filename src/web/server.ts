@@ -30,6 +30,22 @@ import {
 } from '../settings/settings';
 import { TYPESAFE_API_KEY } from '../config';
 import type { CredentialStore } from '../creds/resolve';
+import {
+  listPresets,
+  readPresetDoc,
+  resolveActiveRubric,
+  writePresetDoc,
+  activePreset as readActivePreset,
+} from '../rank/preset-store';
+import {
+  DEFAULT_PRESET_ID,
+  newPresetId,
+  toPresetView,
+  validatePreset,
+  MAX_DIMENSIONS,
+  MAX_LEVELS,
+  MIN_LEVELS,
+} from '../rank/presets';
 import { SyncRunner, type SyncJob } from './sync';
 import { RankRunner } from './rank';
 import type { RankWiring } from './rank-job';
@@ -94,6 +110,15 @@ export interface ServerOptions {
    * additionally demands an explicit `{ confirm: true }`.
    */
   ranking?: RankWiring;
+  /**
+   * The process's `XBOOKMARKS_RANKER_INTERESTS`, which augments the BUILT-IN
+   * rubric preset only (`src/rank/rubric.ts`). The viewer needs it to resolve
+   * the ACTIVE preset's version tag - the one every score read below is scoped
+   * to - so that a viewer started with interests set agrees with the runs it
+   * starts about which scores are current. A test-built server omits it and
+   * gets the plain built-in version, which is what its fixtures store.
+   */
+  rankerInterests?: string;
   /**
    * Runs the one-time X OAuth consent (the same `login()` the CLI calls).
    * Undefined hides the in-app "Connect X" button and tells the owner to run
@@ -216,13 +241,22 @@ function domainFromUrl(url: string): string {
  * check against the `summaries` table - never the summary text itself, which
  * would bloat every page of the list.
  */
-function toViewerBookmarks(db: Database, bookmarks: StoredBookmark[], categoryIdsByBookmark: Map<number, number[]>): BookmarkForViewer[] {
+function toViewerBookmarks(
+  db: Database,
+  bookmarks: StoredBookmark[],
+  categoryIdsByBookmark: Map<number, number[]>,
+  rubricVersion: string,
+): BookmarkForViewer[] {
   const xArticles = db.getXArticlesForBookmarks(bookmarks);
   const summarizedIds = db.getSummarizedBookmarkIds(bookmarks.map((b) => b.id));
   // A pure read of the `bookmark_scores` table the opt-in `rank` command
-  // populates. With ranking never run this is simply empty, and every bookmark
-  // ships `score: null` - the viewer's default ordering does not depend on it.
-  const scores = db.getBookmarkScores(bookmarks.map((b) => b.id));
+  // populates, scoped to the ACTIVE preset's rubric (issue #102). With ranking
+  // never run this is simply empty, and every bookmark ships `score: null` -
+  // the viewer's default ordering does not depend on it. A bookmark judged only
+  // under some OTHER preset ships `score: null` too, which is the honest
+  // answer: these rules have no opinion of it yet, and that is exactly what the
+  // hollow "not ranked" badge and the unranked dot are for.
+  const scores = db.getBookmarkScores(bookmarks.map((b) => b.id), rubricVersion);
   return bookmarks.map((bookmark) => {
     const scored = scores.get(bookmark.id);
     return {
@@ -346,15 +380,28 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
    * critically, never touches the paid API.
    */
   function rankingState() {
+    const preset = readActivePreset(db, opts.rankerInterests);
+    const view = toPresetView(preset, opts.rankerInterests);
     return {
-      scored: db.countScoredBookmarks(),
+      // Scoped to the ACTIVE preset (issue #102), which is what makes
+      // "N of M unranked" - and therefore the icon's dot (#98) and the
+      // Top-score-enabled gate (#97) - a statement about the rules in force.
+      // Switching to a preset nothing was scored under surfaces its bookmarks
+      // as unranked and offers a re-rank; it spends nothing by itself.
+      scored: db.countScoredBookmarks(view.version),
       total: db.getBookmarkCount(),
       available: !!rankRunner,
       reason: rankRunner ? undefined : RANK_UNAVAILABLE_MESSAGE,
       blocker: ranking ? ranking.blocker() : null,
       pending: ranking ? ranking.pending() : 0,
       status: rankRunner ? rankRunner.status() : null,
+      preset: { id: view.id, name: view.name, builtIn: view.builtIn, version: view.version },
     };
+  }
+
+  /** The rubric every score read in this server is scoped to. */
+  function activeRubricVersion(): string {
+    return resolveActiveRubric(db, opts.rankerInterests).version;
   }
 
   /**
@@ -486,6 +533,162 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // control's hint reads - so one poll refreshes both.
   app.get('/api/rank', async () => ({ ranking: rankingState() }));
 
+  // ---- the rubric editor (issue #102) ------------------------------------
+  //
+  // Named sets of ranking rules ("presets"). The built-in rubric is always
+  // present as the default preset and is never editable, renameable or
+  // deletable - it is what an owner who never opens the editor runs, under the
+  // version tag it has always carried.
+  //
+  // Every route here needs nothing but `db`, so they are fully live on a
+  // `buildServer(db)` with no ranking wiring: authoring rules is free, and a
+  // viewer that cannot RUN a paid pass can still perfectly well hold an opinion
+  // about what one would ask. Which is the paid-safety point worth stating
+  // once: NOTHING below calls TypeSafe or spends anything. Selecting a preset
+  // nothing has been scored under only makes those bookmarks read as unranked,
+  // which surfaces the #98 dot and offers a re-rank - it never starts one.
+  // Spending still happens exactly where it did: POST /api/rank and
+  // POST /api/bookmarks/:id/rank, behind `{ confirm: true }`.
+
+  /**
+   * Whether the rules may be edited right now. A run in flight is scoring
+   * against the ACTIVE preset's rubric and writing rows keyed by its version,
+   * so changing which preset is active - or what one contains - mid-run would
+   * file those rows under rules that were never used to produce them.
+   */
+  const rubricWriteBlocker = (): string | null => {
+    if (rankRunner?.isRunning()) {
+      return 'A ranking run is in progress. Wait for it to finish, then edit your ranking rules.';
+    }
+    if (syncRunner?.isRunning()) {
+      return 'A sync is running. Wait for it to finish, then edit your ranking rules.';
+    }
+    return null;
+  };
+
+  /** The presets, each with the version its scores are keyed by, plus the limits the editor enforces. */
+  function rubricState() {
+    const doc = readPresetDoc(db);
+    const presets = listPresets(db, opts.rankerInterests).map((preset) => {
+      const view = toPresetView(preset, opts.rankerInterests);
+      return {
+        ...view,
+        // How much of the library this preset has already judged. It is what
+        // lets the selector say "switching here needs a re-rank" BEFORE the
+        // switch, and it is a plain COUNT - no call, no spend.
+        scored: db.countScoredBookmarks(view.version),
+      };
+    });
+    return {
+      activeId: doc.activeId,
+      presets,
+      total: db.getBookmarkCount(),
+      limits: { maxDimensions: MAX_DIMENSIONS, minLevels: MIN_LEVELS, maxLevels: MAX_LEVELS },
+    };
+  }
+
+  app.get('/api/rubric', async () => rubricState());
+
+  // Create a preset. Validated by the same pure `validatePreset` the editor's
+  // own inline checks mirror, so an invalid rubric is refused with one
+  // actionable sentence per problem rather than stored and then failing a run.
+  app.post<{ Body?: unknown }>('/api/rubric/presets', async (req, reply) => {
+    const blocked = rubricWriteBlocker();
+    if (blocked) return reply.code(409).send({ error: blocked });
+
+    const doc = readPresetDoc(db);
+    const others = listPresets(db, opts.rankerInterests);
+    const { preset, errors } = validatePreset(req.body, others);
+    if (errors.length > 0) return reply.code(400).send({ error: errors.join(' '), errors });
+
+    const id = newPresetId(preset.name, [DEFAULT_PRESET_ID, ...doc.presets.map((p) => p.id)]);
+    const created = { ...preset, id };
+    // A new preset becomes ACTIVE: authoring rules the owner then has to go and
+    // select separately is a two-step answer to a one-step intention. It costs
+    // nothing - the library simply reads as unranked under the new rules until
+    // a confirmed, paid run is started.
+    writePresetDoc(db, { activeId: id, presets: [...doc.presets, created] });
+    return reply.code(201).send({ rubric: rubricState(), ranking: rankingState() });
+  });
+
+  // Update a preset in place. The built-in one is not editable (404 by
+  // construction: it is synthesized, never stored), which is what guarantees
+  // the shipped rubric is always there to fall back to.
+  app.put<{ Params: { id: string }; Body?: unknown }>(
+    '/api/rubric/presets/:id',
+    async (req, reply) => {
+      const blocked = rubricWriteBlocker();
+      if (blocked) return reply.code(409).send({ error: blocked });
+
+      const doc = readPresetDoc(db);
+      const index = doc.presets.findIndex((p) => p.id === req.params.id);
+      if (index === -1) {
+        return reply.code(404).send({
+          error:
+            req.params.id === DEFAULT_PRESET_ID
+              ? 'The built-in ranking rules cannot be edited. Duplicate them and edit the copy.'
+              : 'Those ranking rules no longer exist.',
+        });
+      }
+
+      // Name uniqueness is checked against every OTHER preset, so re-saving
+      // this one under its own name is not a collision.
+      const others = listPresets(db, opts.rankerInterests).filter((p) => p.id !== req.params.id);
+      const { preset, errors } = validatePreset(req.body, others);
+      if (errors.length > 0) return reply.code(400).send({ error: errors.join(' '), errors });
+
+      const presets = [...doc.presets];
+      presets[index] = { ...preset, id: req.params.id };
+      writePresetDoc(db, { ...doc, presets });
+      return { rubric: rubricState(), ranking: rankingState() };
+    },
+  );
+
+  // Delete a preset. Its SCORES are deliberately left alone: they are keyed by
+  // the rubric's content, not by the preset's id, so re-creating the same rules
+  // finds them again rather than re-billing for them. `clear-scores` is still
+  // the explicit way to throw scores away.
+  app.delete<{ Params: { id: string } }>('/api/rubric/presets/:id', async (req, reply) => {
+    const blocked = rubricWriteBlocker();
+    if (blocked) return reply.code(409).send({ error: blocked });
+    if (req.params.id === DEFAULT_PRESET_ID) {
+      return reply
+        .code(400)
+        .send({ error: 'The built-in ranking rules cannot be deleted. They are the fallback.' });
+    }
+
+    const doc = readPresetDoc(db);
+    if (!doc.presets.some((p) => p.id === req.params.id)) {
+      return reply.code(404).send({ error: 'Those ranking rules no longer exist.' });
+    }
+    const presets = doc.presets.filter((p) => p.id !== req.params.id);
+    // Deleting the ACTIVE preset falls back to the built-in one rather than to
+    // whichever preset happens to be next in the list: the fallback has to be
+    // the same one every time, and the built-in rubric is the only preset that
+    // is guaranteed to exist.
+    const activeId = doc.activeId === req.params.id ? DEFAULT_PRESET_ID : doc.activeId;
+    writePresetDoc(db, { activeId, presets });
+    return { rubric: rubricState(), ranking: rankingState() };
+  });
+
+  // Choose which preset ranks. Free, and the only thing it changes is which
+  // rubric's scores the library reads as current.
+  app.put<{ Body?: { id?: unknown } }>('/api/rubric/active', async (req, reply) => {
+    const blocked = rubricWriteBlocker();
+    if (blocked) return reply.code(409).send({ error: blocked });
+
+    const id = (req.body ?? {}).id;
+    if (typeof id !== 'string' || !id) {
+      return reply.code(400).send({ error: 'Name the ranking rules to activate.' });
+    }
+    const doc = readPresetDoc(db);
+    if (id !== DEFAULT_PRESET_ID && !doc.presets.some((p) => p.id === id)) {
+      return reply.code(404).send({ error: 'Those ranking rules no longer exist.' });
+    }
+    writePresetDoc(db, { ...doc, activeId: id });
+    return { rubric: rubricState(), ranking: rankingState() };
+  });
+
   // Rank ONE bookmark (issue #98): the card's empty score badge, which is the
   // affordance an unranked post carries after a sync added it.
   //
@@ -531,7 +734,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         return reply.code(502).send({ error: detail || 'Could not rank this bookmark.' });
       }
 
-      const scored = db.getBookmarkScores([id]).get(id);
+      const scored = db.getBookmarkScores([id], activeRubricVersion()).get(id);
       return {
         summary,
         messages,
@@ -748,11 +951,22 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
             : filter === 'favorite'
               ? counts.favorite
               : counts.total;
-      const bookmarks = db.getBookmarksForCategory(id, { filter, sort, dir, offset, limit });
+      // One rubric decides BOTH the ordering and which scores are shipped, so
+      // a "Top score" page can never be ordered by one preset's verdicts and
+      // labelled with another's.
+      const rubricVersion = activeRubricVersion();
+      const bookmarks = db.getBookmarksForCategory(id, {
+        filter,
+        sort,
+        dir,
+        offset,
+        limit,
+        rubricVersion,
+      });
       const categoryIdsByBookmark = db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id));
 
       return {
-        bookmarks: toViewerBookmarks(db, bookmarks, categoryIdsByBookmark),
+        bookmarks: toViewerBookmarks(db, bookmarks, categoryIdsByBookmark, rubricVersion),
         counts,
         offset,
         limit,

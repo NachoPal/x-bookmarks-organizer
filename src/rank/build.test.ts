@@ -3,6 +3,7 @@ import { loadConfig, type Config } from '../config';
 import type { CredentialStore, ResolvedCredential } from '../creds/resolve';
 import { buildRanker, reportRankerBilling } from './build';
 import { buildRubric } from './rubric';
+import { Database } from '../db/database';
 
 /**
  * The paid-safety gate. Nothing here constructs a client that could call the
@@ -23,6 +24,11 @@ function config(env: NodeJS.ProcessEnv): Config {
   return loadConfig(env);
 }
 
+/** An empty in-memory library: `buildRanker` reads the ACTIVE preset from it (issue #102). */
+function db(): Database {
+  return new Database(':memory:');
+}
+
 describe('ranking availability', () => {
   it('is on with an empty environment (issue #80: the key is the gate, not an env opt-in)', () => {
     expect(config({}).ranker.id).toBe('typesafe');
@@ -36,21 +42,22 @@ describe('ranking availability', () => {
 
   it('refuses to build while explicitly off, even with a key in the environment', () => {
     expect(() =>
-      buildRanker(config({ XBOOKMARKS_RANKER: 'off' }), store({ TYPESAFE_API_KEY: 'k' })),
+      buildRanker(config({ XBOOKMARKS_RANKER: 'off' }), store({ TYPESAFE_API_KEY: 'k' }), db()),
     ).toThrow(/Ranking is turned off/);
   });
 
   it('refuses to build with no resolvable key, leading with the one clear cause', () => {
     // The in-app blocker is this message's first line, so it must name the
     // missing key rather than an env opt-in the owner no longer has to set.
-    expect(() => buildRanker(config({}), store())).toThrow(/TypeSafe API key missing/);
-    expect(() => buildRanker(config({}), store())).toThrow(/TYPESAFE_API_KEY/);
+    expect(() => buildRanker(config({}), store(), db())).toThrow(/TypeSafe API key missing/);
+    expect(() => buildRanker(config({}), store(), db())).toThrow(/TYPESAFE_API_KEY/);
   });
 
   it('builds the scorer and the rubric once the key resolves', () => {
     const built = buildRanker(
       config({ XBOOKMARKS_RANKER_INTERESTS: 'compilers' }),
       store({ TYPESAFE_API_KEY: 'k' }),
+      db(),
     );
     expect(built.scorer).toBeDefined();
     expect(built.rubric.dimensions.map((d) => d.id)).toContain('relevance');
