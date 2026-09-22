@@ -18,18 +18,29 @@
   /**
    * Which fields a categorization method actually uses.
    *
-   * The taxonomy pass is ALWAYS the model - Jev invents no labels, so it
-   * structurally cannot design the tree - which is why the provider, taxonomy
-   * model and effort stay live for both methods, and only the filing (pass 2)
-   * model belongs to the model method alone.
+   * The taxonomy pass is ALWAYS a language model - Jev invents no labels, so
+   * it structurally cannot design the tree - which is why pass 1's provider,
+   * model and effort stay live for both methods. Pass 2's provider and model
+   * belong to the model method alone: Jev files bookmarks without a prompt.
    */
   function fieldsFor(methodId) {
+    var usesModel = methodId !== "typesafe";
     return {
-      provider: true,
+      taxonomyProvider: true,
       taxonomyModel: true,
       effort: true,
-      assignmentModel: methodId !== "typesafe",
+      assignmentProvider: usesModel,
+      assignmentModel: usesModel,
     };
+  }
+
+  /**
+   * A pass's provider id from saved settings. A document saved before each
+   * pass had its own provider (issue #70) carries one `provider` for both.
+   */
+  function passProvider(settings, pass) {
+    if (!settings) return "";
+    return settings[pass + "Provider"] || settings.provider || "";
   }
 
   function findProvider(catalog, providerId) {
@@ -98,7 +109,11 @@
    */
   function toPayload(values) {
     var fields = fieldsFor(values.categorizer);
-    var payload = { categorizer: values.categorizer, provider: values.provider };
+    var payload = {
+      categorizer: values.categorizer,
+      taxonomyProvider: values.taxonomyProvider,
+      assignmentProvider: values.assignmentProvider,
+    };
     if (values.taxonomyModel) payload.taxonomyModel = values.taxonomyModel;
     if (fields.assignmentModel && values.assignmentModel) {
       payload.assignmentModel = values.assignmentModel;
@@ -229,6 +244,7 @@
     emptyStateKind: emptyStateKind,
     showFilterTabs: showFilterTabs,
     fieldsFor: fieldsFor,
+    passProvider: passProvider,
     findProvider: findProvider,
     findMethod: findMethod,
     modelOptions: modelOptions,

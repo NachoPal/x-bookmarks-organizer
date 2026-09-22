@@ -35,13 +35,27 @@ describe('fieldsFor', () => {
     // Pass 1 is always the model - Jev invents no labels, so it cannot design
     // a tree, which is why these fields never disappear.
     for (const method of ['claude-cli', 'typesafe']) {
-      expect(XBO.fieldsFor(method)).toMatchObject({ provider: true, taxonomyModel: true, effort: true });
+      expect(XBO.fieldsFor(method)).toMatchObject({ taxonomyProvider: true, taxonomyModel: true, effort: true });
     }
   });
 
-  it('drops the filing model for Jev, which takes no prompt', () => {
-    expect(XBO.fieldsFor('claude-cli').assignmentModel).toBe(true);
-    expect(XBO.fieldsFor('typesafe').assignmentModel).toBe(false);
+  it("drops the filing provider and model for Jev, which takes no prompt", () => {
+    expect(XBO.fieldsFor('claude-cli')).toMatchObject({ assignmentProvider: true, assignmentModel: true });
+    expect(XBO.fieldsFor('typesafe')).toMatchObject({ assignmentProvider: false, assignmentModel: false });
+  });
+});
+
+describe('passProvider', () => {
+  it("reads each pass's own provider", () => {
+    const settings = { taxonomyProvider: 'pi-ai', assignmentProvider: 'claude-cli' };
+    expect(XBO.passProvider(settings, 'taxonomy')).toBe('pi-ai');
+    expect(XBO.passProvider(settings, 'assignment')).toBe('claude-cli');
+  });
+
+  it('falls back to the one provider a pre-#70 document stored for both passes', () => {
+    expect(XBO.passProvider({ provider: 'claude-cli' }, 'taxonomy')).toBe('claude-cli');
+    expect(XBO.passProvider({ provider: 'claude-cli' }, 'assignment')).toBe('claude-cli');
+    expect(XBO.passProvider(null, 'taxonomy')).toBe('');
   });
 });
 
@@ -81,14 +95,16 @@ describe('toPayload', () => {
     expect(
       XBO.toPayload({
         categorizer: 'claude-cli',
-        provider: 'claude-cli',
+        taxonomyProvider: 'pi-ai',
         taxonomyModel: '',
+        assignmentProvider: 'claude-cli',
         assignmentModel: 'claude-haiku-4-5',
         effort: '',
       }),
     ).toEqual({
       categorizer: 'claude-cli',
-      provider: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      assignmentProvider: 'claude-cli',
       assignmentModel: 'claude-haiku-4-5',
     });
   });
@@ -97,14 +113,16 @@ describe('toPayload', () => {
     expect(
       XBO.toPayload({
         categorizer: 'typesafe',
-        provider: 'claude-cli',
+        taxonomyProvider: 'claude-cli',
         taxonomyModel: 'claude-opus-4-8',
+        assignmentProvider: 'claude-cli',
         assignmentModel: 'claude-haiku-4-5',
         effort: 'high',
       }),
     ).toEqual({
       categorizer: 'typesafe',
-      provider: 'claude-cli',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'claude-cli',
       taxonomyModel: 'claude-opus-4-8',
       effort: 'high',
     });

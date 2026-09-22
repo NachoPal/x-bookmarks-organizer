@@ -6,8 +6,8 @@
  * that will pass the values on is the single source of truth. Here that source
  * is the provider registry itself (`src/llm/registry.ts`) rather than a second
  * hand-maintained table - a provider declares its own `models`/`efforts`
- * (`src/llm/types.ts`), so registering one (issue #70) makes it appear in the
- * dropdowns with no change to this file or to the viewer.
+ * (`src/llm/types.ts`), so registering one (as `pi-ai` was, issue #70) makes it
+ * appear in the dropdowns with no change to this file or to the viewer.
  *
  * Nothing here is a secret: it is a pure description of what CAN be chosen,
  * safe to ship to the browser. Whether a choice can actually RUN (a binary, a
@@ -26,6 +26,15 @@ export interface CatalogModel {
   description?: string;
   /** Roles this model is the provider's own suggestion for. */
   suggestedFor: LlmRole[];
+  /**
+   * Tokens the model accepts per request, as its provider declares it - the
+   * figure a context-aware taxonomy pass (issue #109) sizes itself against.
+   */
+  contextWindow?: number;
+  /** Most tokens it generates per response. */
+  maxOutputTokens?: number;
+  /** The credential this model needs, by NAME (never a value). */
+  requiresKey?: string;
 }
 
 export interface CatalogProvider {
@@ -48,7 +57,8 @@ export interface CatalogMethod {
   id: CategorizerId;
   label: string;
   description: string;
-  billing: Billing;
+  /** Absent when the cost is the chosen PROVIDER's, not the method's own. */
+  billing?: Billing;
   /** Credential the method refuses to run without, when it has one. */
   requiresKey?: string;
 }
@@ -59,12 +69,14 @@ export interface SettingsCatalog {
 }
 
 const METHOD_COPY: Record<CategorizerId, Omit<CatalogMethod, 'id'>> = {
+  // The id predates issue #70 and is kept because it is persisted and is an
+  // `XBOOKMARKS_CATEGORIZER` value; it means "a language model files each
+  // bookmark", on whichever provider the filing pass names.
   'claude-cli': {
-    label: 'Claude Code',
+    label: 'Language model',
     description:
-      'The model reads each bookmark and files it into the tree. Runs on your Claude ' +
-      'subscription - no per-call charge.',
-    billing: 'subscription',
+      'A model reads each bookmark and files it into the tree, on the provider and model ' +
+      'chosen below - what it costs is that provider\'s billing.',
   },
   typesafe: {
     label: 'Jev (TypeSafe)',
@@ -88,6 +100,9 @@ function toCatalogProvider(id: string): CatalogProvider | undefined {
       label: m.label,
       description: m.description,
       suggestedFor: m.suggestedFor,
+      contextWindow: m.contextWindow,
+      maxOutputTokens: m.maxOutputTokens,
+      requiresKey: m.requiresKey,
     })),
     efforts: provider.capabilities.effort ? [...(provider.efforts ?? [])] : [],
     suggested: {

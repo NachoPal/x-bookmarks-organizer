@@ -25,14 +25,20 @@ implementation detail / power-user fallback, but every capability needs an in-ap
 
 ## Hard constraints (do not regress)
 
-- **Categorization must run on the Claude subscription, never the paid Anthropic API.** It routes
-  through the provider abstraction (`src/llm/`, see below), whose ONE adapter - `claude-cli` -
-  shells out to the `claude` CLI in print mode. Never introduce `@anthropic-ai/sdk` or require
-  `ANTHROPIC_API_KEY`; the adapter strips it from the child env as its subscription-only invariant.
-  The ONE approved paid path is the opt-in TypeSafe assignment categorizer (issue #61, below): it
-  is off by default, refuses to run without `TYPESAFE_API_KEY`, and announces its per-token billing
-  before every run. No code path may silently spend money - that invariant is unchanged, and any
-  new paid path needs the same explicit opt-in + key + billing line.
+- **Categorization DEFAULTS to the Claude subscription, never the paid Anthropic API.** It routes
+  through the provider abstraction (`src/llm/`, see below); the default adapter, `claude-cli`,
+  shells out to the `claude` CLI in print mode and strips `ANTHROPIC_API_KEY` from the child env as
+  its subscription-only invariant. Never make anything but `claude-cli` a default, and never import
+  a provider SDK directly - the only one in the tree arrives through `pi-ai` (below). Two approved
+  paid paths exist, each opt-in + key + billing line: the TypeSafe assignment categorizer (issue
+  #61) and the `pi-ai` provider (issue #70), which reads `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/
+  `XAI_API_KEY`/`OPENROUTER_API_KEY` only for a pass the owner put on it. No code path may silently
+  spend money, and any new paid path needs the same explicit opt-in + key + billing line.
+- **A Claude SUBSCRIPTION is spent only through `claude-cli`**, i.e. Anthropic's own binary.
+  Anthropic's terms reserve subscription OAuth for Claude Code and its own apps, and pi-ai drives
+  one only by impersonating Claude Code - so `pi-ai` refuses an `sk-ant-oat…` token and never reads
+  `CLAUDE_CODE_OAUTH_TOKEN`. This is why issue #70 kept two provider paths instead of unifying on pi
+  (verification gate outcome (c)); do not "unify" by routing a subscription token through pi.
 - **Categorization is two passes** (`src/ingest.ts`): pass 1 designs a taxonomy holistically over
   ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus-class + high effort, configurable) so
   the tree is genuinely deep; pass 2 files each bookmark into that fixed tree in batches
@@ -73,8 +79,11 @@ the bridge to `LlmRunner`) and `providers/` (adapters, registered in `providers/
 
 Roles are `taxonomy | assignment | summary | chat`; resolution is per-role override -> global
 override -> the provider's own `suggestedFor` suggestion, so the Opus-pass-1 / Haiku-pass-2
-economics stay expressible. `XBOOKMARKS_LLM_PROVIDER` selects the provider (default and only value:
-`claude-cli`); an unknown id fails with the list of ids that exist. Model names and effort levels
+economics stay expressible. `XBOOKMARKS_LLM_PROVIDER` selects the provider for every role (default
+`claude-cli`; also `pi-ai`) and `XBOOKMARKS_{TAXONOMY,ASSIGNMENT,SUMMARY,CHAT}_PROVIDER` one role's;
+an unknown id fails with the list of ids that exist. `check(cfg, { model })` receives the role's
+resolved model, and `billingFor(model)` / `ProviderModel.contextWindow` let a provider whose models
+differ say so - `describe(role)` surfaces both (the context window is what #109 sizes against). Model names and effort levels
 are **provider-specific**: `config.ts` reads them, the adapter validates them (that is where
 `VALID_EFFORTS` lives), and a provider that lacks a capability ignores the param rather than
 failing. Adapters never read `process.env` - they are handed a `ResolvedProviderConfig.get(key)`,
@@ -91,6 +100,27 @@ preflight and the viewer's `/api/summary-status`; a provider that is available b
 fails keeps the button **enabled** and surfaces the adapter's redacted, actionable message in the
 modal. Adapter tests point `XBOOKMARKS_CLAUDE_BIN` at a throwaway stub script, so the whole seam is
 exercised end to end with no network and no subscription usage.
+
+## The pi-ai provider (`src/llm/providers/pi-ai.ts`, issue #70)
+
+One SDK (`@earendil-works/pi-ai`, pinned EXACTLY - pre-1.0, minors break) for Anthropic, OpenAI,
+xAI and OpenRouter by API key, plus a local OpenAI-compatible endpoint. A model id is
+`<upstream>/<pi model id>`; the upstream decides the key (`resolveUpstreamKey`, per upstream,
+through the credential chain - pi's own auth resolution is never used, an explicit `apiKey` is
+passed on every call) and the billing (`per-token`, or `local`). Plain completions, no tools, so
+none of `claude-cli`'s hardening applies. pi ships ESM-only with an `import`-only `exports` map, so
+it is loaded with a real dynamic `import()` - which is why `tsconfig.json` is `module: Node20` /
+`moduleResolution: Node16` (CommonJS output; `import()` is preserved and subpath types resolve).
+The selector needs a SYNC catalog, so `CURATED_PI_MODELS` restates pi's context window, output
+limit and prices; `pi-ai.test.ts` pins each against the installed pi catalog, so re-check it on
+every pi bump. `@earendil-works/pi-telemetry` is type contracts + no-op/in-memory contexts, never
+imported at runtime by pi-ai - inert. Tests use a fake `PiRuntime` (`createPiAiProvider(load)`)
+and one real-SDK round trip against a localhost stub server; never a hosted API.
+
+Settings store a provider PER PASS (`taxonomyProvider`/`assignmentProvider`, legacy `provider` read
+as both); applying them sets `roles.{taxonomy,assignment}.provider` and leaves `defaultProvider`
+(summaries, chat) alone. On the CLI an env-claimed provider also drops the stored model for that
+pass, since a model id belongs to its provider. `reportCategorizerBilling` prints BOTH passes.
 
 ## Assignment-pass categorizers (`XBOOKMARKS_CATEGORIZER`, issue #61)
 

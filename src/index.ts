@@ -98,7 +98,12 @@ vault such as \`av inject\`, a shell export, a systemd unit, CI secrets), a
 
 Categorization and summaries run through the LLM provider named by
 XBOOKMARKS_LLM_PROVIDER (default: claude-cli, your Claude Code subscription via
-the local claude CLI).
+the local claude CLI). Each categorization pass can pick its own with
+XBOOKMARKS_TAXONOMY_PROVIDER / XBOOKMARKS_ASSIGNMENT_PROVIDER. \`pi-ai\` runs a
+pass on an Anthropic, OpenAI, xAI or OpenRouter model (model id
+"<upstream>/<model>") PAID PER TOKEN to that upstream's API key, or on a local
+OpenAI-compatible server (XBOOKMARKS_PIAI_BASE_URL). It is never the default,
+refuses to run without the key, and every run prints each pass's billing first.
 
 XBOOKMARKS_RANKER turns the optional ranking pass on (\`typesafe\`). It is the
 only feature with no free implementation - it is PAID per token - so it is off by

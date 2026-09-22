@@ -98,7 +98,8 @@ describe('settings persistence', () => {
   it('round-trips a saved selection', () => {
     const settings: AppSettings = {
       categorizer: 'typesafe',
-      provider: 'claude-cli',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'claude-cli',
       taxonomyModel: 'claude-sonnet-5',
       assignmentModel: 'claude-haiku-4-5',
       effort: 'low',
@@ -109,7 +110,7 @@ describe('settings persistence', () => {
   });
 
   it('survives a reopen of the same database file (durable, not per-process)', () => {
-    writeSettings(db, { categorizer: 'typesafe', provider: 'claude-cli', effort: 'max' });
+    writeSettings(db, { ...defaultSettings(catalog), categorizer: 'typesafe', effort: 'max' });
     const raw = db.getState('app_settings');
     db.close();
     // A second Database over the same in-memory content is not possible, so
@@ -128,19 +129,25 @@ describe('settings persistence', () => {
 describe('applySettingsToConfig', () => {
   const base = () => loadConfig({}, undefined);
 
-  it('maps the chosen method and provider onto the ingest config', () => {
+  it('maps the chosen method and each pass\'s provider onto the ingest config', () => {
     const config = applySettingsToConfig(base(), {
       categorizer: 'typesafe',
-      provider: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      assignmentProvider: 'claude-cli',
     });
     expect(config.categorizer).toBe('typesafe');
+    expect(config.llm.roles.taxonomy.provider).toBe('pi-ai');
+    expect(config.llm.roles.assignment.provider).toBe('claude-cli');
+    // Summaries are not a categorization pass: picking a paid model to design
+    // the tree must not quietly move them onto it.
     expect(config.llm.defaultProvider).toBe('claude-cli');
+    expect(config.llm.roles.summary.provider).toBeUndefined();
   });
 
   it('pins the per-pass models and the taxonomy effort the owner picked', () => {
     const config = applySettingsToConfig(base(), {
       categorizer: 'claude-cli',
-      provider: 'claude-cli',
+      taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli',
       taxonomyModel: 'claude-sonnet-5',
       assignmentModel: 'claude-opus-4-8',
       effort: 'max',
@@ -153,7 +160,7 @@ describe('applySettingsToConfig', () => {
   it('leaves a Recommended model undefined so the provider suggestion still applies', () => {
     const config = applySettingsToConfig(base(), {
       categorizer: 'claude-cli',
-      provider: 'claude-cli',
+      taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli',
     });
     expect(config.llm.roles.taxonomy.model).toBeUndefined();
     expect(config.llm.roles.assignment.model).toBeUndefined();
@@ -165,7 +172,7 @@ describe('applySettingsToConfig', () => {
     const before = loadConfig({ XBOOKMARKS_BATCH_SIZE: '7', XBOOKMARKS_MAX_DEPTH: '6' });
     const after = applySettingsToConfig(before, {
       categorizer: 'typesafe',
-      provider: 'claude-cli',
+      taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli',
     });
     expect(after.batchSize).toBe(7);
     expect(after.maxCategoryDepth).toBe(6);
@@ -176,7 +183,7 @@ describe('applySettingsToConfig', () => {
     const before = loadConfig({ XBOOKMARKS_CATEGORIZER: 'typesafe', XBOOKMARKS_MODEL: 'claude-opus-4-8' });
     const after = applySettingsToConfig(before, {
       categorizer: 'claude-cli',
-      provider: 'claude-cli',
+      taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli',
       assignmentModel: 'claude-haiku-4-5',
     });
     expect(after.categorizer).toBe('claude-cli');
@@ -187,7 +194,7 @@ describe('applySettingsToConfig', () => {
     const env = { XBOOKMARKS_CATEGORIZER: 'typesafe', XBOOKMARKS_MODEL: 'claude-opus-4-8' };
     const after = applySettingsToConfig(
       loadConfig(env),
-      { categorizer: 'claude-cli', provider: 'claude-cli', assignmentModel: 'claude-haiku-4-5' },
+      { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli', assignmentModel: 'claude-haiku-4-5' },
       env,
     );
     expect(after.categorizer).toBe('typesafe');
@@ -198,10 +205,107 @@ describe('applySettingsToConfig', () => {
     const env = { XBOOKMARKS_CATEGORIZER: 'typesafe' };
     const after = applySettingsToConfig(
       loadConfig(env),
-      { categorizer: 'claude-cli', provider: 'claude-cli', effort: 'low' },
+      { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli', effort: 'low' },
       env,
     );
     expect(after.categorizer).toBe('typesafe');
     expect(after.llm.roles.taxonomy.params?.effort).toBe('low');
+  });
+});
+
+describe('per-pass providers (issue #70)', () => {
+  it('offers pi-ai alongside claude-cli, with claude-cli still the default for both passes', () => {
+    expect(catalog.providers.map((p) => p.id)).toEqual(['claude-cli', 'pi-ai']);
+    expect(defaultSettings(catalog)).toMatchObject({
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'claude-cli',
+    });
+    const pi = catalog.providers.find((p) => p.id === 'pi-ai')!;
+    expect(pi.billing).toBe('per-token');
+  });
+
+  it('carries each model\'s context window and required key into the catalog', () => {
+    const pi = catalog.providers.find((p) => p.id === 'pi-ai')!;
+    const haiku = pi.models.find((m) => m.id === 'anthropic/claude-haiku-4-5')!;
+    expect(haiku.contextWindow).toBe(200_000);
+    expect(haiku.requiresKey).toBe('ANTHROPIC_API_KEY');
+    expect(pi.models.find((m) => m.id === 'openrouter/google/gemini-2.5-flash')!.requiresKey).toBe(
+      'OPENROUTER_API_KEY',
+    );
+    const claude = catalog.providers.find((p) => p.id === 'claude-cli')!;
+    expect(claude.models.every((m) => typeof m.contextWindow === 'number')).toBe(true);
+  });
+
+  it('validates each pass against its OWN provider, independently', () => {
+    const { settings, errors } = validateSettings(
+      {
+        taxonomyProvider: 'pi-ai',
+        taxonomyModel: 'openrouter/google/gemini-2.5-flash',
+        assignmentProvider: 'claude-cli',
+        assignmentModel: 'claude-haiku-4-5',
+        effort: 'medium',
+      },
+      catalog,
+    );
+    expect(errors).toEqual([]);
+    expect(settings).toMatchObject({
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'openrouter/google/gemini-2.5-flash',
+      assignmentProvider: 'claude-cli',
+      assignmentModel: 'claude-haiku-4-5',
+    });
+  });
+
+  it("refuses a model that belongs to the OTHER pass's provider", () => {
+    const { errors } = validateSettings(
+      { taxonomyProvider: 'pi-ai', taxonomyModel: 'claude-opus-4-8', assignmentProvider: 'claude-cli' },
+      catalog,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('Taxonomy model "claude-opus-4-8" is not available for provider "pi-ai"');
+  });
+
+  it('reads a pre-#70 document (one `provider`) as both passes\' provider', () => {
+    const { settings, errors } = validateSettings(
+      { categorizer: 'claude-cli', provider: 'claude-cli', taxonomyModel: 'claude-opus-4-8' },
+      catalog,
+    );
+    expect(errors).toEqual([]);
+    expect(settings.taxonomyProvider).toBe('claude-cli');
+    expect(settings.assignmentProvider).toBe('claude-cli');
+    expect(settings).not.toHaveProperty('provider');
+  });
+
+  it('on the CLI, an env-claimed provider also drops the stored model that belonged to the old one', () => {
+    const env = { XBOOKMARKS_TAXONOMY_PROVIDER: 'pi-ai' };
+    const after = applySettingsToConfig(
+      loadConfig(env),
+      {
+        categorizer: 'claude-cli',
+        taxonomyProvider: 'claude-cli',
+        taxonomyModel: 'claude-opus-4-8',
+        assignmentProvider: 'claude-cli',
+        assignmentModel: 'claude-haiku-4-5',
+      },
+      env,
+    );
+    expect(after.llm.roles.taxonomy.provider).toBe('pi-ai');
+    // claude-opus-4-8 is not a pi-ai id - the pass follows pi-ai's own suggestion.
+    expect(after.llm.roles.taxonomy.model).toBeUndefined();
+    // The assignment pass is not claimed, so the stored choice stands.
+    expect(after.llm.roles.assignment.provider).toBe('claude-cli');
+    expect(after.llm.roles.assignment.model).toBe('claude-haiku-4-5');
+  });
+
+  it('XBOOKMARKS_LLM_PROVIDER claims both passes on the CLI, as it always meant every role', () => {
+    const env = { XBOOKMARKS_LLM_PROVIDER: 'pi-ai' };
+    const after = applySettingsToConfig(
+      loadConfig(env),
+      { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' },
+      env,
+    );
+    expect(after.llm.defaultProvider).toBe('pi-ai');
+    expect(after.llm.roles.taxonomy.provider).toBeUndefined();
+    expect(after.llm.roles.assignment.provider).toBeUndefined();
   });
 });

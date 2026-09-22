@@ -36,8 +36,10 @@ export type Log = (message: string) => void;
  * selects, behind the shared `BatchCategorizer` interface, so `runIngest` and
  * `recategorizeAll` are identical either way:
  *
- * - `claude-cli` (the DEFAULT): today's prompt-and-parse `Categorizer`, running
- *   on the flat-rate Claude subscription. Zero marginal cost.
+ * - `claude-cli` (the DEFAULT): the prompt-and-parse `Categorizer`, on whichever
+ *   provider the assignment role resolves to - the flat-rate Claude
+ *   subscription by default (zero marginal cost), or a paid pi-ai model when
+ *   the owner picked one for that pass (issue #70).
  * - `typesafe`: the opt-in beam-search walk (issue #61). PAID per token, so it
  *   is reached only via an explicit opt-in AND a resolved `TYPESAFE_API_KEY`,
  *   and `db` is required because the walk reads the real tree rather than a
@@ -94,12 +96,13 @@ export function buildCategorizers(
 }
 
 /**
- * Say out loud, before any call is made, how the assignment pass is billed.
+ * Say out loud, before any call is made, how each pass is billed.
  *
  * `AGENTS.md`'s hardest constraint is that no code path may silently spend
- * money. Selecting `typesafe` moves categorization from a flat-rate
- * subscription to a metered API, so that change is announced every run -
- * printed by the CLI, and surfaced in the viewer's sync progress - rather than
+ * money. Either pass can now run on a metered API - the assignment pass on
+ * TypeSafe (issue #61), and either pass on a pi-ai model billed per token to
+ * the owner's key (issue #70) - so BOTH passes are announced every run,
+ * printed by the CLI and surfaced in the viewer's sync progress, rather than
  * inferred from a config file or a saved setting.
  */
 export function reportCategorizerBilling(config: Config, llm: LlmFactory, log: Log): void {
@@ -107,16 +110,14 @@ export function reportCategorizerBilling(config: Config, llm: LlmFactory, log: L
     const model = config.typesafe.model ?? 'jev-latest';
     log(
       `Assignment pass: TypeSafe Jev (${model}) - ${billingLabel('per-token')}. ` +
-        'Switch the categorization method back to the Claude model to stop paying per call.',
+        'Switch the categorization method back to the language model to stop paying TypeSafe per call.',
     );
-    log(
-      `Taxonomy pass: ${llm.describe('taxonomy').providerId} - ` +
-        `${billingLabel(llm.describe('taxonomy').billing)}.`,
-    );
-    return;
+  } else {
+    const { providerId, model, billing } = llm.describe('assignment');
+    log(`Assignment pass: ${providerId} / ${model} - ${billingLabel(billing)}.`);
   }
-  const { providerId, model, billing } = llm.describe('assignment');
-  log(`Assignment pass: ${providerId} / ${model} - ${billingLabel(billing)}.`);
+  const taxonomy = llm.describe('taxonomy');
+  log(`Taxonomy pass: ${taxonomy.providerId} / ${taxonomy.model} - ${billingLabel(taxonomy.billing)}.`);
 }
 
 /**

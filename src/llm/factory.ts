@@ -19,6 +19,8 @@ export interface RoleDescription {
   providerId: string;
   model: string;
   billing: Billing;
+  /** The model's context window from the provider's catalog, when it declares one. */
+  contextWindow?: number;
 }
 
 /**
@@ -108,15 +110,17 @@ export function createLlmFactory(
       const id = providerIdFor(llm, role);
       const provider = getProvider(id);
       if (!provider) return { state: 'unconfigured', detail: unknownProviderMessage(id) };
-      return provider.check(cfg);
+      return provider.check(cfg, { model: modelFor(llm, role, provider) });
     },
 
     describe(role) {
       const provider = resolveProvider(role);
+      const model = modelFor(llm, role, provider);
       return {
         providerId: provider.id,
-        model: modelFor(llm, role, provider),
-        billing: provider.billing,
+        model,
+        billing: provider.billingFor ? provider.billingFor(model) : provider.billing,
+        contextWindow: provider.models.find((m) => m.id === model)?.contextWindow,
       };
     },
   };
