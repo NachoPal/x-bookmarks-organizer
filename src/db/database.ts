@@ -316,11 +316,36 @@ function toArticleRecord(row: ArticleRow): ArticleRecord {
   };
 }
 
-// Mirrors `SETTINGS_KEY` in settings/settings.ts (which imports this class).
-const SETTINGS_STATE_KEY = 'app_settings';
 const MARKER_KEY = 'newest_seen_post_id';
 const REFRESH_TOKEN_KEY = 'x_refresh_token';
 const LAST_SYNCED_AT_KEY = 'last_synced_at';
+
+/**
+ * The only `run_state` keys {@link Database.resetLibrary} removes: the
+ * per-library sync state, which is meaningless once the bookmarks are gone.
+ * Everything else in `run_state` is the owner's configuration and survives.
+ */
+const RESET_CLEARED_STATE_KEYS = [MARKER_KEY, LAST_SYNCED_AT_KEY];
+
+/**
+ * Make the database file owner-only (security review finding 7).
+ *
+ * It holds the long-lived X OAuth refresh token as a plain `run_state` row
+ * alongside every bookmark the owner has saved, so it is a secret of the same
+ * class as `credentials.json` - which the credential chain already writes
+ * `0600` and refuses to read when it is looser (`src/creds/resolve.ts`). Left
+ * at the default umask it is created world-readable.
+ *
+ * Best-effort on purpose: file modes are meaningless on Windows, and a
+ * database on a filesystem that cannot represent them must still open.
+ */
+function restrictToOwner(dbPath: string): void {
+  try {
+    fs.chmodSync(dbPath, 0o600);
+  } catch {
+    // Nothing actionable: the database is open and usable either way.
+  }
+}
 
 /**
  * Thin, well-typed wrapper over the SQLite database.
@@ -334,9 +359,10 @@ export class Database {
 
   constructor(dbPath: string) {
     if (dbPath !== ':memory:') {
-      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
     }
     this.db = new BetterSqlite3(dbPath);
+    if (dbPath !== ':memory:') restrictToOwner(dbPath);
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA_SQL);
     this.migrate();
@@ -1041,11 +1067,20 @@ export class Database {
    * Return the library to its never-synced state: every bookmark (and, by
    * cascade, its category links, article/summary/score rows), the taxonomy,
    * the URL-keyed and X-article/quote caches, delete tombstones, and the sync
-   * cursor. KEPT: the X refresh token (no re-login) and the saved
-   * categorization settings. Idempotent.
+   * cursor. Idempotent.
+   *
+   * A reset is a LIBRARY wipe, never a configuration wipe, so `run_state` is
+   * cleared by NAMING the keys that are library state
+   * ({@link RESET_CLEARED_STATE_KEYS}) rather than by naming the ones to keep.
+   * The rule is inverted deliberately (security review finding 4): the old
+   * keep-list silently destroyed the owner's hand-authored `rubric_presets`
+   * and their `root_order` - and reverted the active rubric, which re-flagged
+   * every score in the library as unranked and invited a paid re-rank under
+   * rules the owner never chose. A `run_state` key added in the future now
+   * defaults to SURVIVING a reset; anything genuinely per-sync has to opt in
+   * to being cleared, right here.
    */
   resetLibrary(): void {
-    const keep = [REFRESH_TOKEN_KEY, SETTINGS_STATE_KEY];
     this.db.transaction(() => {
       for (const table of [
         'bookmarks',
@@ -1058,8 +1093,10 @@ export class Database {
         this.db.prepare(`DELETE FROM ${table}`).run();
       }
       this.db
-        .prepare(`DELETE FROM run_state WHERE key NOT IN (${keep.map(() => '?').join(',')})`)
-        .run(...keep);
+        .prepare(
+          `DELETE FROM run_state WHERE key IN (${RESET_CLEARED_STATE_KEYS.map(() => '?').join(',')})`,
+        )
+        .run(...RESET_CLEARED_STATE_KEYS);
     })();
   }
 

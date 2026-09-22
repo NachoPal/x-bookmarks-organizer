@@ -6,6 +6,17 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 import { extractArticle, HttpArticleFetcher, X_ARTICLE_REASON } from './fetch-article';
+import { ALLOW_PRIVATE_FETCH_ENV, createHostPolicy, PRIVATE_ADDRESS_REASON } from './host-policy';
+
+/**
+ * The tests below exercise redirect/UA/extraction mechanics against local
+ * (loopback) stub servers and mocked hosts, so they run with the outbound host
+ * policy explicitly opened: it would otherwise refuse 127.0.0.1, and its
+ * default would resolve `example.com` for real. The policy itself is exercised
+ * in its own describe block at the end of this file.
+ */
+const openPolicy = createHostPolicy({ allowPrivateAddresses: true });
+const fetcher = (timeoutMs?: number) => new HttpArticleFetcher(timeoutMs, { hostPolicy: openPolicy });
 
 const FIXTURE_PATH = path.join(__dirname, '../web/public/fixtures/sample-article.html');
 const FIXTURE_HTML = fs.readFileSync(FIXTURE_PATH, 'utf-8');
@@ -312,8 +323,7 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(FIXTURE_HTML, { contentType: 'text/html; charset=utf-8' }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const fetcher = new HttpArticleFetcher();
-    const result = await fetcher.fetch(FIXTURE_URL);
+    const result = await fetcher().fetch(FIXTURE_URL);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.status).toBe('ok');
@@ -323,7 +333,7 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
 
   it('fails gracefully with a clear reason on a non-2xx response', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse('Not Found', { status: 404 })));
-    const result = await new HttpArticleFetcher().fetch('https://example.com/missing');
+    const result = await fetcher().fetch('https://example.com/missing');
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
     expect(result.reason).toMatch(/404/);
@@ -334,7 +344,7 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
       'fetch',
       vi.fn().mockResolvedValue(jsonResponse('{"not":"html"}', { contentType: 'application/json' })),
     );
-    const result = await new HttpArticleFetcher().fetch('https://example.com/data.json');
+    const result = await fetcher().fetch('https://example.com/data.json');
     expect(result.status).toBe('failed');
   });
 
@@ -352,7 +362,7 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
           }),
       ),
     );
-    const result = await new HttpArticleFetcher(20).fetch('https://example.com/slow');
+    const result = await fetcher(20).fetch('https://example.com/slow');
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
     expect(result.reason).toMatch(/too long/i);
@@ -360,14 +370,14 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
 
   it('fails gracefully on a network error (DNS/connection failure)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
-    const result = await new HttpArticleFetcher().fetch('https://nonexistent.invalid/post');
+    const result = await fetcher().fetch('https://nonexistent.invalid/post');
     expect(result.status).toBe('failed');
   });
 
   it('treats a link that resolves back to X as "not an article" without fetching for a known non-article host', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const result = await new HttpArticleFetcher().fetch('https://x.com/someone/status/123');
+    const result = await fetcher().fetch('https://x.com/someone/status/123');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
@@ -379,7 +389,7 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
       'fetch',
       vi.fn().mockResolvedValue(jsonResponse('<html></html>', { url: 'https://twitter.com/someone/status/123' })),
     );
-    const result = await new HttpArticleFetcher().fetch('https://t.co/abc123');
+    const result = await fetcher().fetch('https://t.co/abc123');
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
     expect(result.reason).toMatch(/not an article|post on X/i);
@@ -388,7 +398,7 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
   it('short-circuits an x.com/i/article link with the X Article reason, without fetching it', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const result = await new HttpArticleFetcher().fetch('https://x.com/i/article/2094692428037177344');
+    const result = await fetcher().fetch('https://x.com/i/article/2094692428037177344');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'failed', reason: X_ARTICLE_REASON });
   });
@@ -398,7 +408,7 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
       'fetch',
       vi.fn().mockResolvedValue(jsonResponse('<html></html>', { url: 'https://x.com/i/article/2094692428037177344' })),
     );
-    const result = await new HttpArticleFetcher().fetch('https://t.co/abc123');
+    const result = await fetcher().fetch('https://t.co/abc123');
     expect(result).toMatchObject({
       status: 'failed',
       reason: X_ARTICLE_REASON,
@@ -427,7 +437,7 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
     });
 
     try {
-      const result = await new HttpArticleFetcher().fetch(fixture.url('/abc123'));
+      const result = await fetcher().fetch(fixture.url('/abc123'));
       expect(result.status).toBe('ok');
       if (result.status !== 'ok') throw new Error('expected ok');
       expect(result.title).toContain('Resolved Article');
@@ -454,7 +464,7 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
     });
 
     try {
-      const result = await new HttpArticleFetcher().fetch(fixture.url('/article'));
+      const result = await fetcher().fetch(fixture.url('/article'));
       expect(result.status).toBe('ok');
       if (result.status !== 'ok') throw new Error('expected ok');
       expect(result.title).toContain('Resolved Article');
@@ -493,7 +503,7 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
     });
 
     try {
-      const result = await new HttpArticleFetcher().fetch(fixture.url('/shortlink'));
+      const result = await fetcher().fetch(fixture.url('/shortlink'));
       expect(result.status).toBe('ok');
       if (result.status !== 'ok') throw new Error('expected ok');
       expect(result.title).toContain('Resolved Article');
@@ -523,7 +533,7 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
     });
 
     try {
-      const result = await new HttpArticleFetcher().fetch(fixture.url('/shortlink'));
+      const result = await fetcher().fetch(fixture.url('/shortlink'));
       expect(result.status).toBe('failed');
       expect(result.preview?.title).toBe('A Tool, Not An Article');
       expect(result.resolvedUrl).toBe(fixture.url('/tool'));
@@ -542,7 +552,7 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
     });
 
     try {
-      const result = await new HttpArticleFetcher().fetch(fixture.url('/hop-0'));
+      const result = await fetcher().fetch(fixture.url('/hop-0'));
       expect(result.status).toBe('failed');
       expect(hops).toBeLessThanOrEqual(5);
     } finally {
@@ -567,7 +577,7 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
     });
 
     try {
-      const result = await new HttpArticleFetcher().fetch(fixture.url('/article-with-script'));
+      const result = await fetcher().fetch(fixture.url('/article-with-script'));
       expect(result.status).toBe('ok');
       if (result.status !== 'ok') throw new Error('expected ok');
       expect(result.title).toContain('Resolved Article');
@@ -588,13 +598,154 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
     });
 
     try {
-      const result = await new HttpArticleFetcher().fetch(fixture.url('/dead-shortlink'));
+      const result = await fetcher().fetch(fixture.url('/dead-shortlink'));
       expect(result.status).toBe('failed');
       if (result.status !== 'failed') throw new Error('expected failed');
       expect(result.reason).toBeTruthy();
       expect(result.reason).not.toBe('');
     } finally {
       await fixture.close();
+    }
+  });
+});
+
+/**
+ * Security review finding 1 (SSRF). A bookmarked link is attacker-chosen
+ * content that the app fetches automatically on every sync, from inside the
+ * owner's network. These run the REAL fetcher and the REAL policy against real
+ * local sockets - the same shape as the review's `repro-ssrf.ts`.
+ *
+ * `localhost` stands in for the public page a `t.co` link resolves to: the
+ * policy's DNS is stubbed (so nothing leaves the machine) to report it as a
+ * public address, while the OS still connects it to the local stub server.
+ * Every loopback destination below is therefore refused by the policy on its
+ * own merits, not because the test arranged it.
+ */
+describe('HttpArticleFetcher outbound host policy (SSRF, security review finding 1)', () => {
+  const PUBLIC_IP = '93.184.216.34';
+  const lookup = async (hostname: string): Promise<string[]> => {
+    if (hostname === 'localhost') return [PUBLIC_IP];
+    if (hostname === 'internal.example') return ['192.168.1.10'];
+    throw new Error(`ENOTFOUND ${hostname}`);
+  };
+
+  /** The production policy, with DNS stubbed so the suite stays offline. */
+  const guarded = () => new HttpArticleFetcher(2_000, { hostPolicy: createHostPolicy({ env: {}, lookup }) });
+  const portOf = (fixture: { url: (p: string) => string }) => new URL(fixture.url('/')).port;
+
+  /** Stands in for an internal-only service: a router admin console. */
+  const internalPage = `<html><head><title>Router admin</title>
+    <meta property="og:title" content="ACME Router - Admin Console">
+    <meta property="og:description" content="WPA2 key: hunter2-internal-secret">
+    </head><body><main>${'<p>Internal configuration paragraph that only a host inside the network should ever be able to read.</p>'.repeat(
+      8,
+    )}</main></body></html>`;
+
+  const startInternal = async () => {
+    const hits = { count: 0 };
+    const server = await startFixtureServer((_req, res) => {
+      hits.count++;
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(internalPage);
+    });
+    return { ...server, hits };
+  };
+
+  it('refuses a loopback URL found directly in a post, without fetching it', async () => {
+    const internal = await startInternal();
+    try {
+      const result = await guarded().fetch(internal.url('/admin'));
+      expect(result.status).toBe('failed');
+      if (result.status !== 'failed') throw new Error('expected failed');
+      expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
+      expect(result.preview).toBeNull();
+      expect(internal.hits.count).toBe(0);
+    } finally {
+      await internal.close();
+    }
+  });
+
+  it('refuses a host that merely RESOLVES into private space, not just a literal address', async () => {
+    const result = await guarded().fetch('http://internal.example/admin');
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') throw new Error('expected failed');
+    expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
+  });
+
+  it('refuses an HTTP redirect from a public page into loopback - the hop `follow` would have hidden', async () => {
+    const internal = await startInternal();
+    const bouncer = await startFixtureServer((_req, res) => {
+      res.writeHead(302, { Location: internal.url('/admin') });
+      res.end();
+    });
+
+    try {
+      const result = await guarded().fetch(`http://localhost:${portOf(bouncer)}/t/abc`);
+      expect(result.status).toBe('failed');
+      if (result.status !== 'failed') throw new Error('expected failed');
+      expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
+      expect(internal.hits.count).toBe(0);
+    } finally {
+      await bouncer.close();
+      await internal.close();
+    }
+  });
+
+  it('refuses a `<meta refresh>` interstitial bounce from a public page into loopback', async () => {
+    const internal = await startInternal();
+    const bouncer = await startFixtureServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(
+        `<html><head><meta http-equiv="refresh" content="0; url=${internal.url('/admin')}"></head><body></body></html>`,
+      );
+    });
+
+    try {
+      const result = await guarded().fetch(`http://localhost:${portOf(bouncer)}/t/abc`);
+      expect(result.status).toBe('failed');
+      if (result.status !== 'failed') throw new Error('expected failed');
+      expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
+      expect(internal.hits.count).toBe(0);
+    } finally {
+      await bouncer.close();
+      await internal.close();
+    }
+  });
+
+  it('still fetches, follows and extracts a normal public page', async () => {
+    const article = await startFixtureServer((req, res) => {
+      if (req.url === '/shortlink') {
+        res.writeHead(301, { Location: '/real-article' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(ARTICLE_HTML);
+    });
+
+    try {
+      const result = await guarded().fetch(`http://localhost:${portOf(article)}/shortlink`);
+      expect(result.status).toBe('ok');
+      if (result.status !== 'ok') throw new Error('expected ok');
+      expect(result.title).toContain('Resolved Article');
+      expect(result.resolvedUrl).toBe(`http://localhost:${portOf(article)}/real-article`);
+    } finally {
+      await article.close();
+    }
+  });
+
+  it('re-enables private fetches for an owner who sets the opt-in env var', async () => {
+    const internal = await startInternal();
+    try {
+      const optedIn = new HttpArticleFetcher(2_000, {
+        hostPolicy: createHostPolicy({ env: { [ALLOW_PRIVATE_FETCH_ENV]: '1' } }),
+      });
+      const result = await optedIn.fetch(internal.url('/admin'));
+      expect(result.status).not.toBe('failed');
+      expect(result.preview?.title).toBe('ACME Router - Admin Console');
+      expect(internal.hits.count).toBe(1);
+    } finally {
+      await internal.close();
     }
   });
 });
