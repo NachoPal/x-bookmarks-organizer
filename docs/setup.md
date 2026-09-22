@@ -79,6 +79,10 @@ Either way the app strips `ANTHROPIC_API_KEY` from the CLI's environment, so no 
 billing can occur. If `claude` is installed somewhere off your `PATH`, point `XBOOKMARKS_CLAUDE_BIN`
 at it.
 
+The same token can instead drive the opt-in `pi-claude-subscription` provider, which runs the
+subscription through pi. Anthropic's Claude Code terms prohibit that use and it carries a risk to your
+account; `claude-cli` stays the default. See the README's "Claude subscription through pi" section.
+
 ## 5. Build the tool
 
 ```bash

@@ -41,6 +41,8 @@ export interface CatalogProvider {
   id: string;
   label: string;
   billing: Billing;
+  /** A risk the selector must show at the point of choice (`ProviderDefinition.warning`). */
+  warning?: string;
   models: CatalogModel[];
   /** Ascending effort levels, empty when the provider has no effort axis. */
   efforts: string[];
@@ -95,6 +97,7 @@ function toCatalogProvider(id: string): CatalogProvider | undefined {
     id: provider.id,
     label: provider.label,
     billing: provider.billing,
+    ...(provider.warning ? { warning: provider.warning } : {}),
     models: provider.models.map((m) => ({
       id: m.id,
       label: m.label,

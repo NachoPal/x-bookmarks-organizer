@@ -128,7 +128,7 @@ tier is actually used (tiers 3-4).
 | ------------------------- | ------------------------------------------------ |
 | `XBOOKMARKS_CLIENT_ID`     | X OAuth 2.0 app Client ID (ingestion only)      |
 | `XBOOKMARKS_CLIENT_SECRET` | X OAuth 2.0 app Client Secret (ingestion only)  |
-| `CLAUDE_CODE_OAUTH_TOKEN`  | Claude subscription token - **optional**: a `claude` CLI you have logged into interactively needs none |
+| `CLAUDE_CODE_OAUTH_TOKEN`  | Claude subscription token - **optional**: a `claude` CLI you have logged into interactively needs none. **Required** by the opt-in `pi-claude-subscription` provider ([account risk](#claude-subscription-through-pi-opt-in-account-risk)) |
 | `TYPESAFE_API_KEY`         | TypeSafe/Jev API key - **optional**, only for the paid categorizer/ranker/eval features below |
 
 Quickest start - drop a `.env` in the project root:
@@ -322,7 +322,7 @@ complete list (it also covers per-role LLM provider overrides and the TypeSafe w
 | `XBOOKMARKS_WEB_PORT`    | `5173`                 | Web viewer port                          |
 | `XBOOKMARKS_AUTH_PORT`   | `3000`                 | One-time OAuth callback port             |
 | `XBOOKMARKS_REDIRECT_URI`| `http://127.0.0.1:3000/callback` | OAuth redirect (must match the X app) |
-| `XBOOKMARKS_LLM_PROVIDER`| `claude-cli`           | LLM provider id for every role: `claude-cli` or `pi-ai` (**paid**, see below) |
+| `XBOOKMARKS_LLM_PROVIDER`| `claude-cli`           | LLM provider id for every role: `claude-cli`, `pi-ai` (**paid**, see below) or `pi-claude-subscription` (**account risk**, see below) |
 | `XBOOKMARKS_TAXONOMY_PROVIDER` / `XBOOKMARKS_ASSIGNMENT_PROVIDER` | - | Provider for just one pass, overriding `XBOOKMARKS_LLM_PROVIDER` |
 | `XBOOKMARKS_LLM_MODEL`   | -                      | Model for every role, unless a role overrides it |
 | `XBOOKMARKS_MODEL`       | `claude-haiku-4-5`     | Assignment-pass model (Haiku-class); also the summary model if `XBOOKMARKS_SUMMARY_MODEL` is unset AND this is explicitly set |
@@ -393,11 +393,35 @@ key it needs; any other model pi knows works by id through `XBOOKMARKS_TAXONOMY_
 `XBOOKMARKS_MODEL`. It is never a default, a pass without its upstream's key refuses to start (the
 message names the key), and every sync prints each pass's billing before it makes a call.
 
-**Your Claude subscription stays on `claude-cli`.** pi can technically drive a Claude Pro/Max OAuth
-token, but only by presenting itself as Claude Code, and Anthropic's terms reserve subscription
-OAuth for Claude Code and Anthropic's own apps. So `pi-ai` refuses a subscription token
-(`sk-ant-oat…`) in `ANTHROPIC_API_KEY` and never reads `CLAUDE_CODE_OAUTH_TOKEN`; use `claude-cli` for
-subscription-billed passes.
+**`pi-ai` never uses your Claude subscription.** It refuses a subscription token (`sk-ant-oat…`) in
+`ANTHROPIC_API_KEY`, pointing you at `claude-cli`, and never reads `CLAUDE_CODE_OAUTH_TOKEN`. The only
+way to run the subscription through pi is the separate opt-in provider below.
+
+### Claude subscription through pi (opt-in, **account risk**)
+
+> **Warning.** This route sends your Claude subscription token through pi, which presents itself to
+> Anthropic as Claude Code. [Anthropic's Claude Code terms](https://code.claude.com/docs/en/legal-and-compliance)
+> reserve subscription OAuth for Claude Code and Anthropic's own apps, prohibit third parties from
+> intermediating those credentials, and let Anthropic act against your account without notice.
+> `claude-cli` (Anthropic's own binary) is the sanctioned way to use your subscription and stays the
+> default. Choose this only if you accept that risk.
+
+Two Claude subscription options exist, and either pass can use either one:
+
+| Provider | How it reaches Claude | Needs |
+| --- | --- | --- |
+| `claude-cli` (**default**) | The local `claude` binary, hardened (`--safe-mode --tools ""`) | A logged-in `claude` CLI, or `CLAUDE_CODE_OAUTH_TOKEN` |
+| `pi-claude-subscription` (opt-in) | pi's Anthropic OAuth (Claude Pro/Max) path, as plain completions | `CLAUDE_CODE_OAUTH_TOKEN` (an `sk-ant-oat…` token from `claude setup-token`) |
+
+Selecting it **is** the opt-in: in the app pick **Claude subscription via pi (against Anthropic's
+terms)** as a pass's provider in Settings → Categorization (the selector shows the warning above
+under it); on the CLI set `XBOOKMARKS_TAXONOMY_PROVIDER=pi-claude-subscription` and/or
+`XBOOKMARKS_ASSIGNMENT_PROVIDER=pi-claude-subscription`. It is never a default. Its models use the
+`claude-cli` ids (`claude-opus-4-8`, `claude-haiku-4-5`, `claude-sonnet-5`), with the same Opus-for-pass-1 /
+Haiku-for-pass-2 suggestion. The token comes through the usual credential chain and is handed to pi on
+every call - pi never looks for a credential itself, and `ANTHROPIC_API_KEY` is never read. A value that
+is not a subscription token is refused, because pi would bill an API key per token. Every run prints
+the warning beside that pass's billing line.
 
 ## Comparing the two categorizers (optional, opt-in, **paid**)
 

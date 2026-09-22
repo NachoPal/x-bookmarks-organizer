@@ -79,6 +79,25 @@ describe('modelOptions', () => {
   });
 });
 
+describe('providerNotice', () => {
+  it("states a provider's billing, emphasizing only a paid one", () => {
+    expect(XBO.providerNotice({ billing: 'subscription' })).toEqual({
+      text: 'Runs on your Claude subscription - no per-call charge.',
+      emphasis: false,
+    });
+    expect(XBO.providerNotice({ billing: 'per-token' })).toEqual({
+      text: XBO.BILLING_HINTS['per-token'],
+      emphasis: true,
+    });
+    expect(XBO.providerNotice(null)).toEqual({ text: '', emphasis: false });
+  });
+
+  it('puts a risk warning in place of the reassuring billing line, emphasized', () => {
+    const viaPi = { billing: 'subscription', warning: "Account risk: Anthropic's terms prohibit this." };
+    expect(XBO.providerNotice(viaPi)).toEqual({ text: viaPi.warning, emphasis: true });
+  });
+});
+
 describe('effortOptions', () => {
   it("leads with the app's default and then the provider's own ascending levels", () => {
     const options = XBO.effortOptions(catalog.providers[0]);

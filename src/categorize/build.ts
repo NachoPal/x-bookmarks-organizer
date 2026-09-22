@@ -13,7 +13,7 @@ import { Categorizer, type BatchCategorizer } from './llm';
 import { LlmTaxonomyDesigner, type TaxonomyDesigner } from './taxonomy';
 import { TypeSafeCategorizer } from './typesafe/categorizer';
 import { TypeSafeLevelAsker } from './typesafe/client';
-import { billingLabel, type LlmFactory } from '../llm/factory';
+import { billingLabel, type LlmFactory, type RoleDescription } from '../llm/factory';
 import { toRunner } from '../llm/runner';
 import type { LlmRole } from '../llm/types';
 
@@ -113,11 +113,20 @@ export function reportCategorizerBilling(config: Config, llm: LlmFactory, log: L
         'Switch the categorization method back to the language model to stop paying TypeSafe per call.',
     );
   } else {
-    const { providerId, model, billing } = llm.describe('assignment');
-    log(`Assignment pass: ${providerId} / ${model} - ${billingLabel(billing)}.`);
+    const assignment = llm.describe('assignment');
+    log(`Assignment pass: ${passLine(assignment)}`);
   }
-  const taxonomy = llm.describe('taxonomy');
-  log(`Taxonomy pass: ${taxonomy.providerId} / ${taxonomy.model} - ${billingLabel(taxonomy.billing)}.`);
+  log(`Taxonomy pass: ${passLine(llm.describe('taxonomy'))}`);
+}
+
+/**
+ * One pass's billing, plus its provider's risk notice when it carries one -
+ * the subscription driven through pi is announced as such on every run, not
+ * only where it was chosen.
+ */
+function passLine(pass: RoleDescription): string {
+  const line = `${pass.providerId} / ${pass.model} - ${billingLabel(pass.billing)}.`;
+  return pass.warning ? `${line} ${pass.warning}` : line;
 }
 
 /**

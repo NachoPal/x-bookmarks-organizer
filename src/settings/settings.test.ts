@@ -215,7 +215,7 @@ describe('applySettingsToConfig', () => {
 
 describe('per-pass providers (issue #70)', () => {
   it('offers pi-ai alongside claude-cli, with claude-cli still the default for both passes', () => {
-    expect(catalog.providers.map((p) => p.id)).toEqual(['claude-cli', 'pi-ai']);
+    expect(catalog.providers.map((p) => p.id)).toEqual(['claude-cli', 'pi-ai', 'pi-claude-subscription']);
     expect(defaultSettings(catalog)).toMatchObject({
       taxonomyProvider: 'claude-cli',
       assignmentProvider: 'claude-cli',
@@ -254,6 +254,37 @@ describe('per-pass providers (issue #70)', () => {
       assignmentProvider: 'claude-cli',
       assignmentModel: 'claude-haiku-4-5',
     });
+  });
+
+  it('offers BOTH Claude subscription routes for each pass, only the pi one carrying a risk warning', () => {
+    const cli = catalog.providers.find((p) => p.id === 'claude-cli')!;
+    const viaPi = catalog.providers.find((p) => p.id === 'pi-claude-subscription')!;
+    expect(cli.billing).toBe('subscription');
+    expect(cli.warning).toBeUndefined();
+    expect(viaPi.billing).toBe('subscription');
+    expect(viaPi.warning).toMatch(/Account risk/);
+    expect(viaPi.warning).toMatch(/terms prohibit/);
+    expect(viaPi.label).toMatch(/against Anthropic's terms/);
+    expect(viaPi.suggested).toEqual({ taxonomy: 'claude-opus-4-8', assignment: 'claude-haiku-4-5' });
+
+    // Either route, on either pass, is a valid saved choice.
+    for (const [taxonomyProvider, assignmentProvider] of [
+      ['pi-claude-subscription', 'claude-cli'],
+      ['claude-cli', 'pi-claude-subscription'],
+      ['pi-claude-subscription', 'pi-claude-subscription'],
+    ]) {
+      const { settings, errors } = validateSettings(
+        { taxonomyProvider, taxonomyModel: 'claude-opus-4-8', assignmentProvider, assignmentModel: 'claude-haiku-4-5' },
+        catalog,
+      );
+      expect(errors).toEqual([]);
+      expect(settings).toMatchObject({ taxonomyProvider, assignmentProvider });
+      const config = applySettingsToConfig(loadConfig({}), settings);
+      expect(config.llm.roles.taxonomy.provider).toBe(taxonomyProvider);
+      expect(config.llm.roles.assignment.provider).toBe(assignmentProvider);
+      // Summaries stay on the default provider whichever route categorization takes.
+      expect(config.llm.defaultProvider).toBe('claude-cli');
+    }
   });
 
   it("refuses a model that belongs to the OTHER pass's provider", () => {

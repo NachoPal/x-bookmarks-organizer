@@ -188,6 +188,28 @@ describe('PUT /api/settings', () => {
     });
   });
 
+  it('saves the opt-in Claude-subscription-via-pi route and ships its risk warning to the selector', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        categorizer: 'claude-cli',
+        taxonomyProvider: 'pi-claude-subscription',
+        assignmentProvider: 'claude-cli',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const setup = (await app.inject({ method: 'GET', url: '/api/setup' })).json();
+    expect(setup.settings).toMatchObject({ taxonomyProvider: 'pi-claude-subscription', assignmentProvider: 'claude-cli' });
+    const ids = setup.catalog.providers.map((p: { id: string }) => p.id);
+    expect(ids).toEqual(expect.arrayContaining(['claude-cli', 'pi-claude-subscription']));
+    // claude-cli still leads, so it stays what a fresh install starts on.
+    expect(ids[0]).toBe('claude-cli');
+    const viaPi = setup.catalog.providers.find((p: { id: string }) => p.id === 'pi-claude-subscription');
+    expect(viaPi.warning).toMatch(/Account risk/);
+    expect(viaPi.models[0].requiresKey).toBe('CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
   it('keeps the original setup timestamp when the choice is edited later', async () => {
     const first = await app.inject({
       method: 'PUT',

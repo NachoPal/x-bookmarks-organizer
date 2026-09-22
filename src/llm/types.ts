@@ -143,6 +143,13 @@ export interface ProviderDefinition {
    */
   efforts?: readonly string[];
   /**
+   * A risk the owner must see at the point of choice - beyond what `billing`
+   * says - for a provider whose use carries one (the Claude subscription
+   * driven through pi, which Anthropic's terms prohibit). Shown in the
+   * settings selector and printed with the billing line on every run.
+   */
+  warning?: string;
+  /**
    * How a given model is billed, for a provider whose models differ (a hosted
    * API is per-token, a local endpoint is not). Omitted means `billing` holds
    * for every model.

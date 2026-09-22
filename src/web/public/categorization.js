@@ -91,6 +91,26 @@
     return options;
   }
 
+  /** How each billing model reads to the owner, in one line. */
+  var BILLING_HINTS = {
+    subscription: "Runs on your Claude subscription - no per-call charge.",
+    "per-token": "PAID per token, billed to the API key of the model's own provider.",
+    local: "Runs locally.",
+  };
+
+  /**
+   * The line under a pass's provider select, and whether it wears the billing
+   * emphasis. A provider that carries a risk warning (the Claude subscription
+   * driven through pi, which Anthropic's terms prohibit) shows THAT instead of
+   * its billing line - "no per-call charge" is true of it and would be the
+   * wrong thing to reassure the owner with at the moment they choose it.
+   */
+  function providerNotice(provider) {
+    if (!provider) return { text: "", emphasis: false };
+    if (provider.warning) return { text: provider.warning, emphasis: true };
+    return { text: BILLING_HINTS[provider.billing] || "", emphasis: provider.billing === "per-token" };
+  }
+
   /** Effort options, led by the same empty-valued "Default" entry. */
   function effortOptions(provider) {
     var options = [{ value: "", label: "Default (high)", hint: "The app's own default for this pass." }];
@@ -248,6 +268,8 @@
     findProvider: findProvider,
     findMethod: findMethod,
     modelOptions: modelOptions,
+    providerNotice: providerNotice,
+    BILLING_HINTS: BILLING_HINTS,
     effortOptions: effortOptions,
     toPayload: toPayload,
     methodBlocker: methodBlocker,
