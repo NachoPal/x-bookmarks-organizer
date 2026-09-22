@@ -176,6 +176,19 @@ library opens into. The guided flow reopens on a blocked Sync ONLY when the bloc
 authorization (`needsAuthorizationOnly`) - a missing credential is fixed outside the app, so
 repeating its message inside the dialog would be noise.
 
+**The never-synced landing (`bookmarkCount === 0`) carries a missing-credentials alert.** Pure
+derivation in `src/web/public/missing-credentials.js` (`XBOMissingCredentials.missingCredentialsAlert`,
+DOM-free, unit-tested like `categorization.js`): reads the same `/api/setup` `credentials.*.present`
+flags, scoped to exactly the three it reports (`xClientId`, `xClientSecret`, `typesafeApiKey` - the
+Claude provider check is a separate availability check, not a `/api/setup` credential row, so it is
+never one of these three). Only an actually-missing credential is ever listed. `kind` is `'blocking'`
+the instant either X key is missing (sync cannot run) and `'optional'` only when both X keys are
+present and just the TypeSafe key is absent - which must read as an enhancement, never an error;
+nothing missing yields `null` (no fabricated "ready to sync" list). `app.js`'s `buildFirstRun` /
+`updateFirstRun` render it (`role="status"`, icon + text badge - never color alone - `--color-danger*`
+for blocking, `--color-accent*` for optional, matching `.sync-progress`'s own tint choices) and it is
+removed with the rest of `firstRunEl` the moment a sync populates the library.
+
 ## Frontend
 
 `npm run lint` covers `src/web/public/**/*.js` as well as the TypeScript (`eslint.config.js`;
