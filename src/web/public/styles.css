@@ -3901,6 +3901,108 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   align-self: flex-start;
 }
 
+/* Missing-credentials alert on the never-synced landing. `--color-danger`
+   when a REQUIRED X credential is missing (sync cannot run - reads as a
+   blocker), `--color-accent` when only the OPTIONAL TypeSafe key is missing
+   (reads as a calm enhancement, matching the accent-soft tint
+   `.sync-progress` already uses for its neutral/running state, never the
+   danger tint). The badge text carries the required-vs-optional distinction
+   on its own, never the tint alone. */
+.creds-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+.creds-alert[data-kind="blocking"] {
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger);
+}
+.creds-alert[data-kind="optional"] {
+  background: var(--color-accent-soft);
+  border-color: var(--color-border);
+}
+.creds-alert-icon {
+  flex: 0 0 auto;
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-top: 0.1rem;
+  border-radius: 50%;
+}
+.creds-alert[data-kind="blocking"] .creds-alert-icon {
+  border: 2px solid var(--color-danger);
+}
+.creds-alert[data-kind="blocking"] .creds-alert-icon::before {
+  content: "!";
+  display: block;
+  color: var(--color-danger);
+  font-weight: 700;
+  line-height: 1rem;
+  text-align: center;
+}
+.creds-alert[data-kind="optional"] .creds-alert-icon {
+  border: 2px solid var(--color-accent);
+}
+.creds-alert[data-kind="optional"] .creds-alert-icon::before {
+  content: "i";
+  display: block;
+  color: var(--color-accent);
+  font-weight: 700;
+  font-style: normal;
+  line-height: 1rem;
+  text-align: center;
+}
+.creds-alert-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.creds-alert-badge {
+  margin: 0;
+  font-size: var(--text-small);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.creds-alert[data-kind="blocking"] .creds-alert-badge {
+  color: var(--color-danger);
+}
+.creds-alert[data-kind="optional"] .creds-alert-badge {
+  color: var(--color-accent);
+}
+.creds-alert-title {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--color-text);
+}
+.creds-alert-group-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--color-text);
+}
+.creds-alert-list {
+  margin: 0;
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.creds-alert-item {
+  color: var(--color-text);
+  font-size: var(--text-small);
+}
+.creds-alert-hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+
 /* ============================================================
    Move a post to another category (issue #92)
 

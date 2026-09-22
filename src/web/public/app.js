@@ -6933,6 +6933,7 @@
   // strip happen once, on the transition into the run, and not on every poll.
   let firstRunBodyEl = null;
   let firstRunScrimmed = false;
+  let firstRunCredsEl = null;
 
   function renderSelectPrompt() {
     const box = el("div", "state state-empty state-welcome state-prompt");
@@ -6964,6 +6965,8 @@
     );
 
     const body = el("div", "first-run-body");
+    firstRunCredsEl = el("div", "creds-alert");
+    firstRunCredsEl.hidden = true;
     const formHost = el("div", "first-run-steps");
     firstRunForm = createCategorizationForm(formHost, "firstrun", () => {
       firstRunDirty = true;
@@ -6987,7 +6990,7 @@
     // The scrim is a SIBLING of everything it dims, so it is never itself
     // dimmed or made inert. The body below it is what a running sync takes
     // out of reach (#95).
-    body.append(intro, formHost);
+    body.append(intro, firstRunCredsEl, formHost);
     firstRunBodyEl = body;
     const scrim = el("div", "first-run-scrim");
     scrim.setAttribute("aria-hidden", "true");
@@ -7011,9 +7014,79 @@
     updateFirstRun();
   }
 
+  // One line of "why this credential matters" per id, kept beside the alert
+  // builder rather than in missing-credentials.js: the pure module owns the
+  // MISSING/required-vs-optional decision, not owner-facing prose.
+  const CREDENTIAL_PURPOSE = {
+    xClientId: "Needed to connect to X and sync your bookmarks.",
+    xClientSecret: "Needed to connect to X and sync your bookmarks.",
+    typesafeApiKey:
+      "Only needed if you want to use TypeSafe for categorization and scoring/ranking - the app works without it.",
+  };
+
+  function credentialItem(cred) {
+    const li = el("li", "creds-alert-item");
+    li.append(el("strong", null, cred.label), document.createTextNode(` (${cred.envVar}) - `));
+    li.append(document.createTextNode(CREDENTIAL_PURPOSE[cred.id] || ""));
+    return li;
+  }
+
+  function credentialGroup(title, creds) {
+    if (creds.length === 0) return null;
+    const group = el("div", "creds-alert-group");
+    group.append(el("p", "creds-alert-group-title", title));
+    const list = el("ul", "creds-alert-list");
+    for (const cred of creds) list.appendChild(credentialItem(cred));
+    group.appendChild(list);
+    return group;
+  }
+
+  /**
+   * Renders the missing-credentials alert on the never-synced landing from
+   * pure derived state (`XBOMissingCredentials.missingCredentialsAlert`) -
+   * `setupState.bookmarkCount` plus the three `credentials.*.present` flags
+   * `/api/setup` reports. Hidden entirely once something is synced or
+   * nothing is missing; never fabricates a "ready to sync" list.
+   */
+  function renderMissingCredentialsAlert() {
+    if (!firstRunCredsEl || !setupState || !window.XBOMissingCredentials) return;
+    const alert = window.XBOMissingCredentials.missingCredentialsAlert(setupState.bookmarkCount, setupState.credentials);
+    if (!alert) {
+      firstRunCredsEl.hidden = true;
+      firstRunCredsEl.replaceChildren();
+      return;
+    }
+    const blocking = alert.kind === "blocking";
+    firstRunCredsEl.dataset.kind = alert.kind;
+    firstRunCredsEl.setAttribute("role", "status");
+    firstRunCredsEl.setAttribute("aria-labelledby", "creds-alert-title");
+    const icon = el("span", "creds-alert-icon");
+    icon.setAttribute("aria-hidden", "true");
+    const badge = el("p", "creds-alert-badge", blocking ? "Action needed to sync" : "Optional");
+    const title = el("h3", "creds-alert-title", "Missing credentials");
+    title.id = "creds-alert-title";
+    const bodyEl = el("div", "creds-alert-body");
+    bodyEl.append(badge, title);
+    const requiredGroup = credentialGroup("Required to sync", alert.required);
+    if (requiredGroup) bodyEl.appendChild(requiredGroup);
+    const optionalGroup = credentialGroup("Optional", alert.optional);
+    if (optionalGroup) bodyEl.appendChild(optionalGroup);
+    bodyEl.append(
+      el(
+        "p",
+        "creds-alert-hint",
+        "Set these through an environment variable, a .env file in the project root, your OS keychain, or " +
+          "~/.config/x-bookmarks-organizer/credentials.json, then restart the viewer.",
+      ),
+    );
+    firstRunCredsEl.replaceChildren(icon, bodyEl);
+    firstRunCredsEl.hidden = false;
+  }
+
   function updateFirstRun() {
     if (!firstRunEl || !setupState) return;
     updateFormNote(firstRunForm, firstRunNoteEl);
+    renderMissingCredentialsAlert();
     const running = syncIsRunning();
     // A run is not interruptible and takes minutes, so the get-started view
     // goes behind a scrim for its duration: dimmed (CSS, keyed off this
