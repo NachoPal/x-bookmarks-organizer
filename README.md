@@ -1,14 +1,32 @@
 # X Bookmarks Organizer
 
 Fetch your X (Twitter) bookmarks, auto-categorize them into a nested topic tree with an LLM,
-store them in a local SQLite database you fully own, and browse them through a simple local
-web interface with read-tracking.
-
-Runs occasionally and incrementally: each run only processes bookmarks added since the last run -
-from the **Sync** button in the viewer, or from the CLI.
+store them in a local SQLite database you fully own, and browse them through a local web
+viewer with read-tracking, favorites and an optional relevance ranking.
 
 - Requirements / acceptance spec: [`docs/prds/0001-x-bookmarks-organizer.md`](docs/prds/0001-x-bookmarks-organizer.md)
-- One-time setup (X app, OAuth, vault, credit): [`docs/setup.md`](docs/setup.md)
+- One-time setup (X app, OAuth, credit): [`docs/setup.md`](docs/setup.md)
+
+## Why X Bookmarks Organizer?
+
+X's own bookmark folders are a Premium feature and are flat - one level, no sub-topics - which
+falls apart once you have a few hundred saved posts. This is a personal, single-user, local tool
+built to fix that for one person's library:
+
+- **Genuinely nested categories**, designed holistically over your whole library rather than
+  guessed batch-by-batch, so the tree actually has depth instead of collapsing into a handful of
+  broad buckets.
+- **You own the data.** Everything lives in one local SQLite file. No account, no hosted service,
+  nothing to export.
+- **No forced spend.** Categorization runs on your existing Claude subscription by default, not a
+  metered API. Every feature that does cost money (an alternative categorizer, ranking, the
+  categorizer comparison) is off unless you opt in, needs its own API key, and announces its price
+  before every run.
+- **Runs occasionally, not continuously.** It's a sync-when-you-feel-like-it tool, not a background
+  service - a run only processes bookmarks added since the last one.
+
+It is not a knowledge graph, not multi-user, and not hosted - see the
+[PRD](docs/prds/0001-x-bookmarks-organizer.md) for the full scope and non-goals.
 
 ## How it works
 
@@ -27,28 +45,38 @@ from the **Sync** button in the viewer, or from the CLI.
      3). This is the hard, large-context step, so it runs on an Opus-class model at high effort
      (`XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT`). It runs **only on the first run**
      (when no tree exists yet) and whenever you run `recategorize`. Incremental runs against an
-     existing tree **skip** this pass to conserve quota (see below).
-  2. **Assignment.** Each bookmark is filed into the tree by a Haiku-class model (`XBOOKMARKS_MODEL`)
-     to conserve subscription quota. A bookmark may be filed under several branches at once;
-     anything that fits nothing lands in `Uncategorized`. On an **incremental run** against an
-     existing tree, only this cheap pass runs over the new bookmarks: it reuses existing nodes and
-     creates a new one only when a bookmark fits nothing. Already-stored bookmarks are never
-     re-touched; use `recategorize` to rebuild the whole tree holistically.
-
-  This replaces an older cold-start scheme that categorized bookmarks in isolated batches and tended
-  to collapse into a couple of broad, shallow buckets.
+     existing tree **skip** this pass to conserve quota.
+  2. **Assignment.** Each bookmark is filed into the tree - by default a Haiku-class Claude model
+     (`XBOOKMARKS_MODEL`) to conserve subscription quota, or optionally a paid alternative (see
+     [Choosing the assignment categorizer](#choosing-the-assignment-categorizer-optional-opt-in-paid)
+     below). A bookmark may be filed under several branches at once; anything that fits nothing
+     lands in `Uncategorized`. On an incremental run, only this cheap pass runs, over the new
+     bookmarks: it reuses existing nodes and creates a new one only when a bookmark fits nothing.
+     Already-stored bookmarks are never re-touched; use `recategorize` to rebuild the whole tree
+     holistically.
 - **Storage** - a single local SQLite file (`data/bookmarks.db` by default), fully owned and
   portable. Gitignored.
-- **Viewer** - a small local web app: the category tree with counts, drill into a node to list its
+- **Viewer** - a local web app: the category tree with counts, drill into a node to list its
   bookmarks, each shown as an embedded X post (link fallback where the post is not embeddable).
-  Opening a bookmark marks it read and records the date, reflected live in the UI. Filter the tree
-  by category name from the sidebar search box, and switch a node's bookmarks with the tab bar
-  under the top bar: Unread / Read / All / Favorites. Star any post from its action row to keep it
-  in Favorites; the star is stored in SQLite like read state, so it survives a later sync or
-  `recategorize`. Opening the categories drawer pushes the posts aside rather than covering them.
-  A category's posts load lazily in batches of 20 as you scroll (infinite scroll), so a large
-  category never renders every post - or every X embed - at once; paging follows the active tab
-  and resets to the top when you change it (`XBOOKMARKS_PAGE_SIZE`, default 20).
+  Opening a bookmark marks it read; star any post to keep it in Favorites. A tab bar under the top
+  bar switches a category's view between Unread / Read / All / Favorites, and a floating sort
+  control above the list orders by newest/oldest or - once something has been ranked (see below) -
+  highest/lowest score. A category's posts load lazily in batches as you scroll
+  (`XBOOKMARKS_PAGE_SIZE`, default 20), so a large category never renders every post at once.
+- **Manual re-filing** - any post can be moved by hand if the model guessed wrong: drag the grip
+  handle on its action row onto a category in the sidebar, or use the folder icon to pick a
+  destination from a searchable, keyboard-operable tree. A move replaces the post's categories
+  (files it under exactly the one you picked) and can be undone from the toast that follows.
+- **Category editor** - the pencil beside the sidebar's "Categories" heading adds or deletes
+  categories by hand. Deleting a category deletes **only** the bookmarks it would orphan: a post
+  also filed under a surviving category is kept, just unlinked from the deleted one. The
+  confirmation dialog always previews the exact count before you commit.
+- **Sync / Reset** - the Sync control in the top bar runs an incremental ingest + categorize from
+  the browser, showing the same progress the CLI prints. Reset library (same panel) wipes the
+  local library back to never-synced (bookmarks, categories, scores) so the next sync re-pulls
+  everything from X - it keeps every piece of your configuration (the X login, the saved
+  categorization/ranking choices, authored rubric presets, root category order) and never touches
+  anything on X itself. Both require explicit confirmation.
 - **Summaries** - click "Summarize" on a bookmark for an on-demand LLM summary of its content (the
   post, plus its extracted article when the reader view can read it) in a large modal. Generated on
   the same LLM provider as categorization, and cached in SQLite so re-opening is instant and free.
@@ -56,6 +84,10 @@ from the **Sync** button in the viewer, or from the CLI.
   and logged in. When it is not, the button is disabled with a tooltip explaining exactly what to
   fix; when a call fails, the modal shows the error and you can retry. Everything else in the viewer
   works either way, including already-cached summaries.
+- **Ranking** (optional, paid, on by default but key-gated) - scores each bookmark for learning
+  value against an editable rubric; see
+  [Ranking bookmarks by learning value](#ranking-bookmarks-by-learning-value-optional-opt-in-paid)
+  below.
 
 ## Prerequisites
 
@@ -95,6 +127,7 @@ tier is actually used (tiers 3-4).
 | `XBOOKMARKS_CLIENT_ID`     | X OAuth 2.0 app Client ID (ingestion only)      |
 | `XBOOKMARKS_CLIENT_SECRET` | X OAuth 2.0 app Client Secret (ingestion only)  |
 | `CLAUDE_CODE_OAUTH_TOKEN`  | Claude subscription token - **optional**: a `claude` CLI you have logged into interactively needs none |
+| `TYPESAFE_API_KEY`         | TypeSafe/Jev API key - **optional**, only for the paid categorizer/ranker/eval features below |
 
 Quickest start - drop a `.env` in the project root:
 
@@ -124,7 +157,7 @@ node dist/index.js serve
 ```
 
 An empty library opens a three-step setup: authorize X, choose how categorization runs, run the
-first sync. After that, the **Sync** button in the toolbar fetches new bookmarks and categorizes
+first sync. After that, the **Sync** button in the top bar fetches new bookmarks and categorizes
 them server-side, showing the same progress the CLI prints and refreshing the viewer when it
 finishes. The categorization choice - the method (Claude Code, or Jev), the model provider,
 the per-pass models and the reasoning effort - is saved in the local database and reused by every
@@ -172,10 +205,9 @@ node dist/index.js recategorize
 (X credentials are not needed for `recategorize` - it only re-reads the local database.)
 
 **Backfill previews** (optional) - a normal `run` already fetches and caches article link metadata
-for new bookmarks, but bookmarks synced before the previews feature (#26) existed have none, so
-their link contributes nothing extra to Summarize or categorization. Run this once against an
-existing library to fetch and cache metadata for those without touching categories, the taxonomy,
-or re-fetching from X:
+for new bookmarks, but bookmarks synced before that existed have none, so their link contributes
+nothing extra to Summarize or categorization. Run this once against an existing library to fetch
+and cache metadata for those without touching categories, the taxonomy, or re-fetching from X:
 
 ```bash
 node dist/index.js backfill-previews
@@ -198,9 +230,8 @@ node dist/index.js backfill-x-articles
 ```
 
 Needs your X credentials (it goes through the normal login/refresh-token path). Idempotent - stored
-Articles and already-checked quotes are skipped. The first real run logs the raw `article` field
-shape X returns, so a field-naming mismatch is visible. Afterwards, `recategorize` re-files any of
-these bookmarks that were sitting in `Uncategorized`.
+Articles and already-checked quotes are skipped. Afterwards, `recategorize` re-files any of these
+bookmarks that were sitting in `Uncategorized`.
 
 **3. Browse** (browsing and cached summaries need no secrets at all):
 
@@ -214,13 +245,6 @@ default `claude-cli` provider that just means the `claude` CLI is installed and 
 prints which provider and model it resolved, or why summaries are disabled. Syncing from the
 viewer needs the X credentials as described above; `serve` also prints how the next sync will be
 billed, before you press the button.
-
-**Correcting where a post lives** - the categories are the LLM's guess, so any post can be re-filed
-by hand from the viewer: drag the handle at the left of its action row onto a category in the
-sidebar (hovering a category opens it, so you can drill into nested ones mid-drag), or press the
-folder icon between the star and Summarize to pick a destination from a searchable tree. Either
-way the post is filed under **exactly** that one category - a move replaces its other categories
-rather than adding one - and the picker is fully keyboard-operable.
 
 **Re-fetch unreadable articles** (optional) - Summarize caches each bookmark's article fetch, and a
 link cached as unreadable stays that way even after the fetcher improves. This re-fetches every
@@ -287,8 +311,11 @@ interface BookmarkContent {
 
 ## Configuration (optional env vars)
 
+The table below covers the ones you're likely to touch; `src/config.ts` is the authoritative,
+complete list (it also covers per-role LLM provider overrides and the TypeSafe walk-tuning knobs).
+
 | Env var                 | Default                | Meaning                                  |
-| ----------------------- | ---------------------- | ---------------------------------------- |
+| ----------------------- | ----------------------- | ---------------------------------------- |
 | `XBOOKMARKS_DB_PATH`     | `data/bookmarks.db`    | SQLite file location                     |
 | `XBOOKMARKS_WEB_PORT`    | `5173`                 | Web viewer port                          |
 | `XBOOKMARKS_AUTH_PORT`   | `3000`                 | One-time OAuth callback port             |
@@ -306,15 +333,10 @@ interface BookmarkContent {
 | `XBOOKMARKS_PAGE_SIZE`   | `20`                   | Viewer lazy-load batch size per scroll   |
 | `XBOOKMARKS_CATEGORIZER` | `claude-cli`           | Which implementation runs the **assignment** pass: `claude-cli` or `typesafe` (**paid**, see below) |
 | `XBOOKMARKS_TYPESAFE_MODEL` | `jev-latest`        | TypeSafe model, when that categorizer is selected |
-| `XBOOKMARKS_TYPESAFE_BEAM_WIDTH` | `3`           | Paths kept alive per tree level (1 = greedy) |
-| `XBOOKMARKS_TYPESAFE_CONFIDENCE` | `0.55`        | Floor to descend a level; below it the walk stops at the confident parent |
-| `XBOOKMARKS_TYPESAFE_MULTILABEL` | `0.6`         | Score floor for keeping an ADDITIONAL category |
-| `XBOOKMARKS_TYPESAFE_MAX_LABELS` | `3`           | Cap on categories per bookmark            |
-| `XBOOKMARKS_TYPESAFE_CONCURRENCY` | `8`          | Bookmarks classified in parallel          |
 | `XBOOKMARKS_RANKER`      | `typesafe`             | The **ranking** pass (**paid**, needs `TYPESAFE_API_KEY`; `off` disables it, see below) |
 | `XBOOKMARKS_RANKER_MODEL` | `jev-latest`          | TypeSafe model for the ranking pass       |
-| `XBOOKMARKS_RANKER_INTERESTS` | -                 | What you care about, in your own words; adds a relevance question to the rubric |
-| `XBOOKMARKS_RANKER_CONCURRENCY` | `6`             | Bookmarks scored in parallel              |
+| `XBOOKMARKS_RANKER_INTERESTS` | -                 | What you care about, in your own words; adds a relevance question to the built-in rubric |
+| `XBOOKMARKS_ALLOW_PRIVATE_FETCH` | `false`         | Let article fetches resolve to loopback/private/link-local addresses (off by default; for indexing an intranet) |
 
 Model names and effort levels are interpreted by the selected provider, so a provider that has no
 notion of an effort level simply ignores `XBOOKMARKS_TAXONOMY_EFFORT` rather than failing.
@@ -347,18 +369,6 @@ selector says so before you can start a sync). Every run
 prints how the pass is billed before making a call. Note that with it enabled your bookmark text is
 sent to a third-party hosted API, where today it stays on your machine.
 
-What it buys, when enabled:
-
-- **Off-tree categories become structurally impossible.** The path is built in code from real
-  database nodes, so there is nothing to parse and no invented category to repair.
-- **Confidence-gated placement.** When the deepest choice is a coin flip, the bookmark is filed at
-  the last *confident* ancestor ("AI > Harnesses") instead of a guessed leaf or the flat
-  `Uncategorized` bucket.
-- **Hybrid extend.** On incremental runs, only bookmarks that fit nothing anywhere are handed to the
-  LLM to propose a new category, so it invents exactly where invention is needed.
-- **Speed.** Each bookmark is classified independently and in parallel, which is what makes
-  `recategorize` cheap enough to iterate on.
-
 ## Comparing the two categorizers (optional, opt-in, **paid**)
 
 Which of the two above actually files *your* bookmarks better is a question about your library, not
@@ -372,38 +382,17 @@ XBOOKMARKS_EVAL_CATEGORIZERS=typesafe node dist/index.js eval-categorizers --lim
 
 It designs **one** fresh taxonomy (pass 1, Claude), then files every stored bookmark into **that
 same tree** with both methods, from the same article/link context, and writes a Markdown report to
-`data/eval/` (gitignored). Holding the tree fixed is the point: pass 1 is always Claude and cannot
-be Jev, so with the tree and the context identical, the filing pass is the only variable and every
-difference is attributable to the method rather than to taxonomy randomness.
-
-The report contains the run's exact models and effort, agreement metrics (same exact leaf, same
-top-level branch - with the multi-label and low-confidence rules spelled out), each method's top
-categories and `Uncategorized` count side by side, Jev's confidence and abstention rates, a sampled
-**disagreement table** so you can judge row by row who filed better, and the wall clock and token
-spend per method.
-
-**Your library is never written to** - not its categories, taxonomy, read state, favorites,
-summaries, scores, or even the URL-keyed link-metadata cache. The fresh tree lives in a throwaway
-database that is deleted when the run ends. Run `backfill-previews` first if you want the links it
-resolves cached for real.
-
-Paid-safety is the ranker's, gate for gate: the Jev half needs BOTH
-`XBOOKMARKS_EVAL_CATEGORIZERS=typesafe` and a resolved `TYPESAFE_API_KEY`, the opt-in is checked
-first (a key left over from another experiment cannot start a paid run by itself), billing is
-announced before any call, and `--dry-run` needs neither - sizing the bill is how you decide whether
-to opt in. The Claude half is free at the margin, costing subscription time instead. There is
-deliberately **no in-app trigger**, exactly as with `rank`.
-
-A run is one sample: Claude filing is non-deterministic, so the report says so and the disagreement
-table - not the percentages - is the real evidence.
+`data/eval/` (gitignored). Your library is never written to - the fresh tree lives in a throwaway
+database deleted when the run ends. There is deliberately **no in-app trigger** for this, exactly as
+with `rank` below - it is CLI-only.
 
 ## Ranking bookmarks by learning value (optional, opt-in, **paid**)
 
 You save bookmarks to extract insights from them, so an optional pass scores each one for exactly
-that and lets the viewer order by it. It runs on the TypeSafe/Jev API's `Score` questions over the
-same structured `BookmarkContent` above - which is what that shape was built for.
+that and lets the viewer order by it, using the TypeSafe/Jev API against a rubric you can author
+yourself (see [Editing the ranking rubric](#editing-the-ranking-rubric) below).
 
-```
+```bash
 node dist/index.js rank --dry-run   # how many would be scored; no API call
 node dist/index.js rank             # score them
 node dist/index.js rank --limit 50  # a cost ceiling for a first look
@@ -423,16 +412,9 @@ none at all). Set `XBOOKMARKS_RANKER=off` to remove ranking from the app entirel
 the tool reads any of this: syncing, categorizing, summaries and browsing are untouched either way.
 As with the paid categorizer, your bookmark text is sent to a third-party hosted API.
 
-The rubric asks four well-scoped questions per bookmark - **learning value**, **insight density**,
-**durability** and **actionability** - plus a **relevance** question when you set
-`XBOOKMARKS_RANKER_INTERESTS` to what you care about. They ride in ONE request per bookmark
-(TypeSafe evaluates questions in parallel against one shared state), and the weighted result plus
-the model's own confidence is stored per bookmark. The levels each question offers are the real
-tuning surface and live in `src/rank/rubric.ts`.
-
 Running it again only scores what is missing, so it is resumable and never pays twice; changing the
-rubric (or your interests) changes its version tag, which is what makes those bookmarks stale and
-re-scored rather than silently sorted against two different scales.
+rubric changes its version tag, which is what makes those bookmarks stale and re-scored rather than
+silently sorted against two different scales.
 
 Once anything is scored:
 
@@ -440,16 +422,48 @@ Once anything is scored:
   bookmark that was never ranked, which is not the same as a score of zero;
 - `GET /api/categories/:id/bookmarks?sort=score` pages the category by it, highest first, with
   unranked bookmarks last;
-- the viewer's Settings panel gains an **Order** control (Newest / Top score), and each ranked card
-  shows its rating, with the per-question breakdown behind it.
+- the viewer's floating sort control gains a "Top score" option (disabled until something is
+  ranked), and each ranked card shows its rating as a chip, with the per-question breakdown behind
+  it.
+
+### Editing the ranking rubric
+
+The rubric is not fixed - "Edit ranking rules" in the ranking panel opens an editor for **named
+presets** you author yourself: the question, levels and weight for each dimension, with add /
+remove / reorder. The built-in preset (four questions - learning value, insight density,
+durability, actionability - plus a relevance question when `XBOOKMARKS_RANKER_INTERESTS` is set) is
+always available and can be cloned to start from, but not edited or deleted directly. Scores are
+kept **per preset**: switching which one is active never deletes anything, it just means bookmarks
+scored under a different rubric show as unranked until you re-rank them under the new one.
 
 ## Development
 
 ```bash
 npm test          # unit tests (no network, no credentials)
 npm run typecheck # tsc --noEmit
-npm run lint      # eslint
+npm run lint      # eslint (TypeScript + src/web/public/**/*.js)
 npm run build     # compile to dist/ and copy the web assets
 ```
 
 Tests use fixtures/mocks for both the X API and the LLM, so they run offline with no credentials.
+
+To iterate on the viewer without touching your real library, seed a throwaway database and serve
+it instead:
+
+```bash
+npm run build && npm run seed:dev
+XBOOKMARKS_DB_PATH=data/dev-seed.db node dist/index.js serve
+```
+
+See [`AGENTS.md`](AGENTS.md) for the project's architecture, conventions and the sharp-edge notes
+behind each feature.
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has local setup, the CI gates a
+change must pass, branch/PR conventions and the project's hard invariants; all participation is
+under the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+[MIT](LICENSE)
