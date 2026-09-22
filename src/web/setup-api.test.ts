@@ -158,6 +158,36 @@ describe('PUT /api/settings', () => {
     expect(readSettings(db, catalog)).toBeUndefined();
   });
 
+  it('saves an independent provider and model per pass (issue #70)', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        categorizer: 'claude-cli',
+        taxonomyProvider: 'pi-ai',
+        taxonomyModel: 'openrouter/google/gemini-2.5-flash',
+        assignmentProvider: 'claude-cli',
+        assignmentModel: 'claude-haiku-4-5',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const setup = (await app.inject({ method: 'GET', url: '/api/setup' })).json();
+    expect(setup.settings).toMatchObject({
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'openrouter/google/gemini-2.5-flash',
+      assignmentProvider: 'claude-cli',
+      assignmentModel: 'claude-haiku-4-5',
+    });
+    // The catalog ships each pi model's context window and the key it needs -
+    // names only, never a value.
+    const pi = setup.catalog.providers.find((p: { id: string }) => p.id === 'pi-ai');
+    expect(pi.billing).toBe('per-token');
+    expect(pi.models.find((m: { id: string }) => m.id === 'openrouter/google/gemini-2.5-flash')).toMatchObject({
+      contextWindow: 1_048_576,
+      requiresKey: 'OPENROUTER_API_KEY',
+    });
+  });
+
   it('keeps the original setup timestamp when the choice is edited later', async () => {
     const first = await app.inject({
       method: 'PUT',

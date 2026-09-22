@@ -5752,7 +5752,14 @@
   // missing script must degrade, not throw); this one answers with inert
   // defaults so the sync controls simply stay disabled.
   const NO_CATEGORIZATION = {
-    fieldsFor: () => ({ provider: false, taxonomyModel: false, effort: false, assignmentModel: false }),
+    fieldsFor: () => ({
+      taxonomyProvider: false,
+      taxonomyModel: false,
+      effort: false,
+      assignmentProvider: false,
+      assignmentModel: false,
+    }),
+    passProvider: () => "",
     findProvider: () => null,
     findMethod: () => null,
     modelOptions: () => [],
@@ -6401,7 +6408,7 @@
   /** How each billing model reads to the owner, in one line. */
   const BILLING_HINTS = {
     subscription: "Runs on your Claude subscription - no per-call charge.",
-    "per-token": "Billed per token.",
+    "per-token": "PAID per token, billed to the API key of the model's own provider.",
     local: "Runs locally.",
   };
 
@@ -6454,68 +6461,93 @@
   }
 
   /**
-   * A provider / model / effort selector over the server's catalog. Returns
-   * the mounted root plus the small API `app.js` drives it with.
+   * A provider / model / effort selector over the server's catalog, one
+   * provider per pass (issue #70): the tree can be designed on one provider
+   * and the bookmarks filed on another. Returns the mounted root plus the
+   * small API `app.js` drives it with.
    */
   function createCategorizationForm(container, idPrefix, onChange) {
     const method = buildField(idPrefix, "categorizer", "Method");
-    const provider = buildField(idPrefix, "provider", "Model provider");
+    const taxonomyProvider = buildField(idPrefix, "taxonomyProvider", "Taxonomy provider");
     const taxonomy = buildField(idPrefix, "taxonomyModel", "Taxonomy model");
-    const assignment = buildField(idPrefix, "assignmentModel", "Filing model");
     const effort = buildField(idPrefix, "effort", "Reasoning effort");
+    const assignmentProvider = buildField(idPrefix, "assignmentProvider", "Filing provider");
+    const assignment = buildField(idPrefix, "assignmentModel", "Filing model");
     // Two phases, in the order the app runs them: design the tree, then file
     // each bookmark into it.
     const phase1 = buildPhase(
       idPrefix,
       "phase1",
       "Phase 1 - Taxonomy",
-      "Designs the category tree from all your bookmarks at once. This pass always runs on Claude.",
-      [provider.field, taxonomy.field, effort.field],
+      "Designs the category tree from all your bookmarks at once. This pass always runs on a language model.",
+      [taxonomyProvider.field, taxonomy.field, effort.field],
     );
     const phase2 = buildPhase(
       idPrefix,
       "phase2",
       "Phase 2 - Categorization method",
-      "Files each bookmark into a category of that tree. Choose Claude Code or Jev.",
-      [method.field, assignment.field],
+      "Files each bookmark into a category of that tree - with a language model, or with Jev.",
+      [method.field, assignmentProvider.field, assignment.field],
     );
     container.replaceChildren(phase1, phase2);
 
     let catalog = null;
 
-    function currentProvider() {
-      return categorization().findProvider(catalog, provider.select.value);
+    /** Each pass's fields: its provider select and the model select it drives. */
+    const passes = {
+      taxonomy: { provider: taxonomyProvider, model: taxonomy },
+      assignment: { provider: assignmentProvider, model: assignment },
+    };
+
+    function providerOf(pass) {
+      return categorization().findProvider(catalog, passes[pass].provider.select.value);
+    }
+
+    /** Refill one pass's model list (and, for pass 1, the effort list) for its provider. */
+    function renderPass(pass, values) {
+      const p = providerOf(pass);
+      fillOptions(
+        passes[pass].model.select,
+        categorization().modelOptions(p, pass),
+        (values && values[pass + "Model"]) || "",
+      );
+      if (pass === "taxonomy") {
+        const effortOptions = categorization().effortOptions(p);
+        fillOptions(effort.select, effortOptions, (values && values.effort) || "");
+        effort.field.hidden = effortOptions.length <= 1;
+      }
     }
 
     function renderModelFields(values) {
-      const p = currentProvider();
-      const taxonomyOptions = categorization().modelOptions(p, "taxonomy");
-      const assignmentOptions = categorization().modelOptions(p, "assignment");
-      const effortOptions = categorization().effortOptions(p);
-      fillOptions(taxonomy.select, taxonomyOptions, (values && values.taxonomyModel) || "");
-      fillOptions(assignment.select, assignmentOptions, (values && values.assignmentModel) || "");
-      fillOptions(effort.select, effortOptions, (values && values.effort) || "");
-      effort.field.hidden = effortOptions.length <= 1;
+      renderPass("taxonomy", values);
+      renderPass("assignment", values);
       renderHints();
     }
 
+    /**
+     * The label is already in each select; the hint says what the owner cannot
+     * see there - how a provider bills, and what a model costs and needs. A
+     * per-token choice wears the same billing emphasis as the paid method.
+     */
     function renderHints() {
-      const p = currentProvider();
       const chosenMethod = categorization().findMethod(catalog, method.select.value);
       method.hint.textContent = chosenMethod ? chosenMethod.description : "";
       method.hint.classList.toggle("field-billing", !!chosenMethod && chosenMethod.billing === "per-token");
-      // The label is already in the select; the hint says the thing the
-      // owner cannot see there - how this provider is billed.
-      provider.hint.textContent = p ? BILLING_HINTS[p.billing] || "" : "";
-      taxonomy.hint.textContent = hintFor(categorization().modelOptions(p, "taxonomy"), taxonomy.select.value);
-      assignment.hint.textContent = hintFor(
-        categorization().modelOptions(p, "assignment"),
-        assignment.select.value,
-      );
-      effort.hint.textContent = hintFor(categorization().effortOptions(p), effort.select.value);
-      // Jev files bookmarks without a prompt, so it has no filing model; the
-      // taxonomy pass is always Claude, so Phase 1 never goes away.
-      assignment.field.hidden = !categorization().fieldsFor(method.select.value).assignmentModel;
+      for (const pass of ["taxonomy", "assignment"]) {
+        const p = providerOf(pass);
+        const paid = !!p && p.billing === "per-token";
+        const { provider, model } = passes[pass];
+        provider.hint.textContent = p ? BILLING_HINTS[p.billing] || "" : "";
+        provider.hint.classList.toggle("field-billing", paid);
+        model.hint.textContent = hintFor(categorization().modelOptions(p, pass), model.select.value);
+        model.hint.classList.toggle("field-billing", paid && model.select.value !== "");
+      }
+      effort.hint.textContent = hintFor(categorization().effortOptions(providerOf("taxonomy")), effort.select.value);
+      // Jev files bookmarks without a prompt, so it has no filing provider or
+      // model; the taxonomy pass is always a model, so Phase 1 never goes away.
+      const fields = categorization().fieldsFor(method.select.value);
+      assignmentProvider.field.hidden = !fields.assignmentProvider;
+      assignment.field.hidden = !fields.assignmentModel;
     }
 
     const notify = () => {
@@ -6523,10 +6555,14 @@
       if (onChange) onChange();
     };
     method.select.addEventListener("change", notify);
-    provider.select.addEventListener("change", () => {
-      renderModelFields(null);
-      if (onChange) onChange();
-    });
+    for (const pass of ["taxonomy", "assignment"]) {
+      passes[pass].provider.select.addEventListener("change", () => {
+        // A model id only means something to the provider it came from.
+        renderPass(pass, null);
+        renderHints();
+        if (onChange) onChange();
+      });
+    }
     for (const f of [taxonomy, assignment, effort]) f.select.addEventListener("change", notify);
 
     return {
@@ -6537,28 +6573,36 @@
           (next.methods || []).map((m) => ({ value: m.id, label: m.label, hint: m.description })),
           method.select.value,
         );
-        fillOptions(
-          provider.select,
-          (next.providers || []).map((p) => ({
-            value: p.id,
-            label: p.label,
-            hint: BILLING_HINTS[p.billing] || "",
-          })),
-          provider.select.value,
-        );
+        const providerOptions = (next.providers || []).map((p) => ({
+          value: p.id,
+          label: p.label,
+          hint: BILLING_HINTS[p.billing] || "",
+        }));
+        for (const pass of ["taxonomy", "assignment"]) {
+          const select = passes[pass].provider.select;
+          fillOptions(select, providerOptions, select.value);
+          // `fillOptions` falls back to "" for an unknown value; a provider
+          // select has no empty option, so land on the first (the default).
+          if (!select.value && providerOptions[0]) select.value = providerOptions[0].value;
+        }
         renderModelFields(null);
       },
       setValues(values) {
         if (!values) return;
         method.select.value = values.categorizer || "";
-        provider.select.value = values.provider || "";
+        for (const pass of ["taxonomy", "assignment"]) {
+          const select = passes[pass].provider.select;
+          select.value = categorization().passProvider(values, pass);
+          if (!select.value && select.options[0]) select.value = select.options[0].value;
+        }
         renderModelFields(values);
       },
       getValues() {
         return {
           categorizer: method.select.value,
-          provider: provider.select.value,
+          taxonomyProvider: taxonomyProvider.select.value,
           taxonomyModel: taxonomy.select.value,
+          assignmentProvider: assignmentProvider.select.value,
           assignmentModel: assignment.select.value,
           effort: effort.select.value,
         };
@@ -6822,23 +6866,22 @@
   function renderSetupSync() {
     const settings = (setupState && setupState.settings) || {};
     const catalog = (setupState && setupState.catalog) || {};
-    const provider = categorization().findProvider(catalog, settings.provider);
     const method = categorization().findMethod(catalog, settings.categorizer);
-    const suggested = provider && provider.suggested ? provider.suggested : {};
-    // Show what the dropdowns showed - the model's label, not its raw id.
-    const modelLabel = (id) => {
-      const models = (provider && provider.models) || [];
-      const match = models.find((m) => m.id === id);
-      return match ? match.label : id || "-";
+    /** "Provider label - model label", as the dropdowns showed them (never raw ids). */
+    const passLine = (pass) => {
+      const provider = categorization().findProvider(catalog, categorization().passProvider(settings, pass));
+      if (!provider) return "-";
+      const id = settings[pass + "Model"] || (provider.suggested || {})[pass];
+      const match = (provider.models || []).find((m) => m.id === id);
+      return `${provider.label} - ${match ? match.label : id || "-"}`;
     };
     const rows = [
-      ["Method", method ? method.label : "-"],
-      ["Provider", provider ? provider.label : "-"],
-      ["Taxonomy model", modelLabel(settings.taxonomyModel || suggested.taxonomy)],
-      ["Filing model", categorization().fieldsFor(settings.categorizer).assignmentModel
-        ? modelLabel(settings.assignmentModel || suggested.assignment)
-        : "Not used - Jev walks the tree itself"],
+      ["Taxonomy", passLine("taxonomy")],
       ["Effort", settings.effort || "high"],
+      ["Method", method ? method.label : "-"],
+      ["Filing", categorization().fieldsFor(settings.categorizer).assignmentModel
+        ? passLine("assignment")
+        : "Not used - Jev walks the tree itself"],
     ];
     setupSummaryEl.replaceChildren(
       ...rows.flatMap(([term, value]) => [el("dt", "", term), el("dd", "", String(value))]),

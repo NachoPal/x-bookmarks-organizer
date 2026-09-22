@@ -79,9 +79,14 @@ function writeConfigFile(file: string, dir: string, values: Record<string, strin
 
 type Exec = (cmd: string, args: string[], input?: string) => string;
 
-/** Synchronous by design: credential resolution happens once, at the point of use. */
+/**
+ * Synchronous by design: credential resolution happens once, at the point of use.
+ * stderr is captured rather than inherited: a keychain MISS is the normal case
+ * for most keys, and `security` reports each one on stderr, which otherwise
+ * printed a "could not be found in the keychain" line per lookup at startup.
+ */
 function defaultExec(cmd: string, args: string[], input?: string): string {
-  return execFileSync(cmd, args, { input, encoding: 'utf8' });
+  return execFileSync(cmd, args, { input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
 /** Reads via the platform CLI. `cmdkey` cannot retrieve a stored password, only set/delete one. */

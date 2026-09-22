@@ -34,11 +34,13 @@ It is not a knowledge graph, not multi-user, and not hosted - see the
   user context). Incremental: it pages the bookmark timeline newest-first and stops as soon as it
   reaches a bookmark it has already stored, so previously seen bookmarks are never re-fetched or
   re-categorized.
-- **Categorization** - goes through a pluggable **LLM provider** (`src/llm/`). The default and only
-  provider today is `claude-cli`: your **Claude Code subscription**, driven through the local
+- **Categorization** - goes through a pluggable **LLM provider** (`src/llm/`), chosen **per pass**.
+  The default is `claude-cli`: your **Claude Code subscription**, driven through the local
   `claude` CLI in headless mode - **not** the pay-per-use Anthropic API, so it adds no per-call
-  dollar cost. Select one with `XBOOKMARKS_LLM_PROVIDER` (default `claude-cli`). It works in
-  **two passes**:
+  dollar cost. The optional `pi-ai` provider (see
+  [Other model providers](#other-model-providers-pi-ai-optional-paid)) runs either pass on a model
+  from Anthropic, OpenAI, xAI or OpenRouter **billed per token to your own API key**, or on a local
+  OpenAI-compatible server. It works in **two passes**:
   1. **Taxonomy design (holistic).** All bookmarks are shown to the model at once, as a compact
      list, and it designs one coherent, genuinely nested category tree with complete freedom over
      the labels and structure, targeting a minimum nesting depth (`XBOOKMARKS_MIN_DEPTH`, default
@@ -159,8 +161,8 @@ node dist/index.js serve
 An empty library opens a three-step setup: authorize X, choose how categorization runs, run the
 first sync. After that, the **Sync** button in the top bar fetches new bookmarks and categorizes
 them server-side, showing the same progress the CLI prints and refreshing the viewer when it
-finishes. The categorization choice - the method (Claude Code, or Jev), the model provider,
-the per-pass models and the reasoning effort - is saved in the local database and reused by every
+finishes. The categorization choice - the method (a language model, or Jev), the provider and
+model for EACH pass, and the reasoning effort - is saved in the local database and reused by every
 later sync; change it any time in the Settings panel (the gear).
 
 The server still needs your X app credentials to sync: it resolves `XBOOKMARKS_CLIENT_ID` and
@@ -320,7 +322,8 @@ complete list (it also covers per-role LLM provider overrides and the TypeSafe w
 | `XBOOKMARKS_WEB_PORT`    | `5173`                 | Web viewer port                          |
 | `XBOOKMARKS_AUTH_PORT`   | `3000`                 | One-time OAuth callback port             |
 | `XBOOKMARKS_REDIRECT_URI`| `http://127.0.0.1:3000/callback` | OAuth redirect (must match the X app) |
-| `XBOOKMARKS_LLM_PROVIDER`| `claude-cli`           | LLM provider id (`claude-cli` is the only one so far) |
+| `XBOOKMARKS_LLM_PROVIDER`| `claude-cli`           | LLM provider id for every role: `claude-cli` or `pi-ai` (**paid**, see below) |
+| `XBOOKMARKS_TAXONOMY_PROVIDER` / `XBOOKMARKS_ASSIGNMENT_PROVIDER` | - | Provider for just one pass, overriding `XBOOKMARKS_LLM_PROVIDER` |
 | `XBOOKMARKS_LLM_MODEL`   | -                      | Model for every role, unless a role overrides it |
 | `XBOOKMARKS_MODEL`       | `claude-haiku-4-5`     | Assignment-pass model (Haiku-class); also the summary model if `XBOOKMARKS_SUMMARY_MODEL` is unset AND this is explicitly set |
 | `XBOOKMARKS_TAXONOMY_MODEL` | `claude-opus-4-8`   | Taxonomy-design-pass model (Opus-class)  |
@@ -341,7 +344,7 @@ complete list (it also covers per-role LLM provider overrides and the TypeSafe w
 Model names and effort levels are interpreted by the selected provider, so a provider that has no
 notion of an effort level simply ignores `XBOOKMARKS_TAXONOMY_EFFORT` rather than failing.
 
-The categorizer, provider, per-pass models and taxonomy effort can also be chosen **in the app**
+The categorizer, per-pass providers and models, and taxonomy effort can also be chosen **in the app**
 (Settings → Categorization), which stores them in the local database. Precedence differs by caller,
 deliberately: in the viewer the saved choice always wins, so the panel can never read "Claude model"
 while a stray variable in the shell that launched `serve` quietly bills per token; on the CLI an
@@ -356,7 +359,7 @@ uses); on the CLI it is `XBOOKMARKS_CATEGORIZER`:
 
 | Value | What runs | Cost |
 | --- | --- | --- |
-| `claude-cli` (**default**) | Today's prompt-and-parse categorizer on your Claude subscription | **No per-call charge** |
+| `claude-cli` (**default**) | The prompt-and-parse categorizer, on the assignment pass's LLM provider (your Claude subscription by default) | **No per-call charge** on `claude-cli`; per token on a `pi-ai` model |
 | `typesafe` | A hierarchical beam-search walk on the TypeSafe/Jev API | **Pay per token** (~$0.11 per 1,000 bookmarks) |
 
 **Leave it unset and nothing changes** - categorization stays on the flat-rate subscription and no
@@ -368,6 +371,33 @@ credential chain; without a key it refuses to run rather than falling back silen
 selector says so before you can start a sync). Every run
 prints how the pass is billed before making a call. Note that with it enabled your bookmark text is
 sent to a third-party hosted API, where today it stays on your machine.
+
+## Other model providers: pi-ai (optional, **paid**)
+
+`pi-ai` drives many model APIs through one SDK ([`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai),
+pinned to an exact version). Either categorization pass can use it, independently: in the app pick
+**pi-ai** as that pass's provider in Settings → Categorization; on the CLI set
+`XBOOKMARKS_TAXONOMY_PROVIDER=pi-ai` and/or `XBOOKMARKS_ASSIGNMENT_PROVIDER=pi-ai` (or
+`XBOOKMARKS_LLM_PROVIDER=pi-ai` for both). A pi-ai model id is `<upstream>/<model>`:
+
+| Upstream | Example id | Needs (credential chain) | Cost |
+| --- | --- | --- | --- |
+| `anthropic` | `anthropic/claude-haiku-4-5` | `ANTHROPIC_API_KEY` (an `sk-ant-api…` **API** key) | **Pay per token** |
+| `openai` | `openai/gpt-5-mini` | `OPENAI_API_KEY` | **Pay per token** |
+| `xai` | `xai/grok-4.6` | `XAI_API_KEY` | **Pay per token** |
+| `openrouter` | `openrouter/google/gemini-2.5-flash` | `OPENROUTER_API_KEY` | **Pay per token** |
+| `local` | `local/llama3.1:8b` | `XBOOKMARKS_PIAI_BASE_URL` (e.g. `http://127.0.0.1:11434/v1`), optional `XBOOKMARKS_PIAI_API_KEY` / `XBOOKMARKS_PIAI_CONTEXT_WINDOW` | Local |
+
+The selector offers a short curated list per upstream, each showing its price, context window and the
+key it needs; any other model pi knows works by id through `XBOOKMARKS_TAXONOMY_MODEL` /
+`XBOOKMARKS_MODEL`. It is never a default, a pass without its upstream's key refuses to start (the
+message names the key), and every sync prints each pass's billing before it makes a call.
+
+**Your Claude subscription stays on `claude-cli`.** pi can technically drive a Claude Pro/Max OAuth
+token, but only by presenting itself as Claude Code, and Anthropic's terms reserve subscription
+OAuth for Claude Code and Anthropic's own apps. So `pi-ai` refuses a subscription token
+(`sk-ant-oat…`) in `ANTHROPIC_API_KEY` and never reads `CLAUDE_CODE_OAUTH_TOKEN`; use `claude-cli` for
+subscription-billed passes.
 
 ## Comparing the two categorizers (optional, opt-in, **paid**)
 

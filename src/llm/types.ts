@@ -52,6 +52,13 @@ export interface LlmClient {
   readonly model: string;
   readonly billing: Billing;
   complete(req: CompletionRequest): Promise<CompletionResult>;
+  /**
+   * The model's context window in tokens, as its provider reports it at
+   * runtime - which covers a model chosen by id outside the provider's curated
+   * catalog, where no static value exists. Undefined when the provider cannot
+   * say. Never spends money or quota.
+   */
+  contextWindow?(): Promise<number | undefined>;
 }
 
 /** Parameters an adapter may or may not support; unsupported ones are ignored, never an error. */
@@ -82,7 +89,19 @@ export interface ProviderModel {
   suggestedFor: LlmRole[];
   /** One line on when to pick it, shown as the hint in the settings selector. */
   description?: string;
-  maxInputTokens?: number;
+  /**
+   * Total tokens the model accepts in one request (prompt + output), as the
+   * provider declares it. What a caller that must fit a whole library into
+   * one prompt (the taxonomy pass, issue #109) sizes itself against.
+   */
+  contextWindow?: number;
+  /** Most tokens the model will generate in one response. */
+  maxOutputTokens?: number;
+  /**
+   * The credential this model cannot run without, named - never its value.
+   * Lets the settings selector say what a choice needs before a sync fails.
+   */
+  requiresKey?: string;
 }
 
 export type HealthState = 'ok' | 'unconfigured' | 'unavailable';
@@ -123,8 +142,18 @@ export interface ProviderDefinition {
    * by the adapter that declares them.
    */
   efforts?: readonly string[];
-  /** Cheap availability check. MUST NOT spend money or quota. */
-  check(cfg: ResolvedProviderConfig): Promise<Health>;
+  /**
+   * How a given model is billed, for a provider whose models differ (a hosted
+   * API is per-token, a local endpoint is not). Omitted means `billing` holds
+   * for every model.
+   */
+  billingFor?(model: string): Billing;
+  /**
+   * Cheap availability check. MUST NOT spend money or quota. `model` is the
+   * one the role resolved to, for a provider whose readiness depends on it
+   * (which upstream, and so which key); a provider that does not care ignores it.
+   */
+  check(cfg: ResolvedProviderConfig, opts?: { model?: string }): Promise<Health>;
   create(
     cfg: ResolvedProviderConfig,
     opts: { model: string; params?: ProviderParams },
