@@ -3325,6 +3325,47 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   background: var(--color-surface);
   color: var(--color-text);
 }
+/* The text companion to `.field-select`: the same box, the same states, so a
+   form that mixes a dropdown and a text field reads as one control set. */
+.field-input,
+.field-textarea {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-small);
+  transition: border-color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease);
+}
+.field-textarea {
+  min-height: 4rem;
+  line-height: var(--leading-body);
+  resize: vertical;
+}
+.field-input:hover:not(:disabled),
+.field-textarea:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+.field-input:focus-visible,
+.field-textarea:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+}
+.field-input:disabled,
+.field-textarea:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+  background: var(--color-surface-2);
+}
+.field-input::placeholder,
+.field-textarea::placeholder {
+  color: var(--color-text-disabled);
+}
+
 .field-hint {
   margin: 0;
   color: var(--color-text-muted);
@@ -4351,6 +4392,376 @@ body.is-card-dragging .tree-node {
   .ced-twisty,
   .ced-twisty .ced-chev,
   .ced-add {
+    transition: none;
+  }
+}
+
+/* ============================================================
+   Jev rules (rubric) editor (issue #102)
+
+   One dialog, two views: the saved sets of rules (a radiogroup - exactly one
+   ranks) and the authoring form for one of them. They stack rather than sit
+   side by side because the narrow layout is the constraint, and because the
+   list is a choice while the form is a task - showing both at once would
+   leave neither obviously primary.
+
+   Every control here is free. The one paid action in the whole feature is the
+   ranking run itself, which keeps its own confirmation in `.reset-panel`.
+   ============================================================ */
+.rubric-panel {
+  width: min(38rem, 100%);
+  /* No min-height floor: with one set of rules saved, a floor is dead space
+     between the list and the footer that reads as a half-loaded dialog. The
+     list grows as sets are added, and sets are added rarely enough that a
+     dialog resizing with it is not the twisty-chasing problem the category
+     editor's floor exists to avoid. */
+  max-height: 100%;
+}
+.rubric-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--space-5);
+}
+.rubric-view[hidden] {
+  display: none;
+}
+
+/* --- the preset list ------------------------------------------------------ */
+.rubric-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.rubric-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  transition: border-color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease);
+}
+.rubric-item:hover {
+  background: var(--color-surface-2);
+}
+/* The active set is marked by the checked radio AND a stronger border with a
+   tinted surface - never by color alone. */
+.rubric-item.is-active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.rubric-item:has(.rubric-radio:focus-visible) {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+.rubric-radio {
+  flex: 0 0 auto;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0.2rem 0 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+.rubric-item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.rubric-item-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.rubric-item-meta {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+}
+.rubric-item-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  justify-content: flex-end;
+}
+.rubric-link {
+  min-height: 1.75rem;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-small);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.rubric-link:hover {
+  background: var(--color-accent-soft);
+}
+.rubric-link.is-danger {
+  color: var(--color-danger);
+}
+.rubric-link.is-danger:hover {
+  background: var(--color-danger-soft);
+}
+.rubric-link:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+  background: none;
+}
+/* What switching would leave unranked. A statement, never a button: selecting
+   a set of rules is free, and the re-rank it invites is a separate paid run. */
+.rubric-switch-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+}
+.rubric-switch-note[hidden] {
+  display: none;
+}
+
+/* --- authoring one set ---------------------------------------------------- */
+.rubric-edit-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.rubric-dimensions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.rubric-dimension {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+}
+/* The card's header: which dimension this is, and the controls that act on
+   the whole of it - kept off the field row, where they read as acting on the
+   name input they sat beside. */
+.rubric-dim-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.rubric-dim-position {
+  font-size: var(--text-small);
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.rubric-dim-fields {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.rubric-dim-fields .field {
+  flex: 1 1 10rem;
+}
+/* Specific enough to beat `.rubric-dim-fields .field`'s basis, which is what
+   actually decides a flex item's main size - `width` on its own was silently
+   ignored here. The name takes the rest and both wrap on their own once the
+   two no longer fit, so no width breakpoint is needed. */
+.rubric-dim-fields .rubric-dim-weight {
+  flex: 0 0 7.5rem;
+}
+.rubric-dim-tools {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--space-1);
+}
+.rubric-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+.rubric-icon-btn:hover:not(:disabled) {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+.rubric-icon-btn:active:not(:disabled) {
+  border-color: var(--color-accent);
+}
+.rubric-icon-btn:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+  background: var(--color-surface-2);
+}
+.rubric-icon-btn.is-danger:hover:not(:disabled) {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+.rubric-levels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.rubric-levels-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.rubric-level-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+/* The level's own controls sit level with the first line of its text, not
+   with the middle of a box that grows as the sentence does. */
+.rubric-level-row .rubric-dim-tools {
+  padding-top: 0.3rem;
+}
+/* The level's rank on the scale - lowest first - so a reordered list still
+   reads as an ordered scale rather than as a bag of sentences. */
+.rubric-level-index {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  padding-top: 0.6rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.rubric-level-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Sized to its content by `autoGrow` in app.js; this is the floor for an
+     empty one, and `overflow: hidden` stops a scrollbar flashing in during the
+     frame before the first measurement. */
+  min-height: 2.5rem;
+  overflow: hidden;
+}
+.rubric-add {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-2);
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-3);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-small);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+}
+.rubric-add:hover:not(:disabled) {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+.rubric-add:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+  border-color: var(--color-border);
+  background: none;
+}
+.rubric-plus {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.rubric-footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+}
+.rubric-footer .setup-error {
+  margin: 0;
+  white-space: pre-line;
+}
+.rubric-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.rubric-actions[hidden] {
+  display: none;
+}
+
+/* The rules entry point inside the ranking popover. A rule above it separates
+   the free editor from the paid run it configures. */
+.rank-rules {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.rank-rules-title {
+  margin: 0;
+  font-size: var(--text-small);
+  font-weight: 700;
+}
+
+@media (max-width: 560px) {
+  .rubric-view {
+    padding-inline: var(--space-4);
+  }
+  .rubric-footer {
+    padding-inline: var(--space-4);
+  }
+  .rubric-actions .btn {
+    flex: 1 1 0;
+  }
+  .rubric-item {
+    flex-wrap: wrap;
+  }
+  .rubric-item-actions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rubric-item,
+  .rubric-link,
+  .rubric-icon-btn,
+  .rubric-add,
+  .field-input,
+  .field-textarea {
     transition: none;
   }
 }

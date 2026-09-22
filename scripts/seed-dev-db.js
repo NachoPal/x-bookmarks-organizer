@@ -14,6 +14,10 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { Database } = require('../dist/db/database');
+// The BUILT-IN preset's version tag (issue #102): scores are keyed by rubric,
+// and the viewer only shows the ones belonging to the ACTIVE set of rules, so
+// a seeded verdict written under any other tag would render as unranked.
+const { buildRubric } = require('../dist/rank/rubric');
 
 const dbPath = path.resolve(process.argv[2] || path.join(process.cwd(), 'data', 'dev-seed.db'));
 // Start clean so re-seeding is deterministic.
@@ -401,7 +405,10 @@ all.forEach((bm, i) => {
 });
 
 // Fake ranking verdicts (issue #62), so the score chip, its hover graph and the
-// "Top score" order can be exercised on the seed WITHOUT a paid Jev run. Two
+// "Top score" order can be exercised on the seed WITHOUT a paid Jev run. They
+// are written under the BUILT-IN preset's own version tag (issue #102), which
+// is the set of rules a fresh seed is active on - a row under any other tag
+// would correctly read as "not ranked under these rules". Two
 // thirds of the library is scored and a third is deliberately left unranked -
 // an absent row means "never ranked", never "scored zero", and the viewer must
 // render no chip for it and sort it LAST under Top score.
@@ -432,7 +439,7 @@ all.forEach((bm, i) => {
     confidence: Math.round((0.55 + pseudoRandom(i * 7 + 3) * 0.44) * 100) / 100,
     dimensions,
     model: 'jev-dev-seed',
-    rubricVersion: 'v1-seed',
+    rubricVersion: buildRubric().version,
     scoredAt: new Date().toISOString(),
   });
 });

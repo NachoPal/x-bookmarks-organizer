@@ -224,13 +224,18 @@
   }
 
   /**
-   * The rubric's dimensions (`src/rank/rubric.ts`) in the rubric's own order,
-   * heaviest question first, with the two label registers the two surfaces
-   * need: a terse `short` for the prose sentence a screen reader hears, and a
-   * full `label` for the breakdown graph's row labels.
+   * The BUILT-IN rubric's dimensions (`src/rank/rubric.ts`) in the rubric's own
+   * order, heaviest question first, with the two label registers the two
+   * surfaces need: a terse `short` for the prose sentence a screen reader
+   * hears, and a full `label` for the breakdown graph's row labels.
    *
    * The order lives here rather than being taken from a stored row's key
    * order, so the graph's rows never reshuffle between two bookmarks.
+   *
+   * Since issue #102 the rubric is authorable, so this is a register of NICER
+   * NAMES for the questions this tool ships with, not the set of questions
+   * that can exist: a dimension it has never heard of is labelled from its own
+   * key (see {@link humanizeDimensionId}) rather than dropped.
    */
   const DIMENSIONS = [
     { id: "learning_value", short: "learning", label: "Learning value" },
@@ -246,6 +251,16 @@
   /** Human dimension names, so a tooltip reads as prose rather than as keys. */
   const DIMENSION_LABELS = {};
   for (const dimension of DIMENSIONS) DIMENSION_LABELS[dimension.id] = dimension.short;
+
+  /**
+   * A readable label for a dimension this build has no descriptor for - an
+   * owner-authored one (issue #102): `signal_density` -> "Signal density".
+   * The key itself is what the stored breakdown is keyed by and is untouched.
+   */
+  function humanizeDimensionId(id) {
+    const words = String(id == null ? "" : id).replace(/[_-]+/g, " ").trim();
+    return words ? words.charAt(0).toUpperCase() + words.slice(1) : String(id);
+  }
 
   function clamp01(value) {
     return Math.min(1, Math.max(0, value));
@@ -296,8 +311,8 @@
         const descriptor = DIMENSION_BY_ID[id];
         return {
           id,
-          label: descriptor ? descriptor.label : id,
-          short: descriptor ? descriptor.short : id,
+          label: descriptor ? descriptor.label : humanizeDimensionId(id),
+          short: descriptor ? descriptor.short : humanizeDimensionId(id).toLowerCase(),
           value,
           rating: dimensionRating(value),
           percent: Math.round(value * 100),
@@ -318,7 +333,9 @@
   function describeScore(score) {
     const breakdown = scoreBreakdown(score);
     if (breakdown === null) return null;
-    const parts = [`Learning value ${breakdown.rating} of 10`];
+    // "Ranking score", not "Learning value": since issue #102 the owner writes
+    // the questions, so the chip cannot claim to know what the number measures.
+    const parts = [`Ranking score ${breakdown.rating} of 10`];
     if (breakdown.confidencePercent !== null) parts.push(`confidence ${breakdown.confidencePercent}%`);
     if (breakdown.dimensions.length > 0) {
       parts.push(breakdown.dimensions.map((dimension) => `${dimension.short} ${dimension.rating}`).join(", "));
@@ -337,6 +354,7 @@
     SCORE_UNAVAILABLE_MESSAGE,
     DIMENSIONS,
     DIMENSION_LABELS,
+    humanizeDimensionId,
     isKnownSortOrder,
     isKnownSortDirection,
     readSortOrder,
