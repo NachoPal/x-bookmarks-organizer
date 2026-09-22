@@ -2,6 +2,7 @@ import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 import sanitizeHtml from 'sanitize-html';
 import { isXArticleUrl } from '../x/article';
+import { createHostPolicy, type HostPolicy } from './host-policy';
 import type { ArticleRecord } from '../types';
 
 // linkedom's type declarations only expose `parseHTML(html)`, but its runtime
@@ -566,29 +567,81 @@ export function extractInterstitialRedirect(html: string, baseUrl: string): stri
 }
 
 /**
+ * How many HTTP redirects to walk. Counted separately from the interstitial
+ * budget below: a chain can legitimately use both (t.co 301 -> a bounce page).
+ */
+const MAX_HTTP_REDIRECTS = 10;
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * The absolute URL a 30x response points at, or null when the response is not
+ * a followable redirect. Needed because the fetcher follows redirects itself
+ * (`redirect: 'manual'`) so the host policy sees every hop.
+ */
+function redirectTarget(res: Response, currentUrl: string): string | null {
+  if (!REDIRECT_STATUSES.has(res.status)) return null;
+  const location = res.headers.get('location');
+  if (!location) return null;
+  try {
+    const resolved = new URL(location, currentUrl);
+    return resolved.href === currentUrl ? null : resolved.href;
+  } catch {
+    return null;
+  }
+}
+
+export interface HttpArticleFetcherOptions {
+  /**
+   * The outbound host policy. Defaults to {@link createHostPolicy}, which
+   * refuses private/loopback destinations unless the owner opted out. Tests
+   * inject one so no DNS query leaves the machine.
+   */
+  hostPolicy?: HostPolicy;
+}
+
+/**
  * Real fetcher: downloads the page (bounded timeout, realistic UA, HTTP *and*
- * interstitial redirects followed) and extracts both its preview card and its
- * readable body.
+ * interstitial redirects followed, every hop checked against the outbound host
+ * policy) and extracts both its preview card and its readable body.
  *
  * Every failure path (timeout, network error, non-HTML, non-2xx, resolves back
  * to X, unparsable) returns a typed `failed` result rather than throwing, so
  * callers never need a try/catch to stay safe.
  */
 export class HttpArticleFetcher implements ArticleFetcher {
-  constructor(private readonly timeoutMs: number = FETCH_TIMEOUT_MS) {}
+  private readonly hostPolicy: HostPolicy;
+
+  constructor(
+    private readonly timeoutMs: number = FETCH_TIMEOUT_MS,
+    options: HttpArticleFetcherOptions = {},
+  ) {
+    this.hostPolicy = options.hostPolicy ?? createHostPolicy();
+  }
 
   async fetch(url: string): Promise<ArticleExtractionResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       let currentUrl = url;
-      for (let hop = 0; ; hop++) {
+      let interstitialHops = 0;
+      let redirectHops = 0;
+      for (;;) {
         const requestedHost = safeHostname(currentUrl);
         if (requestedHost && NON_ARTICLE_HOSTS.has(requestedHost)) return nonArticleResult(currentUrl);
 
+        // Applied to EVERY hop, which is the whole point of walking redirects
+        // by hand below: a public page may not bounce the fetcher at an
+        // address the owner's browser would never have been asked to reach.
+        const refusal = await this.hostPolicy.check(currentUrl);
+        if (refusal) {
+          return { status: 'failed', reason: refusal, preview: null, resolvedUrl: currentUrl };
+        }
+
         const res = await fetch(currentUrl, {
           signal: controller.signal,
-          redirect: 'follow',
+          // `follow` would hide the intermediate hops from the policy above.
+          redirect: 'manual',
           headers: {
             'User-Agent': USER_AGENT,
             Accept: 'text/html,application/xhtml+xml',
@@ -596,6 +649,23 @@ export class HttpArticleFetcher implements ArticleFetcher {
           },
         });
         const landedUrl = res.url || currentUrl;
+
+        const redirectTo = redirectTarget(res, currentUrl);
+        if (redirectTo) {
+          // Nothing reads a redirect's body; release the socket rather than
+          // leaving one dangling per hop for the whole of a sync.
+          await res.body?.cancel().catch(() => {});
+          if (++redirectHops > MAX_HTTP_REDIRECTS) {
+            return {
+              status: 'failed',
+              reason: 'This link redirects too many times to follow.',
+              preview: null,
+              resolvedUrl: currentUrl,
+            };
+          }
+          currentUrl = redirectTo;
+          continue;
+        }
 
         if (!res.ok) {
           return {
@@ -620,8 +690,10 @@ export class HttpArticleFetcher implements ArticleFetcher {
         }
 
         const html = await res.text();
-        const bounce = hop < MAX_INTERSTITIAL_HOPS ? extractInterstitialRedirect(html, landedUrl) : null;
+        const bounce =
+          interstitialHops < MAX_INTERSTITIAL_HOPS ? extractInterstitialRedirect(html, landedUrl) : null;
         if (bounce) {
+          interstitialHops++;
           currentUrl = bounce;
           continue;
         }

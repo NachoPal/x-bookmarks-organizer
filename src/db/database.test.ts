@@ -973,3 +973,47 @@ describe('Database.getCategoryById (issue #92)', () => {
     }
   });
 });
+
+/**
+ * Security review finding 7. The database holds the long-lived X OAuth refresh
+ * token in plaintext alongside every bookmark, so it is a secret of the same
+ * class as `credentials.json` - which the credential chain writes `0600` and
+ * refuses to read when it is looser. At the default umask it was `0644`.
+ */
+describe('database file permissions', () => {
+  const skip = process.platform === 'win32';
+
+  it.skipIf(skip)('creates the database owner-only, inside an owner-only directory', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbo-mode-'));
+    const dbPath = path.join(dir, 'data', 'bookmarks.db');
+    const db = new Database(dbPath);
+    try {
+      expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.dirname(dbPath)).mode & 0o777).toBe(0o700);
+    } finally {
+      db.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(skip)('tightens an existing database that was created world-readable', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbo-mode-'));
+    const dbPath = path.join(dir, 'bookmarks.db');
+    new Database(dbPath).close();
+    fs.chmodSync(dbPath, 0o644);
+
+    const db = new Database(dbPath);
+    try {
+      expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
+    } finally {
+      db.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still opens an in-memory database', () => {
+    const db = new Database(':memory:');
+    expect(db.getBookmarkCount()).toBe(0);
+    db.close();
+  });
+});

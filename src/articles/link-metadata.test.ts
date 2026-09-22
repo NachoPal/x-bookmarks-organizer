@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { buildArticleContext, type ArticleMetadataCache } from './link-metadata';
 import { HttpArticleFetcher, type ArticleFetcher, type ArticleExtractionResult } from './fetch-article';
+import { createHostPolicy } from './host-policy';
 import type { ArticleLinkMetadata, RawBookmark } from '../types';
 
 function bm(postId: string, text: string): RawBookmark {
@@ -294,7 +295,9 @@ describe('buildArticleContext', () => {
       ),
     );
     const cache = new FakeCache();
-    const fetcher = new HttpArticleFetcher(20);
+    // Host policy opened so the timeout, not a DNS lookup of `example.com`, is
+    // what this exercises - and so no query leaves the machine.
+    const fetcher = new HttpArticleFetcher(20, { hostPolicy: createHostPolicy({ allowPrivateAddresses: true }) });
     const context = await buildArticleContext(
       [bm('1', 'https://example.com/slow')],
       fetcher,

@@ -299,12 +299,74 @@ function parseNonNegInt(raw: unknown, fallback: number): number {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+/** 403 bodies for the guard below, so the client can tell the two apart. */
+export const UNEXPECTED_HOST_MESSAGE =
+  'Unexpected Host header. The viewer only answers requests addressed to its own loopback address.';
+export const CROSS_ORIGIN_MESSAGE = 'Cross-origin request refused.';
+
+/** The loopback names a browser can legitimately address this server by. */
+function allowedHostsFor(port: number): Set<string> {
+  const names = ['127.0.0.1', 'localhost', '[::1]'];
+  const hosts = names.map((name) => `${name}:${port}`);
+  // A browser omits the port when it is the scheme's default.
+  if (port === 80) hosts.push(...names);
+  return new Set(hosts);
+}
+
+/**
+ * Refuse any request that was not addressed to this server's own loopback
+ * address (security review finding 2).
+ *
+ * Binding to `127.0.0.1` keeps a LAN peer out but does nothing against DNS
+ * rebinding: a page on `evil.example` whose name is re-resolved to `127.0.0.1`
+ * becomes SAME-ORIGIN with the viewer, which makes CORS irrelevant and hands
+ * it an API with no authentication - including the irreversible
+ * `DELETE /api/categories/:id`. A rebound request still carries the attacker's
+ * hostname in `Host`, so checking it is what closes that door.
+ *
+ * The `Origin` half covers the state-changing routes a plain cross-origin form
+ * can reach without a preflight (the body-less `POST /api/sync` and
+ * `POST /api/x-login` of findings 5/6). The app's own `app.js` calls are
+ * unaffected: their `Host` is the loopback the server is listening on, and
+ * their `Origin`, when the browser sends one, is that same loopback.
+ *
+ * The port comes from the socket the server actually bound, so an overridden
+ * `XBOOKMARKS_WEB_PORT` and a test's ephemeral port are both correct with no
+ * wiring. A server that is not listening has no socket to rebind - that is a
+ * `buildServer(db)` driven by `app.inject()` in tests - so the guard stands
+ * down rather than inventing a port it cannot know.
+ */
+function installLocalOriginGuard(app: FastifyInstance): void {
+  app.addHook('onRequest', async (req, reply) => {
+    const address = app.server.address();
+    if (address === null || typeof address === 'string') return;
+    const allowed = allowedHostsFor(address.port);
+
+    if (!allowed.has((req.headers.host ?? '').toLowerCase())) {
+      return reply.code(403).send({ error: UNEXPECTED_HOST_MESSAGE });
+    }
+
+    const origin = req.headers.origin;
+    if (!origin || req.method === 'GET' || req.method === 'HEAD') return;
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      return reply.code(403).send({ error: CROSS_ORIGIN_MESSAGE });
+    }
+    if (!allowed.has(originHost)) {
+      return reply.code(403).send({ error: CROSS_ORIGIN_MESSAGE });
+    }
+  });
+}
+
 /**
  * Build the local web viewer server. All state comes from the injected
  * {@link Database}; the server itself is stateless and safe to restart.
  */
 export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
+  installLocalOriginGuard(app);
   const pageSize = opts.pageSize && opts.pageSize > 0 ? opts.pageSize : DEFAULT_PAGE_SIZE;
   const articleFetcher = opts.articleFetcher ?? new HttpArticleFetcher();
   const summaryGenerator = opts.summaryGenerator;
@@ -775,8 +837,10 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
 
   // Wipe the LOCAL library back to the never-synced state (the next sync
   // re-pulls everything). Destructive, so the body must carry an explicit
-  // `confirm: true`, and it is refused mid-sync. Keeps the X token and the
-  // saved categorization choice; never touches anything on X.
+  // `confirm: true`, and it is refused mid-sync. Keeps every piece of the
+  // owner's configuration - the X token, the saved categorization choice, the
+  // authored rubric presets and the root order (see `Database.resetLibrary`);
+  // never touches anything on X.
   app.post<{ Body?: { confirm?: unknown } }>('/api/reset', async (req, reply) => {
     if ((req.body ?? {}).confirm !== true) {
       return reply.code(400).send({ error: 'Send { "confirm": true } to reset the local library.' });

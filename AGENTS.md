@@ -1206,6 +1206,52 @@ pure DB reads via `GET /api/bookmarks/:id/content` and a paged `GET /api/content
 "Structured bookmark content" section for the exact shape); no ranker logic lives here - this is
 data plumbing only.
 
+## Local-trust hardening (security review, 2026-09-22)
+
+Four invariants from an audit of `main` at `03f016e`. All four are about the app trusting its
+ENVIRONMENT, which is where a localhost tool is least defended - the attacker is either the content
+it ingests by design or a page the owner already has open.
+
+- **Every outbound article fetch goes through the host policy** (`src/articles/host-policy.ts`).
+  A bookmarked link is attacker-chosen content that `runIngest` fetches automatically, so the
+  fetcher refuses any destination resolving into loopback/private/link-local/unique-local/CGNAT
+  space, in IPv4, IPv6 and the IPv4-mapped forms of both. `HttpArticleFetcher` therefore walks
+  redirects ITSELF (`redirect: 'manual'`) and re-checks at the top of every loop iteration: the
+  initial URL, each HTTP hop and each `<meta refresh>` interstitial hop. `redirect: 'follow'` would
+  hide the intermediate hops from the check and is what made the bounce exploitable - do not go
+  back to it. A hostname is refused when ANY resolved record is disallowed; an UNRESOLVABLE name is
+  allowed through so the fetch reports its own network error. The one escape hatch is
+  `XBOOKMARKS_ALLOW_PRIVATE_FETCH` (off by default), for an owner indexing an intranet.
+  `HttpArticleFetcherOptions.hostPolicy` is the offline test seam - `createHostPolicy` takes an
+  injectable `lookup`, which is how the suite exercises the real policy with zero DNS queries;
+  never let a test resolve a real name. An `undici` `Agent` with a `connect.lookup` would also
+  close the check-vs-connect window, but `undici` is only present transitively via the `jsdom`
+  DEVdependency, so it is not importable from production code.
+- **The viewer refuses a foreign `Host` or `Origin`** (`installLocalOriginGuard` in
+  `src/web/server.ts`). Binding to `127.0.0.1` stops a LAN peer but not DNS rebinding, after which
+  the attacker's page is SAME-ORIGIN and CORS is irrelevant - with no auth anywhere, that reaches
+  the irreversible `DELETE /api/categories/:id`. The allowed set is `127.0.0.1|localhost|[::1]`
+  at the port the server ACTUALLY BOUND (`app.server.address()`), so an overridden
+  `XBOOKMARKS_WEB_PORT` and a test's ephemeral port both work with no wiring. A server that never
+  listened has no socket to rebind, so the guard stands down - that is what keeps the
+  `buildServer(db)` + `app.inject()` route tests working. The `Origin` half also covers the
+  body-less `POST /api/sync` / `POST /api/x-login` a cross-origin form could otherwise submit.
+- **A reset is a LIBRARY wipe, never a configuration wipe** (`Database.resetLibrary`). `run_state`
+  is cleared by naming the keys that ARE library state (`RESET_CLEARED_STATE_KEYS`: the sync cursor
+  and last-synced stamp), so every other key - `rubric_presets`, `root_order`, `app_settings`, the
+  X refresh token - survives by DEFAULT. The old keep-list destroyed the owner's authored rubric
+  presets, which also reverted the active preset and re-flagged the whole library as unranked
+  (scores are keyed by rubric version, issue #102) - an invitation to pay to re-rank under rules
+  the owner never chose. A new `run_state` key has to opt IN to being cleared.
+- **The database file is `0600` in a `0700` directory** (`restrictToOwner`, the `Database`
+  constructor). It holds the long-lived X refresh token in plaintext beside every bookmark, so it
+  is a secret of the same class as `credentials.json`, which the credential chain already writes
+  `0600` and refuses to read when looser. Best-effort (try/catch): Windows has no such mode.
+
+Deferred on purpose: the `.env` read from `process.cwd()` (`src/creds/resolve.ts`) lets a directory
+the owner runs `xbo` from redirect `XBOOKMARKS_CLAUDE_BIN` at an arbitrary binary. It is a separate
+pass because it changes how every credential resolves.
+
 ## Live vs. tested
 
 The live OAuth browser consent and the vault-injected run are performed by the operator. Automated

@@ -8,6 +8,8 @@ import type { CredentialStore, ResolvedCredential } from '../creds/resolve';
 import type { IngestSummary } from '../ingest';
 import type { SyncJob } from './sync';
 import type { RawBookmark } from '../types';
+import { DEFAULT_PRESET_ID } from '../rank/presets';
+import { ROOT_ORDER_KEY } from '../categorize/tree';
 
 const catalog = buildSettingsCatalog();
 
@@ -409,6 +411,60 @@ describe('POST /api/reset', () => {
     expect(setup.bookmarkCount).toBe(0);
     expect(setup.x.connected).toBe(true);
     expect(setup.sync.lastSyncedAt).toBeNull();
+  });
+
+  /**
+   * Security review finding 4. A reset is a LIBRARY wipe, so the owner's
+   * hand-authored ranking rules and root order have to come through it - the
+   * old keep-list destroyed both, which also reverted the active rubric and
+   * re-flagged every score in the library as unranked. Driven through the real
+   * HTTP API, the shape of the review's `repro-reset-e2e.ts`.
+   */
+  it("keeps the owner's authored rubric presets and root order across a reset", async () => {
+    populate();
+    db.getOrCreateCategory('Tools', null, 'now');
+    app = buildServer(db);
+    await app.ready();
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/rubric/presets',
+      payload: {
+        name: 'My hand-written rubric',
+        dimensions: [
+          { id: 'depth', instructions: 'How deep is this post?', levels: ['shallow', 'deep'], weight: 1 },
+        ],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const activeId = created.json().rubric.activeId;
+    expect(activeId).not.toBe(DEFAULT_PRESET_ID);
+
+    const roots = db.getAllCategories().filter((c) => c.parentId === null);
+    const order = await app.inject({
+      method: 'PUT',
+      url: '/api/categories/root-order',
+      payload: { ids: [...roots.map((c) => c.id)].reverse() },
+    });
+    expect(order.statusCode).toBe(200);
+    const storedOrder = db.getState(ROOT_ORDER_KEY);
+    expect(storedOrder).toBeTruthy();
+
+    const reset = await app.inject({ method: 'POST', url: '/api/reset', payload: { confirm: true } });
+    expect(reset.statusCode).toBe(200);
+
+    // The library really is gone...
+    expect(db.getBookmarkCount()).toBe(0);
+    expect(db.getAllCategories()).toEqual([]);
+    expect(db.getNewestSeenPostId()).toBeUndefined();
+
+    // ...and every piece of the owner's configuration survived it.
+    const rubric = (await app.inject({ method: 'GET', url: '/api/rubric' })).json();
+    expect(rubric.presets.map((p: { name: string }) => p.name)).toContain('My hand-written rubric');
+    expect(rubric.activeId).toBe(activeId);
+    expect(db.getState(ROOT_ORDER_KEY)).toBe(storedOrder);
+    expect(db.getState('app_settings')).toBe('{"keep":true}');
+    expect(db.getRefreshToken()).toBe('keep-me');
   });
 
   it('is refused while a sync is running, and forgets a finished sync afterwards', async () => {
