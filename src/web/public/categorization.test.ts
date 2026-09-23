@@ -410,7 +410,7 @@ describe('catalog sources (the full pi catalog)', () => {
     expect(XBO.sourceNotice(null, {})).toEqual({ text: '', state: 'none' });
   });
 
-  it('flags a source with no model picked (blocks a save) and a missing key (does not)', () => {
+  it('flags a source with no model picked, and a missing key - both block a save', () => {
     const values = {
       categorizer: 'claude-cli',
       taxonomyProvider: 'pi-ai',
@@ -423,7 +423,7 @@ describe('catalog sources (the full pi catalog)', () => {
     const problems = XBO.passProblems(values, piCatalog, {});
     expect(problems).toEqual([
       { text: 'Phase 1: choose a model from OpenCode Zen.', blocksSave: true },
-      expect.objectContaining({ blocksSave: false }),
+      expect.objectContaining({ blocksSave: true }),
     ]);
     expect(problems[1].text).toMatch(/^Phase 2 runs on OpenRouter, which needs OPENROUTER_API_KEY\./);
 
@@ -458,10 +458,11 @@ describe('hasSaveBlocker', () => {
       assignmentModel: 'openrouter/google/gemini-2.5-flash',
       assignmentSource: 'openrouter',
     };
-    expect(XBO.hasSaveBlocker(values, piCatalog)).toBe(true);
+    const keys = { OPENROUTER_API_KEY: { present: true } };
+    expect(XBO.hasSaveBlocker(values, piCatalog, keys)).toBe(true);
   });
 
-  it('never disables Save for a missing key alone - only a genuinely invalid selection does', () => {
+  it('disables Save when a chosen provider/source needs a key the server reports absent (reversed from #120)', () => {
     const values = {
       categorizer: 'claude-cli',
       taxonomyProvider: 'pi-ai',
@@ -471,12 +472,39 @@ describe('hasSaveBlocker', () => {
       assignmentModel: 'openrouter/google/gemini-2.5-flash',
       assignmentSource: 'openrouter',
     };
-    // ANTHROPIC_API_KEY / OPENROUTER_API_KEY are both absent here, but every
-    // pass names a real model, so this is a valid, saveable choice.
-    expect(XBO.hasSaveBlocker(values, piCatalog)).toBe(false);
+    // Both passes name a real model, but neither key is present.
+    expect(XBO.hasSaveBlocker(values, piCatalog, {})).toBe(true);
   });
 
-  it('re-enables the instant the selection becomes valid again', () => {
+  it('re-enables once the missing key becomes present', () => {
+    const values = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'anthropic/claude-opus-4-8',
+      taxonomySource: 'anthropic',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'openrouter/google/gemini-2.5-flash',
+      assignmentSource: 'openrouter',
+    };
+    expect(XBO.hasSaveBlocker(values, piCatalog, {})).toBe(true);
+    const keys = { ANTHROPIC_API_KEY: { present: true }, OPENROUTER_API_KEY: { present: true } };
+    expect(XBO.hasSaveBlocker(values, piCatalog, keys)).toBe(false);
+  });
+
+  it('re-enables once a keyless provider (claude-cli) is chosen instead', () => {
+    const values = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'anthropic/claude-opus-4-8',
+      taxonomySource: 'anthropic',
+      assignmentProvider: 'claude-cli',
+    };
+    expect(XBO.hasSaveBlocker(values, piCatalog, {})).toBe(true);
+    const switched = { ...values, taxonomyProvider: 'claude-cli', taxonomyModel: 'claude-opus-4-8' };
+    expect(XBO.hasSaveBlocker(switched, piCatalog, {})).toBe(false);
+  });
+
+  it('re-enables the instant an incomplete selection becomes valid again', () => {
     const blocked = {
       categorizer: 'claude-cli',
       taxonomyProvider: 'pi-ai',
@@ -484,13 +512,56 @@ describe('hasSaveBlocker', () => {
       taxonomySource: 'opencode',
       assignmentProvider: 'claude-cli',
     };
-    expect(XBO.hasSaveBlocker(blocked, piCatalog)).toBe(true);
-    const fixed = { ...blocked, taxonomySource: 'anthropic' };
-    expect(XBO.hasSaveBlocker(fixed, piCatalog)).toBe(false);
+    expect(XBO.hasSaveBlocker(blocked, piCatalog, {})).toBe(true);
+    const fixed = {
+      ...blocked,
+      taxonomySource: 'anthropic',
+      taxonomyModel: 'anthropic/claude-opus-4-8',
+    };
+    const keys = { ANTHROPIC_API_KEY: { present: true } };
+    expect(XBO.hasSaveBlocker(fixed, piCatalog, keys)).toBe(false);
   });
 
-  it('is false whenever no pass uses a catalog provider', () => {
+  it('is false whenever no pass uses a catalog provider - claude-cli is never blocked for a key', () => {
     const values = { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' };
+    expect(XBO.hasSaveBlocker(values, catalog, {})).toBe(false);
+  });
+});
+
+describe('providerAvailability (claude-cli, issue #35 generalization)', () => {
+  // claude-cli has no credential-chain key, so `providerKeys` cannot say
+  // whether it can run - `providerAvailability` carries its own `check()`
+  // result instead (the CLI installed and logged in, or not).
+  const values = { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' };
+
+  it('blocks Save when the CLI check reports unavailable, with the reason in the note', () => {
+    const availability = { 'claude-cli': { available: false, reason: 'The `claude` CLI is not installed.' } };
+    const problems = XBO.passProblems(values, catalog, {}, availability);
+    expect(problems).toEqual([
+      {
+        text: 'Phase 1 runs on Claude Code subscription, which is not available right now: The `claude` CLI is not installed.',
+        blocksSave: true,
+      },
+      {
+        text: 'Phase 2 runs on Claude Code subscription, which is not available right now: The `claude` CLI is not installed.',
+        blocksSave: true,
+      },
+    ]);
+    expect(XBO.hasSaveBlocker(values, catalog, {}, availability)).toBe(true);
+  });
+
+  it('never blocks Save when the check reports available, or when no availability info is given at all', () => {
+    const available = { 'claude-cli': { available: true } };
+    expect(XBO.passProblems(values, catalog, {}, available)).toEqual([]);
+    expect(XBO.hasSaveBlocker(values, catalog, {}, available)).toBe(false);
+    // No `providerAvailability` argument at all (e.g. an older caller) must
+    // never block - this is additive, not a new default requirement.
     expect(XBO.hasSaveBlocker(values, catalog)).toBe(false);
+  });
+
+  it('only judges the pass whose provider is actually reported', () => {
+    const values2 = { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' };
+    const availability = { 'some-other-provider': { available: false, reason: 'irrelevant' } };
+    expect(XBO.passProblems(values2, catalog, {}, availability)).toEqual([]);
   });
 });

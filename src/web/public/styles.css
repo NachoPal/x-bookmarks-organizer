@@ -4985,15 +4985,17 @@ body.is-card-dragging .tree-node {
   display: none;
 }
 
-/* The rules entry point inside the ranking popover. A rule above it separates
-   the free editor from the paid run it configures. */
+/* The rules entry point inside the ranking popover - FIRST in the panel
+   (above "Rank now"), so the owner sees which rule a run would score against
+   before reaching the button that spends against it. A rule below it
+   separates the free editor from the paid run it configures. */
 .rank-rules {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   width: 100%;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
 }
 .rank-rules-title {
   margin: 0;

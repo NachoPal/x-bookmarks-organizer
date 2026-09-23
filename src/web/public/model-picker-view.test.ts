@@ -48,7 +48,13 @@ interface Sent {
   body: any;
 }
 
-async function boot(opts: { failSources?: string[] } = {}) {
+async function boot(
+  opts: {
+    failSources?: string[];
+    providerKeys?: Record<string, { present: boolean; source?: string }>;
+    providerAvailability?: Record<string, { available: boolean; reason?: string }>;
+  } = {},
+) {
   const sent: Sent[] = [];
   const failing = new Set(opts.failSources ?? []);
   const dom = new JSDOM(read("index.html").replace(/<script[^>]*><\/script>/g, ""), {
@@ -89,7 +95,12 @@ async function boot(opts: { failSources?: string[] } = {}) {
           xClientId: { present: true },
           xClientSecret: { present: true },
           typesafeApiKey: { present: false },
-          providerKeys: { OPENCODE_API_KEY: { present: false }, ANTHROPIC_API_KEY: { present: true, source: "env" } },
+          providerKeys: {
+            OPENCODE_API_KEY: { present: false },
+            ANTHROPIC_API_KEY: { present: true, source: "env" },
+            ...opts.providerKeys,
+          },
+          providerAvailability: { "claude-cli": { available: true }, ...opts.providerAvailability },
         },
         x: { connected: true, canConnect: true, login: { state: "idle", error: null } },
         sync: { available: true, lastSyncedAt: null, status: null },
@@ -161,7 +172,12 @@ describe("the searchable model picker", () => {
   });
 
   it("filters as the owner types, picks with the keyboard, and saves <source>/<model> for that pass", async () => {
-    const { $, change, key, type, options, sent } = await boot();
+    // OpenCode's key is present here so Save is not blocked by it - this
+    // test is about the picker's typing/keyboard/save mechanics, not the
+    // missing-key gate (covered separately below).
+    const { $, change, key, type, options, sent } = await boot({
+      providerKeys: { OPENCODE_API_KEY: { present: true, source: "env" } },
+    });
     change("settings-taxonomyProvider", "pi-ai");
     change("settings-taxonomySource", "opencode");
     await tick();
@@ -239,7 +255,7 @@ describe("the searchable model picker", () => {
     expect(saveBtn.hasAttribute("aria-describedby")).toBe(false);
   });
 
-  it("never disables Save for a missing key alone - only picking an actual model matters", async () => {
+  it("disables Save while a chosen model's key is missing, even once a real model is picked (reversed from #120)", async () => {
     const { $, change, key, type } = await boot();
     change("settings-taxonomyProvider", "pi-ai");
     change("settings-taxonomySource", "opencode");
@@ -250,10 +266,52 @@ describe("the searchable model picker", () => {
     key(input, "Enter");
     await tick();
 
-    // OPENCODE_API_KEY is still missing - a run-time concern - but a real
-    // model is now chosen, so the selection itself is valid.
+    // A real model is chosen, but OPENCODE_API_KEY is still missing - the
+    // owner's reversal of #120 means that alone keeps Save disabled, with
+    // the same note explaining which key is needed.
     expect($("settings-taxonomySource-hint").dataset.key).toBe("missing");
+    const saveBtn = $<HTMLButtonElement>("settings-save");
+    expect(saveBtn.disabled).toBe(true);
+    expect($("settings-categorization-note").textContent).toContain("Phase 1 runs on OpenCode Zen, which needs OPENCODE_API_KEY");
+    expect(saveBtn.getAttribute("aria-describedby")).toBe("settings-categorization-note");
+
+    // Once the key becomes available, the same selection is saveable.
+    change("settings-taxonomySource", "anthropic");
+    await tick();
+    expect(saveBtn.disabled).toBe(false);
+  });
+
+  it("never blocks Save for claude-cli on a KEY - its source needs none - as long as its own check() is ok", async () => {
+    const { $, change } = await boot();
+    // claude-cli is the default for both passes; its Anthropic source needs
+    // no key (it runs on the local CLI's own subscription), so Save must
+    // stay enabled with no missing-key note.
+    expect($<HTMLSelectElement>("settings-taxonomyProvider").value).toBe("claude-cli");
+    expect($("settings-taxonomySource-hint").dataset.key).toBe("none");
     expect($<HTMLButtonElement>("settings-save").disabled).toBe(false);
+
+    change("settings-taxonomySource", "anthropic");
+    await tick();
+    expect($<HTMLButtonElement>("settings-save").disabled).toBe(false);
+  });
+
+  it("disables Save for claude-cli when its OWN check() reports unavailable (issue #35 generalization)", async () => {
+    // claude-cli has no credential-chain key, so a missing key can never be
+    // the signal here - it is the CLI's own availability probe instead.
+    const { $, sent } = await boot({
+      providerAvailability: { "claude-cli": { available: false, reason: "The `claude` CLI is not installed." } },
+    });
+    expect($<HTMLSelectElement>("settings-taxonomyProvider").value).toBe("claude-cli");
+    const saveBtn = $<HTMLButtonElement>("settings-save");
+    expect(saveBtn.disabled).toBe(true);
+    expect($("settings-categorization-note").textContent).toContain(
+      "Phase 1 runs on Claude Code subscription (local `claude` CLI), which is not available right now",
+    );
+    expect($("settings-categorization-note").textContent).toContain("The `claude` CLI is not installed.");
+
+    saveBtn.click();
+    await tick();
+    expect(sent.some((s) => s.method === "PUT")).toBe(false);
   });
 
   it("shows the load error with a Retry, and never blocks choosing another source", async () => {

@@ -7280,23 +7280,35 @@
   /**
    * Show why the currently selected method cannot run, or hide the note.
    * `saveBtn`, when given, is kept DISABLED for as long as the selection
-   * would be rejected on save (a save-blocking error, e.g. a catalog source
-   * picked with no model chosen yet) - never for a missing key alone, which
-   * is a run-time concern the choice still saves fine under. The note is
-   * what states the reason in visible text; `aria-describedby` ties the
-   * button to it for the same reason while it is disabled.
+   * would be rejected on save - a save-blocking error (e.g. a catalog source
+   * picked with no model chosen yet), a chosen provider/source whose
+   * required key is missing, or a keyless provider (`claude-cli`) whose own
+   * `check()` failed (reversed from #120: the owner now wants Save disabled
+   * for all of these). The note is what states the reason in visible text;
+   * `aria-describedby` ties the button to it for the same reason while it is
+   * disabled.
    */
   function updateFormNote(form, noteEl, saveBtn) {
     if (!form || !noteEl || !setupState) return;
     const values = form.getValues();
     const credentials = setupState.credentials || {};
     const blocker = categorization().methodBlocker(setupState.catalog, values.categorizer, credentials);
-    const problems = categorization().passProblems(values, setupState.catalog, credentials.providerKeys);
+    const problems = categorization().passProblems(
+      values,
+      setupState.catalog,
+      credentials.providerKeys,
+      credentials.providerAvailability,
+    );
     const lines = [blocker].concat(problems.map((p) => p.text)).filter(Boolean);
     noteEl.textContent = lines.join(" ");
     noteEl.hidden = lines.length === 0;
     if (saveBtn) {
-      const blocked = categorization().hasSaveBlocker(values, setupState.catalog);
+      const blocked = categorization().hasSaveBlocker(
+        values,
+        setupState.catalog,
+        credentials.providerKeys,
+        credentials.providerAvailability,
+      );
       saveBtn.disabled = blocked;
       if (blocked) saveBtn.setAttribute("aria-describedby", noteEl.id);
       else saveBtn.removeAttribute("aria-describedby");
@@ -7305,8 +7317,9 @@
 
   async function saveCategorization(form) {
     const values = form.getValues();
+    const credentials = (setupState && setupState.credentials) || {};
     const unsaveable = categorization()
-      .passProblems(values, setupState && setupState.catalog, {})
+      .passProblems(values, setupState && setupState.catalog, credentials.providerKeys, credentials.providerAvailability)
       .filter((p) => p.blocksSave);
     if (unsaveable.length > 0) throw new Error(unsaveable.map((p) => p.text).join(" "));
     const payload = categorization().toPayload(values);

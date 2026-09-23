@@ -85,6 +85,39 @@ describe('GET /api/setup', () => {
     expect(res.body).not.toContain('super-secret-id');
   });
 
+  it('reports claude-cli availability as true, with no probe, when no check is wired (a test-built server)', async () => {
+    app = buildServer(db);
+    await app.ready();
+    const res = await app.inject({ method: 'GET', url: '/api/setup' });
+    expect(res.json().credentials.providerAvailability).toEqual({ 'claude-cli': { available: true } });
+  });
+
+  it("surfaces the injected claude-cli check() - issue #35's own signal, never a token's presence", async () => {
+    app = buildServer(db, {
+      claudeCliCheck: async () => ({ state: 'unavailable', detail: 'The `claude` CLI is not installed.' }),
+    });
+    await app.ready();
+    const res = await app.inject({ method: 'GET', url: '/api/setup' });
+    expect(res.json().credentials.providerAvailability).toEqual({
+      'claude-cli': { available: false, reason: 'The `claude` CLI is not installed.' },
+    });
+  });
+
+  it('caches the claude-cli check briefly rather than probing on every read', async () => {
+    let calls = 0;
+    app = buildServer(db, {
+      claudeCliCheck: async () => {
+        calls += 1;
+        return { state: 'ok', detail: 'ok' };
+      },
+    });
+    await app.ready();
+    await app.inject({ method: 'GET', url: '/api/setup' });
+    await app.inject({ method: 'GET', url: '/api/setup' });
+    await app.inject({ method: 'GET', url: '/api/setup' });
+    expect(calls).toBe(1);
+  });
+
   it('reports whether X has been authorized, and whether the app can do it in-app', async () => {
     app = buildServer(db, { xLogin: async () => {} });
     await app.ready();
