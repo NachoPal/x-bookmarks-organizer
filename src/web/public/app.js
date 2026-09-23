@@ -6003,6 +6003,10 @@
     passProvider: () => "",
     findProvider: () => null,
     findMethod: () => null,
+    filingOptions: () => [],
+    filingSelection: () => "",
+    applyFilingSelection: (v) => ({ categorizer: v, assignmentProvider: "" }),
+    providerNotice: () => ({ text: "", emphasis: false }),
     modelOptions: () => [],
     effortOptions: () => [],
     sourcesOf: () => [],
@@ -7049,7 +7053,15 @@
    * small API `app.js` drives it with.
    */
   function createCategorizationForm(container, idPrefix, onChange) {
-    const method = buildField(idPrefix, "categorizer", "Method");
+    // ONE control for "who files each bookmark": Jev sits alongside every LLM
+    // provider (bug: choosing an LLM provider here used to leave a separate,
+    // independently-settable "Filing provider" field that `buildCategorizers`
+    // ignored entirely whenever the method was Jev - see categorization.js's
+    // `filingOptions`/`applyFilingSelection`). `assignmentProvider` is kept as
+    // an internal (never rendered) field: it still drives the filing
+    // model/source picker below and is what Jev's `extend` mode falls back to,
+    // but the owner can only ever set it by picking an LLM provider here.
+    const method = buildField(idPrefix, "categorizer", "Filing method");
     const taxonomyProvider = buildField(idPrefix, "taxonomyProvider", "Taxonomy provider");
     const taxonomy = buildField(idPrefix, "taxonomyModel", "Taxonomy model");
     const effort = buildField(idPrefix, "effort", "Reasoning effort");
@@ -7105,11 +7117,11 @@
     const phase2 = buildPhase(
       idPrefix,
       "phase2",
-      "Phase 2 - Categorization method",
-      "Files each bookmark into a category of that tree - with a language model, or with Jev.",
+      "Phase 2 - Filing",
+      "Files each bookmark into a category of that tree - pick who does it below: a language " +
+        "model on the provider you choose, or Jev.",
       [
         method.field,
-        assignmentProvider.field,
         assignmentCatalog.source.field,
         assignment.field,
         assignmentCatalog.picker.field,
@@ -7207,9 +7219,15 @@
      * per-token choice wears the same billing emphasis as the paid method.
      */
     function renderHints() {
-      const chosenMethod = categorization().findMethod(catalog, method.select.value);
-      method.hint.textContent = chosenMethod ? chosenMethod.description : "";
-      method.hint.classList.toggle("field-billing", !!chosenMethod && chosenMethod.billing === "per-token");
+      if (method.select.value === "typesafe") {
+        const jev = categorization().findMethod(catalog, "typesafe");
+        method.hint.textContent = jev ? jev.description : "";
+        method.hint.classList.toggle("field-billing", !!jev && jev.billing === "per-token");
+      } else {
+        const notice = categorization().providerNotice(providerOf("assignment"));
+        method.hint.textContent = notice.text;
+        method.hint.classList.toggle("field-billing", notice.emphasis);
+      }
       const providerKeys = (setupState && setupState.credentials && setupState.credentials.providerKeys) || {};
       for (const pass of ["taxonomy", "assignment"]) {
         const p = providerOf(pass);
@@ -7226,10 +7244,11 @@
         source.hint.classList.toggle("field-billing", keyNotice.state !== "none" || paid);
       }
       effort.hint.textContent = hintFor(categorization().effortOptions(providerOf("taxonomy")), effort.select.value);
-      // Jev files bookmarks without a prompt, so it has no filing provider or
-      // model; the taxonomy pass is always a model, so Phase 1 never goes away.
+      // Jev files bookmarks without a prompt, so it has no filing model; the
+      // taxonomy pass is always a model, so Phase 1 never goes away. The
+      // filing PROVIDER field is never shown at all now - the combined
+      // selector above (`method`) is the only place it is chosen.
       const fields = categorization().fieldsFor(method.select.value);
-      assignmentProvider.field.hidden = !fields.assignmentProvider;
       showPassFields("taxonomy", true);
       showPassFields("assignment", fields.assignmentModel);
     }
@@ -7238,14 +7257,31 @@
       renderHints();
       if (onChange) onChange();
     };
-    method.select.addEventListener("change", notify);
-    for (const pass of ["taxonomy", "assignment"]) {
+    method.select.addEventListener("change", () => {
+      // Picking Jev or an LLM provider in the ONE combined selector decides
+      // both `categorizer` and the (internal, never rendered) assignment
+      // provider together - see categorization.js's `applyFilingSelection`.
+      // A model id only means something to the provider it came from, so the
+      // filing model is only re-rendered when the underlying provider itself
+      // actually changed (not on every Jev<->LLM toggle).
+      const previousProvider = assignmentProvider.select.value;
+      const selection = categorization().applyFilingSelection(method.select.value, previousProvider);
+      assignmentProvider.select.value = selection.assignmentProvider;
+      if (!assignmentProvider.select.value && assignmentProvider.select.options[0]) {
+        assignmentProvider.select.value = assignmentProvider.select.options[0].value;
+      }
+      if (assignmentProvider.select.value !== previousProvider) renderPass("assignment", null);
+      notify();
+    });
+    for (const pass of ["taxonomy"]) {
       passes[pass].provider.select.addEventListener("change", () => {
         // A model id only means something to the provider it came from.
         renderPass(pass, null);
         renderHints();
         if (onChange) onChange();
       });
+    }
+    for (const pass of ["taxonomy", "assignment"]) {
       passes[pass].source.select.addEventListener("change", () => {
         // ...and to the source it came from: a new source starts on its own
         // Recommended pick if it hosts one, else on no choice at all.
@@ -7263,11 +7299,9 @@
         // choice the owner is in the middle of making.
         const current = catalog ? api.getValues() : null;
         catalog = next;
-        fillOptions(
-          method.select,
-          (next.methods || []).map((m) => ({ value: m.id, label: m.label, hint: m.description })),
-          method.select.value,
-        );
+        // The combined selector's options ARE the filing choice: Jev, then
+        // every LLM provider (categorization.js's `filingOptions`).
+        fillOptions(method.select, categorization().filingOptions(next), method.select.value);
         const providerOptions = (next.providers || []).map((p) => ({
           value: p.id,
           label: p.label,
@@ -7284,20 +7318,30 @@
       },
       setValues(values) {
         if (!values) return;
-        method.select.value = values.categorizer || "";
         for (const pass of ["taxonomy", "assignment"]) {
           const select = passes[pass].provider.select;
           select.value = categorization().passProvider(values, pass);
           if (!select.value && select.options[0]) select.value = select.options[0].value;
         }
+        // Derived from `values` AFTER the (internal) assignment provider
+        // select above, so the combined selector lands on Jev or on the
+        // saved filing provider - never a value that disagrees with it.
+        method.select.value = categorization().filingSelection(values);
+        if (!method.select.value) {
+          // An unrecognized/empty choice falls back to an LLM provider, never
+          // Jev (a paid method must never become the silent default).
+          const fallback = [...method.select.options].find((o) => o.value !== "typesafe") || method.select.options[0];
+          if (fallback) method.select.value = fallback.value;
+        }
         renderModelFields(values);
       },
       getValues() {
+        const filing = categorization().applyFilingSelection(method.select.value, assignmentProvider.select.value);
         const values = {
-          categorizer: method.select.value,
+          categorizer: filing.categorizer,
           taxonomyProvider: taxonomyProvider.select.value,
           taxonomyModel: modelValueOf("taxonomy"),
-          assignmentProvider: assignmentProvider.select.value,
+          assignmentProvider: filing.assignmentProvider,
           assignmentModel: modelValueOf("assignment"),
           effort: effort.select.value,
         };
@@ -7318,9 +7362,12 @@
    * required key is missing, a keyless provider (`claude-cli`) whose own
    * `check()` failed (reversed from #120: the owner now wants Save disabled
    * for all of these), or - when `savedSettings` is given - a selection
-   * identical to it (issue #122, "No changes to save"). The note is what
-   * states the reason in visible text; `aria-describedby` ties the button
-   * to it for the same reason while it is disabled.
+   * identical to it (issue #122). That last reason still blocks Save but is
+   * SILENT (`passProblems`' `silent` flag) - the owner found the visible "No
+   * changes to save." text ugly and pointless for a case a plain disabled
+   * button already explains, so it never reaches the note. The other reasons
+   * are all actionable and stay in visible text; `aria-describedby` ties the
+   * button to the note only while the note actually has something to say.
    */
   function updateFormNote(form, noteEl, saveBtn, savedSettings) {
     if (!form || !noteEl || !setupState) return;
@@ -7334,7 +7381,9 @@
       credentials.providerAvailability,
       savedSettings,
     );
-    const lines = [blocker].concat(problems.map((p) => p.text)).filter(Boolean);
+    const lines = [blocker]
+      .concat(problems.filter((p) => !p.silent).map((p) => p.text))
+      .filter(Boolean);
     noteEl.textContent = lines.join(" ");
     noteEl.hidden = lines.length === 0;
     if (saveBtn) {
@@ -7346,7 +7395,7 @@
         savedSettings,
       );
       saveBtn.disabled = blocked;
-      if (blocked) saveBtn.setAttribute("aria-describedby", noteEl.id);
+      if (blocked && !noteEl.hidden) saveBtn.setAttribute("aria-describedby", noteEl.id);
       else saveBtn.removeAttribute("aria-describedby");
     }
   }
@@ -7613,7 +7662,6 @@
   function renderSetupSync() {
     const settings = (setupState && setupState.settings) || {};
     const catalog = (setupState && setupState.catalog) || {};
-    const method = categorization().findMethod(catalog, settings.categorizer);
     /** "Provider label - model label", as the dropdowns showed them (never raw ids). */
     const passLine = (pass) => {
       const provider = categorization().findProvider(catalog, categorization().passProvider(settings, pass));
@@ -7622,13 +7670,14 @@
       const match = (provider.models || []).find((m) => m.id === id);
       return `${provider.label} - ${match ? match.label : id || "-"}`;
     };
+    // ONE "Filing" row now, matching the single combined selector: whichever
+    // of Jev or an LLM provider is what will actually run never has a
+    // separate "Method" row to disagree with.
+    const jev = categorization().findMethod(catalog, "typesafe");
     const rows = [
       ["Taxonomy", passLine("taxonomy")],
       ["Effort", settings.effort || "high"],
-      ["Method", method ? method.label : "-"],
-      ["Filing", categorization().fieldsFor(settings.categorizer).assignmentModel
-        ? passLine("assignment")
-        : "Not used - Jev walks the tree itself"],
+      ["Filing", settings.categorizer === "typesafe" ? (jev ? jev.label : "Jev (TypeSafe)") : passLine("assignment")],
     ];
     setupSummaryEl.replaceChildren(
       ...rows.flatMap(([term, value]) => [el("dt", "", term), el("dd", "", String(value))]),

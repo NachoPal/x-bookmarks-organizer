@@ -336,7 +336,10 @@ describe("the searchable model picker", () => {
 
   it("takes a typed model name for a local server", async () => {
     const { $, change, sent } = await boot();
-    change("settings-assignmentProvider", "pi-ai");
+    // The combined phase-2 selector ("settings-categorizer") is now the only
+    // place the filing provider is chosen; picking a provider there sets the
+    // (internal) assignment provider to it.
+    change("settings-categorizer", "pi-ai");
     change("settings-assignmentSource", "local");
     await tick();
     const local = $<HTMLInputElement>("settings-assignmentLocalModel");

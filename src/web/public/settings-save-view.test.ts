@@ -110,17 +110,20 @@ async function boot(opts: { failSave?: string } = {}) {
 const tick = () => new Promise((r) => setTimeout(r, 120));
 
 describe("Settings panel Save (issue #122)", () => {
-  it("disables Save with a visible 'No changes to save' reason when the selection matches the saved config", async () => {
+  it("disables Save with NO visible reason when the selection matches the saved config", async () => {
+    // The owner found the "No changes to save." text ugly and pointless - a
+    // plain disabled button already says enough for this one reason, unlike
+    // the other disable reasons (#120/#121), which stay visible.
     const { $, openSettings } = await boot();
     openSettings();
     const saveBtn = $<HTMLButtonElement>("settings-save");
     expect(saveBtn.disabled).toBe(true);
-    expect($("settings-categorization-note").hidden).toBe(false);
-    expect($("settings-categorization-note").textContent).toContain("No changes to save.");
-    expect(saveBtn.getAttribute("aria-describedby")).toBe("settings-categorization-note");
+    expect($("settings-categorization-note").hidden).toBe(true);
+    expect($("settings-categorization-note").textContent).not.toContain("No changes to save.");
+    expect(saveBtn.hasAttribute("aria-describedby")).toBe(false);
   });
 
-  it("enables Save the instant a field changes, and disables it again on a revert", async () => {
+  it("enables Save the instant a field changes, and disables it again (silently) on a revert", async () => {
     const { $, change, openSettings } = await boot();
     openSettings();
     const saveBtn = $<HTMLButtonElement>("settings-save");
@@ -134,7 +137,8 @@ describe("Settings panel Save (issue #122)", () => {
     change("settings-effort", "");
     await tick();
     expect(saveBtn.disabled).toBe(true);
-    expect($("settings-categorization-note").textContent).toContain("No changes to save.");
+    expect($("settings-categorization-note").hidden).toBe(true);
+    expect($("settings-categorization-note").textContent).not.toContain("No changes to save.");
   });
 
   it("closes the panel and shows a saved toast on success, leaving Save disabled again on reopen", async () => {
@@ -158,7 +162,8 @@ describe("Settings panel Save (issue #122)", () => {
 
     openSettings();
     expect($<HTMLButtonElement>("settings-save").disabled).toBe(true);
-    expect($("settings-categorization-note").textContent).toContain("No changes to save.");
+    expect($("settings-categorization-note").hidden).toBe(true);
+    expect($("settings-categorization-note").textContent).not.toContain("No changes to save.");
   });
 
   it("keeps the panel open with the error inline on a failed save, and never touches the selection", async () => {
