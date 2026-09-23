@@ -1,0 +1,22 @@
+# actions/labeler v5 config: maps changed paths to labels.
+# Consumed by .github/workflows/labeler.yml. Schema:
+# https://github.com/actions/labeler#configuration-options
+#
+# `enhancement` / `bug` are deliberately NOT mapped: what kind of change a PR
+# is cannot be read from paths, so those are applied by hand. `dependencies`
+# is not mapped either - it is excluded from the release notes, and a lockfile
+# path rule would hide real product PRs that merely touch package-lock.json.
+
+# Docs: the docs/ tree and the top-level README. NOT a bare `*.md`, which also
+# catches AGENTS.md / CLAUDE.md - agent-instruction files, not documentation.
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "README.md"
+
+# CI / repo automation config.
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"

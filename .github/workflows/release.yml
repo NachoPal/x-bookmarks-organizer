@@ -1,0 +1,118 @@
+name: release
+
+# Manually-triggered release: a maintainer dispatches this with a version
+# (e.g. 1.0.1). It runs the same gates as CI, then tags `v<version>` and
+# creates a GitHub Release whose notes are auto-generated from the merged PRs'
+# labels (.github/release.yml).
+#
+# This project is NOT an npm package: nothing is published anywhere, and the
+# workflow never edits or commits package.json.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the leading v (e.g. 1.0.1)"
+        required: true
+        type: string
+      dry_run:
+        description: "Run the gates and the tag preflight, but push no tag and create no Release"
+        required: false
+        default: false
+        type: boolean
+
+# Least privilege by default; the release job re-declares what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Mirrors ci.yml: the "tests must pass" gate.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  release:
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the git tag and create the GitHub Release
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # Credentials are persisted so the job can push the tag.
+          persist-credentials: true
+
+      - name: Preflight - version is well-formed, tag not already present
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Version '${VERSION}' must look like 1.2.3 (no leading v; an optional -suffix is allowed)." >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "Git tag v${VERSION} already exists on origin." >&2
+            exit 1
+          fi
+
+      - name: Push git tag
+        if: ${{ inputs.dry_run == false }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git tag "v${VERSION}"
+          git push origin "refs/tags/v${VERSION}"
+
+      - name: Create GitHub Release
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          args=(release create "v${VERSION}" --title "v${VERSION}" --generate-notes --verify-tag)
+          # A -suffix version (1.0.1-rc.1) is a prerelease.
+          if [[ "${VERSION}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"
+
+      - name: Dry-run summary
+        if: ${{ inputs.dry_run == true }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo "Dry run - verify passed and tag v${VERSION} is free."
+            echo "Nothing was tagged and no Release was created."
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -1,0 +1,32 @@
+name: labeler
+
+# Auto-labels every PR from its changed paths (.github/labeler.yml), feeding the
+# grouped release notes in .github/release.yml.
+#
+# Trigger: `pull_request` (NOT pull_request_target): it never hands a write
+# token to fork code, and this job checks out nothing - it only reads the
+# changed-file paths.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Least privilege: read the repo, write only PR labels.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: labeler-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/labeler@8558fd74291d67161a8a78ce36a881fa63b766a9 # v5
+        with:
+          configuration-path: .github/labeler.yml
+          # Add-only: a hand-applied `documentation` label must survive a push
+          # that no longer matches the path rule.
+          sync-labels: false
