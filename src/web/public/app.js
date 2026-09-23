@@ -6021,7 +6021,7 @@
     if (settingsForm && setupState && !settingsDirty) {
       settingsForm.setCatalog(setupState.catalog);
       settingsForm.setValues(setupState.settings);
-      updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn);
+      updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn, setupState.settings);
     }
     if (setupForm && setupState) setupForm.setCatalog(setupState.catalog);
     if (isSetupOpen()) renderSetupStep();
@@ -7282,13 +7282,14 @@
    * `saveBtn`, when given, is kept DISABLED for as long as the selection
    * would be rejected on save - a save-blocking error (e.g. a catalog source
    * picked with no model chosen yet), a chosen provider/source whose
-   * required key is missing, or a keyless provider (`claude-cli`) whose own
+   * required key is missing, a keyless provider (`claude-cli`) whose own
    * `check()` failed (reversed from #120: the owner now wants Save disabled
-   * for all of these). The note is what states the reason in visible text;
-   * `aria-describedby` ties the button to it for the same reason while it is
-   * disabled.
+   * for all of these), or - when `savedSettings` is given - a selection
+   * identical to it (issue #122, "No changes to save"). The note is what
+   * states the reason in visible text; `aria-describedby` ties the button
+   * to it for the same reason while it is disabled.
    */
-  function updateFormNote(form, noteEl, saveBtn) {
+  function updateFormNote(form, noteEl, saveBtn, savedSettings) {
     if (!form || !noteEl || !setupState) return;
     const values = form.getValues();
     const credentials = setupState.credentials || {};
@@ -7298,6 +7299,7 @@
       setupState.catalog,
       credentials.providerKeys,
       credentials.providerAvailability,
+      savedSettings,
     );
     const lines = [blocker].concat(problems.map((p) => p.text)).filter(Boolean);
     noteEl.textContent = lines.join(" ");
@@ -7308,6 +7310,7 @@
         setupState.catalog,
         credentials.providerKeys,
         credentials.providerAvailability,
+        savedSettings,
       );
       saveBtn.disabled = blocked;
       if (blocked) saveBtn.setAttribute("aria-describedby", noteEl.id);
@@ -7360,7 +7363,7 @@
     settingsForm = createCategorizationForm(settingsFormEl, "settings", () => {
       settingsDirty = true;
       setSaveStatus("");
-      updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn);
+      updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn, setupState && setupState.settings);
     });
     if (!settingsSaveBtn) return;
     settingsSaveBtn.addEventListener("click", async () => {
@@ -7370,16 +7373,25 @@
       try {
         await saveCategorization(settingsForm);
         settingsDirty = false;
-        setSaveStatus("Saved. The next sync uses it.");
         updateSyncButton();
+        // A successful save closes the panel and confirms through the app's
+        // existing toast system (issue #122) - not a status line the owner
+        // no longer sees, since the panel that held it is gone. The baseline
+        // `saveCategorization` just wrote into `setupState.settings` is what
+        // makes Save read disabled ("no changes") the moment it reopens.
+        const settingsPopover = popovers.find((p) => p.name === "settings");
+        if (settingsPopover) setPopoverOpen(settingsPopover, false);
+        showToast("Settings saved.");
       } catch (err) {
+        // A failed save keeps the panel open with the error inline, and
+        // never touches the owner's selections.
         setSaveStatus(err.message, "error");
       } finally {
         settingsSaveBtn.classList.remove("is-loading");
         // Re-derive from the current selection rather than force it back on:
         // a save the SERVER rejected (the async catalog check the client
         // cannot run live) must stay disabled, not read as clickable again.
-        updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn);
+        updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn, setupState && setupState.settings);
       }
     });
   }

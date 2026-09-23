@@ -182,6 +182,24 @@ selection rather than forcing it back on, so a selection the SERVER rejects (the
 `verifyCatalogModels` check the client cannot run live) does not read as clickable again for no
 reason.
 
+**Save is ALSO disabled when the selection is byte-identical to the saved configuration**
+(`XBOCategorization.isUnchanged`, composed into `passProblems`/`hasSaveBlocker` as one more
+`blocksSave` entry, issue #122) - a save that would change nothing is no more useful than one the
+server would reject, so this is additive to the missing-key/invalid-selection reasons above, never
+a replacement. `isUnchanged` runs BOTH sides (the live form's `getValues()` and the saved document,
+read through the same `passProvider` per-pass fallback) through `toPayload` before comparing, so the
+"no changes" reason can never disagree with what a save would actually persist. `updateFormNote`
+and `hasSaveBlocker` take the baseline as an explicit trailing `savedSettings` argument
+(`setupState.settings`) - omitting it (the setup dialog and first-run flow, which have no notion of
+"already saved") never triggers this reason, only the settings-popover call sites pass it. On a
+SUCCESSFUL `PUT /api/settings`, `initCategorizationSettings`'s click handler closes the Settings
+popover (`setPopoverOpen(..., false)`, the same function Escape uses) and confirms through the
+existing `showToast` system rather than the inline `settings-save-status` line, which now serves
+error text alone; `saveCategorization` already updates `setupState.settings` to the response before
+the handler's `finally` calls `updateFormNote` again, which is what makes Save read disabled the
+moment the panel reopens - no separate "mark baseline" step. A FAILED save never closes the panel,
+never clears the owner's selection, and leaves `settings-save-status` showing the server's message.
+
 ## Assignment-pass categorizers (`XBOOKMARKS_CATEGORIZER`, issue #61)
 
 Pass 2 (filing a bookmark into the existing tree) has TWO implementations behind the one

@@ -256,6 +256,38 @@
     "an environment variable, a .env file in the project root, your OS keychain, or " +
     "~/.config/x-bookmarks-organizer/credentials.json";
 
+  /** The fields a save actually persists, in the order compared. */
+  var SAVED_FIELDS = ["categorizer", "taxonomyProvider", "assignmentProvider", "taxonomyModel", "assignmentModel", "effort"];
+
+  /**
+   * Whether the current selection is identical to the saved configuration
+   * (issue #122), compared through `toPayload` on BOTH sides - the exact
+   * normalization (an empty/"Recommended" field dropped, a filing model
+   * ignored for Jev) the server itself applies - so this can never disagree
+   * with what a save would actually do. `savedSettings` is the document the
+   * form's own `setValues()` consumes (`/api/setup`'s `settings`, or a save's
+   * own response), read through `passProvider` so a legacy single-`provider`
+   * document compares correctly too. No saved settings at all (nothing has
+   * ever been saved) means there is nothing to be unchanged FROM.
+   */
+  function isUnchanged(values, savedSettings) {
+    if (!savedSettings) return false;
+    var saved = toPayload({
+      categorizer: savedSettings.categorizer,
+      taxonomyProvider: passProvider(savedSettings, "taxonomy"),
+      taxonomyModel: savedSettings.taxonomyModel,
+      assignmentProvider: passProvider(savedSettings, "assignment"),
+      assignmentModel: savedSettings.assignmentModel,
+      effort: savedSettings.effort,
+    });
+    var current = toPayload(values);
+    for (var i = 0; i < SAVED_FIELDS.length; i++) {
+      var key = SAVED_FIELDS[i];
+      if ((current[key] || "") !== (saved[key] || "")) return false;
+    }
+    return true;
+  }
+
   /**
    * What a pass's model choice needs before it can run, one sentence each,
    * for the form's note: a provider that cannot run at all right now (its
@@ -267,9 +299,12 @@
    * one with no model chosen. `values` carries each pass's `<pass>Source`
    * beside its model. `providerAvailability` covers a provider with no
    * credential-chain key of its own (only `claude-cli` today, issue #35) -
-   * a keyed provider/source is covered by `providerKeys` instead.
+   * a keyed provider/source is covered by `providerKeys` instead. `savedSettings`,
+   * when given, adds a selection identical to it (issue #122) as one more
+   * `blocksSave` reason - a save that would change nothing is no more useful
+   * than one the server would reject.
    */
-  function passProblems(values, catalog, providerKeys, providerAvailability) {
+  function passProblems(values, catalog, providerKeys, providerAvailability, savedSettings) {
     var problems = [];
     var fields = fieldsFor(values.categorizer);
     var passes = [
@@ -326,24 +361,30 @@
         });
       }
     }
+    if (isUnchanged(values, savedSettings)) {
+      problems.push({ text: "No changes to save.", blocksSave: true });
+    }
     return problems;
   }
 
   /**
    * Whether the current selection would be REJECTED by `PUT /api/settings`,
-   * needs a credential the server reports absent, or names a provider that
-   * cannot run right now - the same conditions `passProblems` flags with
-   * `blocksSave` (a catalog source picked with no model in it yet, a local
-   * model with no typed name, a chosen provider/source whose required key is
-   * missing, or a keyless provider like `claude-cli` whose own `check()`
-   * failed). Used to disable Save proactively, rather than let the owner find
-   * out only after clicking it. `providerKeys`/`providerAvailability` must be
-   * the real maps from `/api/setup` - passing `{}` for either would read
-   * every source/provider they cover as unusable regardless of its actual
-   * status.
+   * needs a credential the server reports absent, names a provider that
+   * cannot run right now, or is identical to what is already saved - the
+   * same conditions `passProblems` flags with `blocksSave` (a catalog source
+   * picked with no model in it yet, a local model with no typed name, a
+   * chosen provider/source whose required key is missing, a keyless provider
+   * like `claude-cli` whose own `check()` failed, or no actual change from
+   * `savedSettings`, issue #122). Used to disable Save proactively, rather
+   * than let the owner find out only after clicking it. `providerKeys`/
+   * `providerAvailability` must be the real maps from `/api/setup` - passing
+   * `{}` for either would read every source/provider they cover as unusable
+   * regardless of its actual status. `savedSettings` is optional - omitting
+   * it (an older caller, or a flow with no saved baseline) never blocks Save
+   * for being unchanged.
    */
-  function hasSaveBlocker(values, catalog, providerKeys, providerAvailability) {
-    return passProblems(values, catalog, providerKeys, providerAvailability).some(function (p) {
+  function hasSaveBlocker(values, catalog, providerKeys, providerAvailability, savedSettings) {
+    return passProblems(values, catalog, providerKeys, providerAvailability, savedSettings).some(function (p) {
       return p.blocksSave;
     });
   }
@@ -535,6 +576,7 @@
     sourceNotice: sourceNotice,
     passProblems: passProblems,
     hasSaveBlocker: hasSaveBlocker,
+    isUnchanged: isUnchanged,
     providerNotice: providerNotice,
     BILLING_HINTS: BILLING_HINTS,
     effortOptions: effortOptions,

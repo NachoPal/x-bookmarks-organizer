@@ -284,10 +284,15 @@ describe("the searchable model picker", () => {
   it("never blocks Save for claude-cli on a KEY - its source needs none - as long as its own check() is ok", async () => {
     const { $, change } = await boot();
     // claude-cli is the default for both passes; its Anthropic source needs
-    // no key (it runs on the local CLI's own subscription), so Save must
-    // stay enabled with no missing-key note.
+    // no key (it runs on the local CLI's own subscription). Picking an
+    // effort also moves the selection off the saved baseline (issue #122),
+    // so this proves Save is blocked by neither a missing key nor "no
+    // changes to save".
     expect($<HTMLSelectElement>("settings-taxonomyProvider").value).toBe("claude-cli");
     expect($("settings-taxonomySource-hint").dataset.key).toBe("none");
+
+    change("settings-effort", "high");
+    await tick();
     expect($<HTMLButtonElement>("settings-save").disabled).toBe(false);
 
     change("settings-taxonomySource", "anthropic");
