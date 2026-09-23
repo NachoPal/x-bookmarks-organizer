@@ -17,6 +17,7 @@ const {
   coverageLine,
   switchWarning,
   activePreset,
+  pickerEntries,
 } = require("./rubric-editor.js");
 
 /**
@@ -212,5 +213,49 @@ describe("what the list says about each set", () => {
     expect(activePreset(state)!.id).toBe("signal");
     expect(activePreset({ activeId: "gone", presets: [] })).toBeUndefined();
     expect(activePreset(undefined)).toBeUndefined();
+  });
+});
+
+describe("pickerEntries (the ranking panel's active-rules picker)", () => {
+  const builtIn = { id: "default", name: "Learning value (built-in)", builtIn: true, scored: 0, dimensions: [dimension()] };
+  const custom = {
+    id: "signal",
+    name: "Signal",
+    builtIn: false,
+    scored: 12,
+    dimensions: [dimension(), dimension({ label: "Depth" })],
+  };
+  const state = { activeId: "signal", presets: [builtIn, custom], total: 55 };
+
+  it("lists every saved set, badging the active one", () => {
+    const entries = pickerEntries(state, "");
+    expect(entries.map((e) => e.value)).toEqual(["default", "signal"]);
+    expect(entries.find((e) => e.value === "signal")!.badge).toBe("Active");
+    expect(entries.find((e) => e.value === "default")!.badge).toBe("");
+  });
+
+  it("filters by name, the same way the model picker's own entries do", () => {
+    expect(pickerEntries(state, "signal").map((e) => e.value)).toEqual(["signal"]);
+    expect(pickerEntries(state, "nothing matches this")).toEqual([]);
+  });
+
+  it("carries the question count and coverage as the entry's meta", () => {
+    const entry = pickerEntries(state, "").find((e) => e.value === "signal")!;
+    expect(entry.meta).toBe("2 questions · 12 of 55 bookmarks ranked under these rules.");
+  });
+
+  it("hints at what switching to a set would leave unranked, falling back to its coverage", () => {
+    const entries = pickerEntries(state, "");
+    expect(entries.find((e) => e.value === "signal")!.hint).toMatch(/43 bookmarks would read as unranked/);
+    // Nothing left to warn about: the hint falls back to a plain statement.
+    const fullyRanked = { activeId: "signal", presets: [builtIn, { ...custom, scored: 55 }], total: 55 };
+    expect(pickerEntries(fullyRanked, "").find((e) => e.value === "signal")!.hint).toBe(
+      "All 55 bookmarks ranked under these rules.",
+    );
+  });
+
+  it("degrades to an empty list rather than throwing on an empty payload", () => {
+    expect(pickerEntries(undefined, "")).toEqual([]);
+    expect(pickerEntries({}, "")).toEqual([]);
   });
 });

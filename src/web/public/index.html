@@ -271,15 +271,49 @@
                 Scoring is paid per token. A run always asks you to confirm the cost first.
                 Its progress appears in the strip under the filter tabs, next to a sync's.
               </p>
-              <!-- The rubric editor's entry point (issue #102). The rules are
-                   what a run asks; editing them is free, so this sits beside
-                   the paid action rather than behind its confirmation. -->
+              <!-- Which saved set of rules a run scores against (manage/select
+                   split): a searchable combobox styled and behaved like the pi
+                   model picker (issue #118), never a native <select>. Picking
+                   one is free - only "Rank now" above spends. The dialog this
+                   opens (issue #102) is MANAGE-ONLY: create, edit, duplicate,
+                   delete - it no longer selects. -->
               <div class="rank-rules">
                 <h3 class="rank-rules-title">Ranking rules</h3>
-                <p id="rank-rules-active" class="rank-note">Loading&hellip;</p>
+                <div class="field model-picker rank-rules-picker">
+                  <label class="field-label" for="rank-rules-input">Active ranking rules</label>
+                  <div class="select-shell model-picker-shell">
+                    <input
+                      type="text"
+                      id="rank-rules-input"
+                      class="field-input model-picker-input"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded="false"
+                      aria-controls="rank-rules-list"
+                      autocomplete="off"
+                      spellcheck="false"
+                      aria-describedby="rank-rules-status rank-rules-hint"
+                    />
+                  </div>
+                  <ul
+                    id="rank-rules-list"
+                    class="model-picker-list"
+                    role="listbox"
+                    aria-label="Active ranking rules"
+                    hidden
+                  ></ul>
+                  <div id="rank-rules-status-row" class="model-picker-status">
+                    <span id="rank-rules-status" class="model-picker-status-text" role="status"></span>
+                    <button id="rank-rules-retry" class="btn btn-secondary model-picker-retry" type="button" hidden>
+                      Retry
+                    </button>
+                  </div>
+                  <p id="rank-rules-hint" class="field-hint"></p>
+                </div>
                 <button id="rubric-open" class="btn btn-secondary panel-action" type="button">
-                  Edit ranking rules
+                  Manage ranking rules
                 </button>
+                <p id="rank-rules-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
               </div>
             </div>
           </div>
@@ -758,13 +792,15 @@
       </div>
     </div>
 
-    <!-- The Jev rules (rubric) editor (issue #102).
+    <!-- The Jev rules (rubric) editor (issue #102, manage/select split).
 
          Two views in one dialog rather than two dialogs: the preset LIST and
          the authoring form for one preset. They are the same task at two
          depths, and a ~400px viewport has no room for them side by side.
-         Nothing in here spends anything - only a rank run does, behind the
-         confirmation above. -->
+         MANAGE-ONLY: create, edit, duplicate, delete. It no longer selects
+         which set ranks - that choice lives in the ranking panel's own
+         picker. Nothing in here spends anything - only a rank run does,
+         behind the confirmation above. -->
     <div id="rubric-backdrop" class="reader-backdrop" hidden></div>
     <div
       id="rubric-modal"
@@ -780,8 +816,9 @@
           <div class="setup-heading">
             <h2 id="rubric-title" class="setup-title">Ranking rules</h2>
             <p id="rubric-intro" class="setup-step-hint">
-              The questions a ranking run asks about every bookmark. Save several sets and pick
-              which one ranks. Editing rules is free; only running a ranking pass is paid.
+              The questions a ranking run asks about every bookmark. Save several sets, then choose
+              which one ranks from the ranking panel. Editing rules is free; only running a ranking
+              pass is paid.
             </p>
           </div>
           <div class="reader-header-actions">
@@ -796,10 +833,9 @@
           </div>
         </div>
 
-        <!-- View A: the saved sets of rules, and which one ranks. -->
+        <!-- View A: the saved sets of rules (manage only - see above). -->
         <div id="rubric-list-view" class="rubric-view">
           <div id="rubric-list" class="rubric-list"></div>
-          <p id="rubric-switch-note" class="rubric-switch-note" role="status" hidden></p>
         </div>
 
         <!-- View B: authoring one set of rules. -->

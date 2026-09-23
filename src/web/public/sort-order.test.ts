@@ -166,6 +166,16 @@ describe("describeScore", () => {
   it("is null when there is nothing to describe", () => {
     expect(describeScore(null)).toBeNull();
   });
+
+  it("names the ranking rules a score was produced under, when given a name", () => {
+    const text = describeScore({ value: 0.5 }, "Signal only");
+    expect(text).toContain('ranked with "Signal only"');
+  });
+
+  it("omits the rules clause when no name is given, exactly as before", () => {
+    expect(describeScore({ value: 0.5 }, "")).toBe("Ranking score 5.0 of 10.");
+    expect(describeScore({ value: 0.5 }, undefined)).toBe("Ranking score 5.0 of 10.");
+  });
 });
 
 describe("scoreBreakdown", () => {
