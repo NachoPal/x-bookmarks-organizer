@@ -18,7 +18,7 @@
 import type { Config } from '../config';
 import { CATEGORIZER_IDS, type CategorizerId } from '../config';
 import type { Database } from '../db/database';
-import { catalogProvider, type SettingsCatalog } from './catalog';
+import { catalogProvider, sourceOfModel, type SettingsCatalog } from './catalog';
 
 /** `run_state` key holding the settings document. */
 export const SETTINGS_KEY = 'app_settings';
@@ -129,8 +129,21 @@ export function validateSettings(raw: unknown, catalog: SettingsCatalog): Settin
   const modelFor = (pass: Pass, providerId: string): string | undefined => {
     const value = str(input[`${pass}Model`]);
     if (!value) return undefined;
-    const modelIds = catalogProvider(catalog, providerId)?.models.map((m) => m.id) ?? [];
+    const provider = catalogProvider(catalog, providerId);
+    const modelIds = provider?.models.map((m) => m.id) ?? [];
     if (modelIds.includes(value)) return value;
+    // A provider with a full catalog (pi's upstreams) accepts any model of it.
+    // This is the SHAPE check that a stored document can be read back with;
+    // whether pi really lists the model is checked on save, against the
+    // catalog itself (`verifyCatalogModels`).
+    if (provider && sourceOfModel(provider, value)) return value;
+    if (provider?.sources?.length) {
+      errors.push(
+        `${PASS_LABEL[pass].model} "${value}" names no model source of provider "${providerId}": ` +
+          `use "<source>/<model>" with one of ${provider.sources.map((src) => src.id).join(', ')}.`,
+      );
+      return undefined;
+    }
     errors.push(
       `${PASS_LABEL[pass].model} "${value}" is not available for provider "${providerId}" ` +
         `(available: ${modelIds.join(', ')}).`,

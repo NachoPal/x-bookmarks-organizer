@@ -5764,6 +5764,13 @@
     findMethod: () => null,
     modelOptions: () => [],
     effortOptions: () => [],
+    sourcesOf: () => [],
+    findSource: () => null,
+    sourceOfModel: () => null,
+    passSource: () => "",
+    pickerEntries: () => [],
+    sourceNotice: () => ({ text: "", state: "none" }),
+    passProblems: () => [],
     toPayload: (v) => v,
     methodBlocker: () => null,
     syncBlockers: () => [],
@@ -6443,6 +6450,339 @@
     return match && match.hint ? match.hint : "";
   }
 
+  /**
+   * The selector's source <select> (pi's upstreams), grouped the way the
+   * catalog groups them so "one key, many models" gateways read as such.
+   */
+  const SOURCE_GROUPS = [
+    { kind: "direct", label: "Model makers" },
+    { kind: "gateway", label: "Gateways - one key, many models" },
+    { kind: "local", label: "Your own server" },
+  ];
+
+  function fillSourceOptions(select, sources, value) {
+    const groups = SOURCE_GROUPS.map((g) => {
+      const members = sources.filter((src) => src.kind === g.kind);
+      if (members.length === 0) return null;
+      const group = document.createElement("optgroup");
+      group.label = g.label;
+      for (const src of members) {
+        const node = document.createElement("option");
+        node.value = src.id;
+        node.textContent = src.label;
+        group.append(node);
+      }
+      return group;
+    }).filter(Boolean);
+    select.replaceChildren(...groups);
+    select.value = sources.some((src) => src.id === value) ? value : sources[0] ? sources[0].id : "";
+  }
+
+  // One cache for the whole page: a source's catalog is data bundled with the
+  // server's SDK, so it cannot change under a running viewer. A failed read is
+  // dropped so Retry really retries.
+  const modelListCache = new Map();
+
+  function loadModelList(providerId, sourceId) {
+    const key = `${providerId}\u0000${sourceId}`;
+    let pending = modelListCache.get(key);
+    if (!pending) {
+      const qs = new URLSearchParams({ provider: providerId, source: sourceId });
+      pending = getJSON(`/api/models?${qs}`).then((body) => body.models || []);
+      pending.catch(() => modelListCache.delete(key));
+      modelListCache.set(key, pending);
+    }
+    return pending;
+  }
+
+  /**
+   * A searchable model picker: an ARIA combobox over one source's full
+   * catalog, which can run to hundreds of models (OpenRouter), so a native
+   * <select> is no longer enough. The listbox opens IN FLOW under the input
+   * rather than floating: the picker lives inside scrolling panels and a
+   * dialog, and an absolutely positioned popup would be clipped by them.
+   *
+   * Keyboard: typing filters; ArrowDown/ArrowUp open the list and move
+   * through it; Enter picks; Escape closes it (restoring the current choice)
+   * without closing the panel around it; Tab leaves with the choice intact.
+   */
+  function buildModelPicker(idPrefix, name, labelText, onPick) {
+    const field = el("div", "field model-picker");
+    const inputId = `${idPrefix}-${name}`;
+    const listId = `${inputId}-list`;
+    const label = el("label", "field-label", labelText);
+    label.htmlFor = inputId;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = inputId;
+    input.className = "field-input model-picker-input";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-controls", listId);
+    const shell = el("div", "select-shell model-picker-shell");
+    shell.append(input);
+    const list = el("ul", "model-picker-list");
+    list.id = listId;
+    list.setAttribute("role", "listbox");
+    list.setAttribute("aria-label", labelText);
+    list.hidden = true;
+    const statusRow = el("div", "model-picker-status");
+    const statusText = el("span", "model-picker-status-text");
+    statusText.id = `${inputId}-status`;
+    statusText.setAttribute("role", "status");
+    const retry = el("button", "btn btn-secondary model-picker-retry", "Retry");
+    retry.type = "button";
+    retry.hidden = true;
+    statusRow.append(statusText, retry);
+    const hint = el("p", "field-hint");
+    hint.id = `${inputId}-hint`;
+    input.setAttribute("aria-describedby", `${statusText.id} ${hint.id}`);
+    field.append(label, shell, list, statusRow, hint);
+
+    const state = {
+      provider: null,
+      sourceId: "",
+      sourceLabel: "",
+      pass: "taxonomy",
+      models: [],
+      load: "idle", // idle | loading | ready | error
+      error: "",
+      value: "",
+      query: "",
+      open: false,
+      entries: [],
+      active: -1,
+      token: 0,
+    };
+
+    function selectedLabel() {
+      if (state.load !== "ready" && state.value) return state.value;
+      const all = categorization().pickerEntries(state.provider, state.sourceId, state.models, state.pass, "");
+      const match = all.find((e) => e.value === state.value);
+      if (match) return match.label;
+      return state.value;
+    }
+
+    function hasValue() {
+      if (state.value) return true;
+      // "" is a real choice only where "Recommended" is on offer.
+      return categorization()
+        .pickerEntries(state.provider, state.sourceId, state.models, state.pass, "")
+        .some((e) => e.value === "");
+    }
+
+    function renderStatus() {
+      retry.hidden = state.load !== "error";
+      statusRow.dataset.state = state.load;
+      if (state.load === "loading") {
+        statusText.textContent = `Loading ${state.sourceLabel} models…`;
+      } else if (state.load === "error") {
+        statusText.textContent = `Couldn't load the ${state.sourceLabel} model list: ${state.error}`;
+      } else if (state.load === "ready") {
+        const count = state.models.length;
+        if (state.open && state.query && state.entries.length === 0) {
+          statusText.textContent = `No ${state.sourceLabel} model matches "${state.query.trim()}".`;
+        } else if (state.open && state.query) {
+          statusText.textContent = `${state.entries.length} of ${count} models match.`;
+        } else {
+          statusText.textContent = `${count} ${state.sourceLabel} ${count === 1 ? "model" : "models"}, prices per 1M tokens - type to search.`;
+        }
+      } else {
+        statusText.textContent = "";
+      }
+    }
+
+    function renderList() {
+      state.entries =
+        state.load === "ready"
+          ? categorization().pickerEntries(state.provider, state.sourceId, state.models, state.pass, state.query)
+          : [];
+      if (state.active >= state.entries.length) state.active = state.entries.length - 1;
+      list.replaceChildren(
+        ...state.entries.map((entry, i) => {
+          const option = el("li", "model-picker-option");
+          option.id = `${inputId}-opt-${i}`;
+          option.setAttribute("role", "option");
+          const selected = entry.value === state.value;
+          option.setAttribute("aria-selected", selected ? "true" : "false");
+          if (i === state.active) option.classList.add("is-active");
+          const top = el("span", "model-picker-option-top");
+          top.append(el("span", "model-picker-option-label", entry.label));
+          if (entry.badge) top.append(el("span", "model-picker-badge", entry.badge));
+          option.append(top);
+          if (entry.meta) option.append(el("span", "model-picker-option-meta", entry.meta));
+          if (entry.id && entry.id !== entry.label) {
+            option.append(el("span", "model-picker-option-id", entry.id));
+          }
+          option.addEventListener("pointerdown", (e) => e.preventDefault());
+          option.addEventListener("click", () => choose(i));
+          return option;
+        }),
+      );
+      const showList = state.open && state.entries.length > 0;
+      list.hidden = !showList;
+      input.setAttribute("aria-expanded", showList ? "true" : "false");
+      if (showList && state.active >= 0) {
+        input.setAttribute("aria-activedescendant", `${inputId}-opt-${state.active}`);
+        const node = list.children[state.active];
+        if (node) node.scrollIntoView({ block: "nearest" });
+      } else {
+        input.removeAttribute("aria-activedescendant");
+      }
+      renderStatus();
+    }
+
+    function syncInput() {
+      input.value = selectedLabel();
+      input.placeholder = hasValue() ? "" : `Type to search ${state.sourceLabel} models`;
+    }
+
+    function openList() {
+      if (state.open || state.load !== "ready") return;
+      state.open = true;
+      state.query = "";
+      state.active = Math.max(
+        0,
+        categorization()
+          .pickerEntries(state.provider, state.sourceId, state.models, state.pass, "")
+          .findIndex((e) => e.value === state.value),
+      );
+      renderList();
+    }
+
+    function closeList(restore) {
+      state.open = false;
+      state.query = "";
+      state.active = -1;
+      renderList();
+      if (restore) syncInput();
+    }
+
+    function choose(i) {
+      const entry = state.entries[i];
+      if (!entry) return;
+      state.value = entry.value;
+      closeList(true);
+      renderHint();
+      if (onPick) onPick();
+    }
+
+    function renderHint() {
+      const match = categorization()
+        .pickerEntries(state.provider, state.sourceId, state.models, state.pass, "")
+        .find((e) => e.value === state.value);
+      hint.textContent = match ? match.hint || match.meta || "" : "";
+      hint.classList.toggle("field-billing", !!match && match.value !== "");
+    }
+
+    async function load() {
+      const token = ++state.token;
+      if (!state.provider || !state.sourceId) return;
+      state.load = "loading";
+      state.models = [];
+      closeList(true);
+      try {
+        const models = await loadModelList(state.provider.id, state.sourceId);
+        if (token !== state.token) return;
+        state.models = models;
+        state.load = "ready";
+      } catch (err) {
+        if (token !== state.token) return;
+        state.load = "error";
+        state.error = (err.body && err.body.error) || err.message || "request failed";
+      }
+      renderList();
+      syncInput();
+      renderHint();
+    }
+
+    function move(delta) {
+      if (!state.open) {
+        openList();
+        return;
+      }
+      const n = state.entries.length;
+      if (n === 0) return;
+      state.active = state.active < 0 ? (delta > 0 ? 0 : n - 1) : Math.min(n - 1, Math.max(0, state.active + delta));
+      renderList();
+    }
+
+    input.addEventListener("focus", () => input.select());
+    input.addEventListener("click", () => (state.open ? closeList(true) : openList()));
+    input.addEventListener("input", () => {
+      if (state.load !== "ready") return;
+      state.open = true;
+      state.query = input.value;
+      state.active = 0;
+      renderList();
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        move(e.altKey && !state.open ? 0 : 1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        move(-1);
+      } else if (e.key === "PageDown" && state.open) {
+        e.preventDefault();
+        move(10);
+      } else if (e.key === "PageUp" && state.open) {
+        e.preventDefault();
+        move(-10);
+      } else if (e.key === "Enter") {
+        if (state.open && state.active >= 0) {
+          e.preventDefault();
+          choose(state.active);
+        }
+      } else if (e.key === "Escape") {
+        // Close the list (or undo a half-typed query) without also closing
+        // the settings popover / setup dialog the picker sits in.
+        if (state.open || input.value !== selectedLabel()) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeList(true);
+        }
+      } else if (e.key === "Tab") {
+        if (state.open) closeList(true);
+      }
+    });
+    input.addEventListener("blur", () => {
+      if (state.open || input.value !== selectedLabel()) closeList(true);
+    });
+    retry.addEventListener("click", () => {
+      void load();
+      input.focus();
+    });
+
+    return {
+      field,
+      input,
+      hint,
+      /** Point the picker at one source of a provider; loads its catalog when it changed. */
+      setSource(provider, sourceId, pass, value) {
+        const source = categorization().findSource(provider, sourceId);
+        const changed = !state.provider || state.provider.id !== provider.id || state.sourceId !== sourceId;
+        state.provider = provider;
+        state.pass = pass;
+        state.sourceId = sourceId;
+        state.sourceLabel = source ? source.label : sourceId;
+        state.value = value || "";
+        if (changed || state.load === "error" || state.load === "idle") void load();
+        else {
+          renderList();
+          syncInput();
+          renderHint();
+        }
+      },
+      getValue() {
+        return state.value;
+      },
+    };
+  }
+
   function buildPhase(idPrefix, name, title, helper, fields) {
     const section = el("section", "phase");
     section.setAttribute("role", "group");
@@ -6466,6 +6806,37 @@
     const effort = buildField(idPrefix, "effort", "Reasoning effort");
     const assignmentProvider = buildField(idPrefix, "assignmentProvider", "Filing provider");
     const assignment = buildField(idPrefix, "assignmentModel", "Filing model");
+
+    /**
+     * The fields a provider with a full catalog (pi) swaps in for the model
+     * select: which of its sources (upstreams) to use, then a searchable
+     * picker over that source's models - or, for a local server, a typed
+     * model name.
+     */
+    function catalogFields(pass, noun) {
+      const source = buildField(idPrefix, `${pass}Source`, `${noun} API provider`);
+      const picker = buildModelPicker(idPrefix, `${pass}ModelSearch`, `${noun} model`, () => {
+        renderHints();
+        if (onChange) onChange();
+      });
+      const local = el("div", "field");
+      const localInput = document.createElement("input");
+      localInput.type = "text";
+      localInput.className = "field-input";
+      localInput.id = `${idPrefix}-${pass}LocalModel`;
+      localInput.autocomplete = "off";
+      localInput.spellcheck = false;
+      const localLabel = el("label", "field-label", `${noun} model name on your server`);
+      localLabel.htmlFor = localInput.id;
+      const localHint = el("p", "field-hint", "Exactly as your server lists it, e.g. llama3.1:8b.");
+      localHint.id = `${localInput.id}-hint`;
+      localInput.setAttribute("aria-describedby", localHint.id);
+      local.append(localLabel, localInput, localHint);
+      return { source, picker, local: { field: local, input: localInput } };
+    }
+    const taxonomyCatalog = catalogFields("taxonomy", "Taxonomy");
+    const assignmentCatalog = catalogFields("assignment", "Filing");
+
     // Two phases, in the order the app runs them: design the tree, then file
     // each bookmark into it.
     const phase1 = buildPhase(
@@ -6473,37 +6844,90 @@
       "phase1",
       "Phase 1 - Taxonomy",
       "Designs the category tree from all your bookmarks at once. This pass always runs on a language model.",
-      [taxonomyProvider.field, taxonomy.field, effort.field],
+      [
+        taxonomyProvider.field,
+        taxonomyCatalog.source.field,
+        taxonomy.field,
+        taxonomyCatalog.picker.field,
+        taxonomyCatalog.local.field,
+        effort.field,
+      ],
     );
     const phase2 = buildPhase(
       idPrefix,
       "phase2",
       "Phase 2 - Categorization method",
       "Files each bookmark into a category of that tree - with a language model, or with Jev.",
-      [method.field, assignmentProvider.field, assignment.field],
+      [
+        method.field,
+        assignmentProvider.field,
+        assignmentCatalog.source.field,
+        assignment.field,
+        assignmentCatalog.picker.field,
+        assignmentCatalog.local.field,
+      ],
     );
     container.replaceChildren(phase1, phase2);
 
     let catalog = null;
 
-    /** Each pass's fields: its provider select and the model select it drives. */
+    /** Each pass's fields: its provider select, the model select it drives, and the catalog trio. */
     const passes = {
-      taxonomy: { provider: taxonomyProvider, model: taxonomy },
-      assignment: { provider: assignmentProvider, model: assignment },
+      taxonomy: { provider: taxonomyProvider, model: taxonomy, ...taxonomyCatalog },
+      assignment: { provider: assignmentProvider, model: assignment, ...assignmentCatalog },
     };
 
     function providerOf(pass) {
       return categorization().findProvider(catalog, passes[pass].provider.select.value);
     }
 
+    function usesCatalog(pass) {
+      return categorization().sourcesOf(providerOf(pass)).length > 0;
+    }
+
+    function chosenSource(pass) {
+      return categorization().findSource(providerOf(pass), passes[pass].source.select.value);
+    }
+
+    /** Point a catalog pass at its chosen source, keeping `modelValue` only if it belongs there. */
+    function applySource(pass, modelValue) {
+      const P = passes[pass];
+      const p = providerOf(pass);
+      const src = chosenSource(pass);
+      if (!src) return;
+      const own = categorization().sourceOfModel(p, modelValue);
+      const belongs = !!own && own.id === src.id;
+      if (src.freeform) {
+        P.local.input.value = belongs ? modelValue.slice(src.id.length + 1) : "";
+      } else {
+        P.picker.setSource(p, src.id, pass, belongs ? modelValue : "");
+      }
+    }
+
+    /** Which of a pass's model controls are on screen, for its provider and source. */
+    function showPassFields(pass, visible) {
+      const P = passes[pass];
+      const catalogPass = usesCatalog(pass);
+      const src = catalogPass ? chosenSource(pass) : null;
+      P.model.field.hidden = !visible || catalogPass;
+      P.source.field.hidden = !visible || !catalogPass;
+      P.picker.field.hidden = !visible || !catalogPass || !!(src && src.freeform);
+      P.local.field.hidden = !visible || !catalogPass || !(src && src.freeform);
+    }
+
     /** Refill one pass's model list (and, for pass 1, the effort list) for its provider. */
     function renderPass(pass, values) {
+      const P = passes[pass];
       const p = providerOf(pass);
-      fillOptions(
-        passes[pass].model.select,
-        categorization().modelOptions(p, pass),
-        (values && values[pass + "Model"]) || "",
-      );
+      const modelValue = (values && values[pass + "Model"]) || "";
+      const sources = categorization().sourcesOf(p);
+      if (sources.length > 0) {
+        const sourceId = (values && values[pass + "Source"]) || categorization().passSource(p, pass, modelValue);
+        fillSourceOptions(P.source.select, sources, sourceId);
+        applySource(pass, modelValue);
+      } else {
+        fillOptions(P.model.select, categorization().modelOptions(p, pass), modelValue);
+      }
       if (pass === "taxonomy") {
         const effortOptions = categorization().effortOptions(p);
         fillOptions(effort.select, effortOptions, (values && values.effort) || "");
@@ -6517,6 +6941,17 @@
       renderHints();
     }
 
+    function modelValueOf(pass) {
+      const P = passes[pass];
+      if (!usesCatalog(pass)) return P.model.select.value;
+      const src = chosenSource(pass);
+      if (src && src.freeform) {
+        const name = P.local.input.value.trim();
+        return name ? `${src.id}/${name}` : "";
+      }
+      return P.picker.getValue();
+    }
+
     /**
      * The label is already in each select; the hint says what the owner cannot
      * see there - how a provider bills, and what a model costs and needs. A
@@ -6526,22 +6961,28 @@
       const chosenMethod = categorization().findMethod(catalog, method.select.value);
       method.hint.textContent = chosenMethod ? chosenMethod.description : "";
       method.hint.classList.toggle("field-billing", !!chosenMethod && chosenMethod.billing === "per-token");
+      const providerKeys = (setupState && setupState.credentials && setupState.credentials.providerKeys) || {};
       for (const pass of ["taxonomy", "assignment"]) {
         const p = providerOf(pass);
         const paid = !!p && p.billing === "per-token";
-        const { provider, model } = passes[pass];
+        const { provider, model, source } = passes[pass];
         const notice = categorization().providerNotice(p);
         provider.hint.textContent = notice.text;
         provider.hint.classList.toggle("field-billing", notice.emphasis);
         model.hint.textContent = hintFor(categorization().modelOptions(p, pass), model.select.value);
         model.hint.classList.toggle("field-billing", paid && model.select.value !== "");
+        const keyNotice = categorization().sourceNotice(usesCatalog(pass) ? chosenSource(pass) : null, providerKeys);
+        source.hint.textContent = keyNotice.text;
+        source.hint.dataset.key = keyNotice.state;
+        source.hint.classList.toggle("field-billing", keyNotice.state !== "none" || paid);
       }
       effort.hint.textContent = hintFor(categorization().effortOptions(providerOf("taxonomy")), effort.select.value);
       // Jev files bookmarks without a prompt, so it has no filing provider or
       // model; the taxonomy pass is always a model, so Phase 1 never goes away.
       const fields = categorization().fieldsFor(method.select.value);
       assignmentProvider.field.hidden = !fields.assignmentProvider;
-      assignment.field.hidden = !fields.assignmentModel;
+      showPassFields("taxonomy", true);
+      showPassFields("assignment", fields.assignmentModel);
     }
 
     const notify = () => {
@@ -6556,11 +6997,22 @@
         renderHints();
         if (onChange) onChange();
       });
+      passes[pass].source.select.addEventListener("change", () => {
+        // ...and to the source it came from: a new source starts on its own
+        // Recommended pick if it hosts one, else on no choice at all.
+        applySource(pass, "");
+        renderHints();
+        if (onChange) onChange();
+      });
+      passes[pass].local.input.addEventListener("input", notify);
     }
     for (const f of [taxonomy, assignment, effort]) f.select.addEventListener("change", notify);
 
-    return {
+    const api = {
       setCatalog(next) {
+        // A catalog refresh (every /api/setup poll) must not throw away a
+        // choice the owner is in the middle of making.
+        const current = catalog ? api.getValues() : null;
         catalog = next;
         fillOptions(
           method.select,
@@ -6579,7 +7031,7 @@
           // select has no empty option, so land on the first (the default).
           if (!select.value && providerOptions[0]) select.value = providerOptions[0].value;
         }
-        renderModelFields(null);
+        renderModelFields(current);
       },
       setValues(values) {
         if (!values) return;
@@ -6592,32 +7044,43 @@
         renderModelFields(values);
       },
       getValues() {
-        return {
+        const values = {
           categorizer: method.select.value,
           taxonomyProvider: taxonomyProvider.select.value,
-          taxonomyModel: taxonomy.select.value,
+          taxonomyModel: modelValueOf("taxonomy"),
           assignmentProvider: assignmentProvider.select.value,
-          assignmentModel: assignment.select.value,
+          assignmentModel: modelValueOf("assignment"),
           effort: effort.select.value,
         };
+        for (const pass of ["taxonomy", "assignment"]) {
+          if (usesCatalog(pass)) values[pass + "Source"] = passes[pass].source.select.value;
+        }
+        return values;
       },
     };
+    return api;
   }
 
   /** Show why the currently selected method cannot run, or hide the note. */
   function updateFormNote(form, noteEl) {
     if (!form || !noteEl || !setupState) return;
-    const blocker = categorization().methodBlocker(
-      setupState.catalog,
-      form.getValues().categorizer,
-      setupState.credentials,
-    );
-    noteEl.textContent = blocker || "";
-    noteEl.hidden = !blocker;
+    const values = form.getValues();
+    const credentials = setupState.credentials || {};
+    const blocker = categorization().methodBlocker(setupState.catalog, values.categorizer, credentials);
+    const lines = [blocker]
+      .concat(categorization().passProblems(values, setupState.catalog, credentials.providerKeys).map((p) => p.text))
+      .filter(Boolean);
+    noteEl.textContent = lines.join(" ");
+    noteEl.hidden = lines.length === 0;
   }
 
   async function saveCategorization(form) {
-    const payload = categorization().toPayload(form.getValues());
+    const values = form.getValues();
+    const unsaveable = categorization()
+      .passProblems(values, setupState && setupState.catalog, {})
+      .filter((p) => p.blocksSave);
+    if (unsaveable.length > 0) throw new Error(unsaveable.map((p) => p.text).join(" "));
+    const payload = categorization().toPayload(values);
     const res = await fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

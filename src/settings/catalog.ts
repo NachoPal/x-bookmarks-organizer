@@ -17,7 +17,7 @@
 import { CATEGORIZER_IDS, TYPESAFE_API_KEY, type CategorizerId } from '../config';
 import { listProviders } from '../llm/registry';
 import '../llm/providers';
-import { suggestedModelFor, type Billing, type LlmRole } from '../llm/types';
+import { suggestedModelFor, type Billing, type LlmRole, type ModelSource } from '../llm/types';
 
 export interface CatalogModel {
   id: string;
@@ -35,6 +35,8 @@ export interface CatalogModel {
   maxOutputTokens?: number;
   /** The credential this model needs, by NAME (never a value). */
   requiresKey?: string;
+  /** USD per million tokens, input / output, when the provider's catalog states it. */
+  price?: { input: number; output: number };
 }
 
 export interface CatalogProvider {
@@ -43,7 +45,17 @@ export interface CatalogProvider {
   billing: Billing;
   /** A risk the selector must show at the point of choice (`ProviderDefinition.warning`). */
   warning?: string;
+  /**
+   * The models the provider RECOMMENDS - the quick picks. For a provider with
+   * `sources`, any model of those sources is choosable too; its full list is
+   * fetched per source on demand (`GET /api/models`), never shipped here.
+   */
   models: CatalogModel[];
+  /**
+   * Where the provider's full catalog lives, one group per credential (pi's
+   * upstreams). Absent for a provider whose `models` are all it offers.
+   */
+  sources?: ModelSource[];
   /** Ascending effort levels, empty when the provider has no effort axis. */
   efforts: string[];
   /** The model this provider suggests per role - the "Recommended" option's real value. */
@@ -106,7 +118,9 @@ function toCatalogProvider(id: string): CatalogProvider | undefined {
       contextWindow: m.contextWindow,
       maxOutputTokens: m.maxOutputTokens,
       requiresKey: m.requiresKey,
+      ...(m.price ? { price: m.price } : {}),
     })),
+    ...(provider.modelCatalog ? { sources: provider.modelCatalog.sources.map((src) => ({ ...src })) } : {}),
     efforts: provider.capabilities.effort ? [...(provider.efforts ?? [])] : [],
     suggested: {
       taxonomy: suggestedModelFor(provider, 'taxonomy'),
@@ -130,4 +144,27 @@ export function catalogProvider(
   id: string,
 ): CatalogProvider | undefined {
   return catalog.providers.find((p) => p.id === id);
+}
+
+/**
+ * The source a model id belongs to, for a provider with `sources`: model ids
+ * there are `<source>/<model>`, so the prefix names it. Undefined when the id
+ * is not shaped like one of this provider's (or the provider has no sources).
+ * A SHAPE check - whether the model really exists is `verifyCatalogModels`'s.
+ */
+export function sourceOfModel(provider: CatalogProvider, modelId: string): ModelSource | undefined {
+  const slash = modelId.indexOf('/');
+  if (slash <= 0 || !modelId.slice(slash + 1).trim()) return undefined;
+  const prefix = modelId.slice(0, slash);
+  return provider.sources?.find((s) => s.id === prefix);
+}
+
+/** Every credential a choosable model can need, by name - what the selector reports presence for. */
+export function catalogKeyNames(catalog: SettingsCatalog): string[] {
+  const names = new Set<string>();
+  for (const p of catalog.providers) {
+    for (const m of p.models) if (m.requiresKey) names.add(m.requiresKey);
+    for (const s of p.sources ?? []) if (s.requiresKey) names.add(s.requiresKey);
+  }
+  return [...names];
 }

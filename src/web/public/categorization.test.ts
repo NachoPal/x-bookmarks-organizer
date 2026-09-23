@@ -318,3 +318,131 @@ describe('showFilterTabs (#95)', () => {
     expect(XBO.showFilterTabs(undefined, 3)).toBe(true);
   });
 });
+
+/** A provider with a full catalog, shaped like pi-ai in `GET /api/setup`. */
+const pi = {
+  id: 'pi-ai',
+  label: 'pi-ai',
+  billing: 'per-token',
+  models: [
+    { id: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8 (Anthropic API)', suggestedFor: ['taxonomy'] },
+    { id: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5 (Anthropic API)', suggestedFor: ['assignment'] },
+    { id: 'openrouter/google/gemini-2.5-flash', label: 'Gemini 2.5 Flash (OpenRouter)', suggestedFor: [] },
+  ],
+  sources: [
+    { id: 'anthropic', label: 'Anthropic API', kind: 'direct', billing: 'per-token', requiresKey: 'ANTHROPIC_API_KEY' },
+    { id: 'openrouter', label: 'OpenRouter', kind: 'gateway', billing: 'per-token', requiresKey: 'OPENROUTER_API_KEY' },
+    { id: 'opencode', label: 'OpenCode Zen', kind: 'gateway', billing: 'per-token', requiresKey: 'OPENCODE_API_KEY' },
+    { id: 'local', label: 'Local endpoint', kind: 'local', billing: 'local', freeform: true },
+  ],
+  efforts: [],
+  suggested: { taxonomy: 'anthropic/claude-opus-4-8', assignment: 'anthropic/claude-haiku-4-5' },
+};
+const piCatalog = { methods: catalog.methods, providers: [...catalog.providers, pi] };
+
+const orModels = [
+  { id: 'openrouter/z-ai/glm-5', label: 'Z.ai: GLM 5', suggestedFor: [], contextWindow: 202_752, price: { input: 0.6, output: 2.2 } },
+  { id: 'openrouter/google/gemini-2.5-flash', label: 'Google: Gemini 2.5 Flash', suggestedFor: [], contextWindow: 1_048_576, price: { input: 0.3, output: 2.5 } },
+  { id: 'openrouter/google/gemini-2.5-pro', label: 'Google: Gemini 2.5 Pro', suggestedFor: ['taxonomy'], contextWindow: 1_048_576, price: { input: 1.25, output: 10 } },
+];
+
+describe('catalog sources (the full pi catalog)', () => {
+  it('reads a model id\'s source off its prefix, and nothing else', () => {
+    expect(XBO.sourceOfModel(pi, 'openrouter/google/gemini-2.5-flash').id).toBe('openrouter');
+    expect(XBO.sourceOfModel(pi, 'bedrock/x')).toBeNull();
+    expect(XBO.sourceOfModel(pi, 'opencode/')).toBeNull();
+    expect(XBO.sourceOfModel(pi, 'claude-opus-4-8')).toBeNull();
+  });
+
+  it('opens a pass on its model\'s source, else on the one hosting the suggestion', () => {
+    expect(XBO.passSource(pi, 'taxonomy', 'opencode/kimi-k2')).toBe('opencode');
+    expect(XBO.passSource(pi, 'taxonomy', '')).toBe('anthropic');
+    expect(XBO.passSource({ ...pi, suggested: {} }, 'taxonomy', '')).toBe('anthropic');
+  });
+
+  it('matches every typed term against the name or the id, case-insensitively', () => {
+    const m = orModels[1];
+    expect(XBO.matchesQuery(m, 'GEMINI flash')).toBe(true);
+    expect(XBO.matchesQuery(m, 'google/gemini')).toBe(true);
+    expect(XBO.matchesQuery(m, 'gemini pro')).toBe(false);
+    expect(XBO.matchesQuery(m, '   ')).toBe(true);
+  });
+
+  it('states context and price per model, and a $0 listing as such', () => {
+    expect(XBO.modelMeta(orModels[1])).toBe('1.05M context · $0.30 in · $2.50 out');
+    expect(XBO.modelMeta({ contextWindow: 200_000, price: { input: 0, output: 0 } })).toBe(
+      '200k context · listed at $0 per token',
+    );
+  });
+
+  it('orders the picker: the provider\'s picks on this source first, then the catalog as listed', () => {
+    const entries = XBO.pickerEntries(pi, 'openrouter', orModels, 'assignment', '');
+    expect(entries.map((e: { value: string }) => e.value)).toEqual([
+      'openrouter/google/gemini-2.5-flash',
+      'openrouter/z-ai/glm-5',
+      'openrouter/google/gemini-2.5-pro',
+    ]);
+    // No "Recommended" here: pass 2's suggestion lives on another source.
+    expect(entries.some((e: { value: string }) => e.value === '')).toBe(false);
+    const pro = XBO.pickerEntries(pi, 'openrouter', orModels, 'taxonomy', 'pro');
+    expect(pro).toHaveLength(1);
+    expect(pro[0].badge).toBe('Suggested for tree design');
+  });
+
+  it('offers "Recommended" only on the source that hosts the suggestion', () => {
+    const models = [{ id: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8', suggestedFor: ['taxonomy'] }];
+    const entries = XBO.pickerEntries(pi, 'anthropic', models, 'taxonomy', '');
+    expect(entries[0]).toMatchObject({ value: '', label: 'Recommended: Claude Opus 4.8 (Anthropic API)' });
+    expect(XBO.pickerEntries(pi, 'anthropic', models, 'taxonomy', 'recommended')[0].value).toBe('');
+    expect(XBO.pickerEntries(pi, 'anthropic', models, 'taxonomy', 'zzz')).toEqual([]);
+  });
+
+  it('says in words whether a source\'s key is there - browsing never needs it', () => {
+    const [anthropic, , opencode, local] = pi.sources;
+    expect(XBO.sourceNotice(opencode, {})).toMatchObject({ state: 'missing' });
+    expect(XBO.sourceNotice(opencode, {}).text).toMatch(/^Needs OPENCODE_API_KEY - not found\. PAID per token/);
+    expect(XBO.sourceNotice(opencode, {}).text).toContain('You can still browse and pick a model.');
+    expect(XBO.sourceNotice(anthropic, { ANTHROPIC_API_KEY: { present: true, source: 'keychain' } })).toEqual({
+      text: 'ANTHROPIC_API_KEY found (keychain). PAID per token, billed to your Anthropic API key.',
+      state: 'present',
+    });
+    expect(XBO.sourceNotice(local, {}).state).toBe('none');
+    expect(XBO.sourceNotice(null, {})).toEqual({ text: '', state: 'none' });
+  });
+
+  it('flags a source with no model picked (blocks a save) and a missing key (does not)', () => {
+    const values = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: '',
+      taxonomySource: 'opencode',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'openrouter/google/gemini-2.5-flash',
+      assignmentSource: 'openrouter',
+    };
+    const problems = XBO.passProblems(values, piCatalog, {});
+    expect(problems).toEqual([
+      { text: 'Phase 1: choose a model from OpenCode Zen.', blocksSave: true },
+      expect.objectContaining({ blocksSave: false }),
+    ]);
+    expect(problems[1].text).toMatch(/^Phase 2 runs on OpenRouter, which needs OPENROUTER_API_KEY\./);
+
+    // Recommended on its own source is a real choice; its key is what counts.
+    const recommended = { ...values, taxonomySource: 'anthropic' };
+    const keys = { ANTHROPIC_API_KEY: { present: true }, OPENROUTER_API_KEY: { present: true } };
+    expect(XBO.passProblems(recommended, piCatalog, keys)).toEqual([]);
+
+    // Jev has no filing model, so pass 2 is never judged.
+    expect(XBO.passProblems({ ...recommended, categorizer: 'typesafe' }, piCatalog, {})).toHaveLength(1);
+    // A local source needs a typed name.
+    expect(XBO.passProblems({ ...values, taxonomySource: 'local' }, piCatalog, keys)[0].text).toBe(
+      'Phase 1: type the model name your local server serves.',
+    );
+  });
+
+  it('leaves providers without a catalog (claude-cli) out of all of it', () => {
+    const values = { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' };
+    expect(XBO.passProblems(values, piCatalog, {})).toEqual([]);
+    expect(XBO.sourcesOf(catalog.providers[0])).toEqual([]);
+  });
+});

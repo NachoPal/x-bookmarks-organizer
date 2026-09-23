@@ -77,7 +77,7 @@ describe('GET /api/setup', () => {
     });
     await app.ready();
     const res = await app.inject({ method: 'GET', url: '/api/setup' });
-    expect(res.json().credentials).toEqual({
+    expect(res.json().credentials).toMatchObject({
       xClientId: { present: true, source: 'keychain' },
       xClientSecret: { present: false },
       typesafeApiKey: { present: false },

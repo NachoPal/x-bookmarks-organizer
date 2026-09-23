@@ -31,8 +31,8 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   its subscription-only invariant. Never make anything but `claude-cli` a default, and never import
   a provider SDK directly - the only one in the tree arrives through `pi-ai` (below). Two approved
   paid paths exist, each opt-in + key + billing line: the TypeSafe assignment categorizer (issue
-  #61) and the `pi-ai` provider (issue #70), which reads `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/
-  `XAI_API_KEY`/`OPENROUTER_API_KEY` only for a pass the owner put on it. No code path may silently
+  #61) and the `pi-ai` provider (issue #70), which reads an upstream's key (`ANTHROPIC_API_KEY`,
+  `OPENCODE_API_KEY`, ... - `pi-upstreams.ts`) only for a pass the owner put on it. No code path may silently
   spend money, and any new paid path needs the same explicit opt-in + key + billing line.
 - **A Claude SUBSCRIPTION is spent through `claude-cli` (Anthropic's own binary) by default.**
   Anthropic's terms reserve subscription OAuth for Claude Code and its own apps, and pi drives one
@@ -108,17 +108,34 @@ exercised end to end with no network and no subscription usage.
 
 ## The pi-ai provider (`src/llm/providers/pi-ai.ts`, issue #70)
 
-One SDK (`@earendil-works/pi-ai`, pinned EXACTLY - pre-1.0, minors break) for Anthropic, OpenAI,
-xAI and OpenRouter by API key, plus a local OpenAI-compatible endpoint. A model id is
-`<upstream>/<pi model id>`; the upstream decides the key (`resolveUpstreamKey`, per upstream,
-through the credential chain - pi's own auth resolution is never used, an explicit `apiKey` is
-passed on every call) and the billing (`per-token`, or `local`). Plain completions, no tools, so
-none of `claude-cli`'s hardening applies. pi ships ESM-only with an `import`-only `exports` map, so
-it is loaded with a real dynamic `import()` - which is why `tsconfig.json` is `module: Node20` /
-`moduleResolution: Node16` (CommonJS output; `import()` is preserved and subpath types resolve).
-The selector needs a SYNC catalog, so `CURATED_PI_MODELS` restates pi's context window, output
-limit and prices; `pi-ai.test.ts` pins each against the installed pi catalog, so re-check it on
-every pi bump. `@earendil-works/pi-telemetry` is type contracts + no-op/in-memory contexts, never
+One SDK (`@earendil-works/pi-ai`, pinned EXACTLY - pre-1.0, minors break) for ~18 plain-API-key
+upstreams (Anthropic, OpenAI, Google, xAI, the OpenRouter/OpenCode/Vercel/Together/Fireworks/HF
+gateways, ...) plus a local OpenAI-compatible endpoint. The upstream table is
+`src/llm/providers/pi-upstreams.ts` - ONE row per upstream (label, kind, key name, a lazy `load` of
+pi's provider module); its header lists what is deliberately NOT wired (IAM/account-id/OAuth
+providers, `radius`'s network-fetched catalog) and why. A model id is `<upstream>/<pi model id>`;
+the upstream decides the key (`resolveUpstreamKey`, per upstream, through the credential chain -
+pi's own auth resolution is never used, an explicit `apiKey` is passed on every call) and the
+billing (`per-token`, or `local`). Plain completions, no tools, so none of `claude-cli`'s hardening
+applies. pi ships ESM-only with an `import`-only `exports` map, so it is loaded with a real dynamic
+`import()` - which is why `tsconfig.json` is `module: Node20` / `moduleResolution: Node16`
+(CommonJS output; `import()` is preserved and subpath types resolve). **Each upstream's provider
+module (and catalog) is imported ON DEMAND** (`ensureUpstream` in `loadPiRuntime`) - never pi's
+`providers/all`, so wiring more upstreams costs nothing until one is used.
+
+**The selector browses pi's REAL catalog.** `ProviderDefinition.modelCatalog` (`src/llm/types.ts`)
+is a provider's full model list, grouped by `sources`, listed one source at a time; its contract is
+a LOCAL read (pi's catalog is static JSON in the package) - no request, no key, no spend -
+which `pi-ai.test.ts` enforces by failing any `fetch`. The server lists it through
+`src/settings/model-browser.ts` at `GET /api/models?provider=&source=` (503 on a `buildServer(db)`
+with no `modelBrowser`), and `PUT /api/settings` checks a pinned model against it
+(`verifyCatalogModels`; `validateSettings` alone only checks the `<source>/<model>` SHAPE, because
+it is sync and also reads stored documents back). The client is `buildModelPicker` in `app.js` (an
+ARIA combobox whose listbox opens IN FLOW so the scrolling panel cannot clip it) over the pure
+`XBOCategorization.pickerEntries`/`sourceNotice`/`passProblems`. `CURATED_PI_MODELS` is now only
+the RECOMMENDED picks (surfaced first, and the source of `suggestedFor`); `pi-ai.test.ts` still
+pins its restated numbers against the installed catalog, so re-check on every pi bump.
+`@earendil-works/pi-telemetry` is type contracts + no-op/in-memory contexts, never
 imported at runtime by pi-ai - inert. Tests use a fake `PiRuntime` (`createPiAiProvider(load)`)
 and one real-SDK round trip against a localhost stub server; never a hosted API.
 

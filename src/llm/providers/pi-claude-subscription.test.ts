@@ -78,10 +78,11 @@ function fakeRuntime() {
   const lookups: string[] = [];
   const known = new Set(['claude-opus-4-8', 'claude-haiku-4-5', 'claude-sonnet-5']);
   const runtime: PiRuntime = {
-    findModel: (upstream, id) => {
+    findModel: async (upstream, id) => {
       lookups.push(`${upstream}/${id}`);
       return known.has(id) ? fakeModel(id) : undefined;
     },
+    listModels: async () => [...known].map((id) => fakeModel(id)),
     localModel: () => {
       throw new Error('never a local model');
     },
@@ -171,7 +172,8 @@ describe('the pi-claude-subscription provider (opt-in, fake runtime)', () => {
 
   it('never lets the token reach a failure message', async () => {
     const runtime: PiRuntime = {
-      findModel: (_u, id) => fakeModel(id),
+      findModel: async (_u, id) => fakeModel(id),
+      listModels: async () => [],
       localModel: () => fakeModel('x'),
       clampEffort: (_m, l) => l,
       complete: async () => {
@@ -332,8 +334,8 @@ describe("the real pi SDK's Anthropic OAuth path (localhost stub, no network)", 
       const real = await loadPiRuntime();
       return {
         ...real,
-        findModel: (upstream, id) => {
-          const model = real.findModel(upstream, id);
+        findModel: async (upstream, id) => {
+          const model = await real.findModel(upstream, id);
           return model ? { ...model, baseUrl } : undefined;
         },
       };

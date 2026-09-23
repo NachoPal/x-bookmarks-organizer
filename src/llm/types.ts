@@ -102,6 +102,42 @@ export interface ProviderModel {
    * Lets the settings selector say what a choice needs before a sync fails.
    */
   requiresKey?: string;
+  /** USD per million tokens, input / output, for a per-token model whose catalog states it. */
+  price?: { input: number; output: number };
+}
+
+/**
+ * One group of a provider's models behind one credential - for `pi-ai`, one of
+ * pi's upstreams (Anthropic, OpenRouter, OpenCode...). A model of a source is
+ * named `<source id>/<model id>`, which is how a model id says which source,
+ * and so which key and which bill, it belongs to.
+ */
+export interface ModelSource {
+  id: string;
+  label: string;
+  /** How the selector groups it: a model maker's own API, a many-model gateway, or local. */
+  kind: 'direct' | 'gateway' | 'local';
+  billing: Billing;
+  /** The credential its models need, by NAME. */
+  requiresKey?: string;
+  /**
+   * No catalog exists (a local server's models are whatever it serves), so a
+   * model name is typed rather than picked, and any well-formed one is accepted.
+   */
+  freeform?: boolean;
+}
+
+/**
+ * A provider's FULL model catalog, beyond the short `models` list it
+ * recommends: every model of every source it can reach. Listed ON DEMAND, one
+ * source at a time, from data the provider already has locally - it MUST NOT
+ * make a request or spend anything, because the settings selector browses it
+ * freely before the owner has chosen (or paid for) anything.
+ */
+export interface ProviderModelCatalog {
+  sources: readonly ModelSource[];
+  /** Every model of one source; empty for a `freeform` source. Rejects for an unknown source. */
+  listModels(source: string): Promise<ProviderModel[]>;
 }
 
 export type HealthState = 'ok' | 'unconfigured' | 'unavailable';
@@ -132,7 +168,14 @@ export interface ProviderDefinition {
   label: string;
   billing: Billing;
   configKeys: ProviderConfigKey[];
+  /**
+   * The models this provider RECOMMENDS - the selector's quick picks, and what
+   * `suggestedFor` is resolved against. A provider with {@link modelCatalog}
+   * accepts any model of that catalog as well.
+   */
   models: ProviderModel[];
+  /** The full, browsable catalog, for a provider that reaches more models than it recommends. */
+  modelCatalog?: ProviderModelCatalog;
   capabilities: ProviderCapabilities;
   /**
    * Reasoning-effort levels this provider accepts, in ascending order - the
