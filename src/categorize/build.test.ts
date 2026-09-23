@@ -5,7 +5,8 @@ import { buildSettingsCatalog } from '../settings/catalog';
 import { createCredentialStore } from '../creds/resolve';
 import { createLlmFactory } from '../llm/factory';
 import { Database } from '../db/database';
-import { buildCategorizers } from './build';
+import { buildCategorizers, taxonomyContextWindow } from './build';
+import { DEFAULT_TAXONOMY_CONTEXT_WINDOW, effectiveContextWindow } from './taxonomy-budget';
 import { Categorizer } from './llm';
 import { TypeSafeCategorizer } from './typesafe/categorizer';
 
@@ -69,5 +70,32 @@ describe('buildCategorizers: phase-2 filing method vs. assignment provider', () 
     const { built } = buildWith(defaultSettings(catalog));
     expect(built.categorizer).toBeInstanceOf(Categorizer);
     expect(built.categorizer).not.toBeInstanceOf(TypeSafeCategorizer);
+  });
+});
+
+describe('taxonomyContextWindow: the pass-1 window comes from the provider catalog (issue #109)', () => {
+  const windowFor = async (env: NodeJS.ProcessEnv) => {
+    const llm = createLlmFactory(loadConfig(env), env, createCredentialStore({ env }));
+    return { window: await taxonomyContextWindow(llm)(), described: llm.describe('taxonomy').contextWindow };
+  };
+
+  it("reads a recommended model's window from its static catalog entry", async () => {
+    const { window, described } = await windowFor({});
+    expect(described).toBeGreaterThan(0);
+    expect(window).toBe(described);
+  });
+
+  it('asks the client for a model picked from the full catalog, which has no static entry', async () => {
+    // Not one of the recommended picks, so `describe` cannot say; pi's local
+    // Anthropic catalog (no request, no spend) can.
+    const { window, described } = await windowFor({ XBOOKMARKS_TAXONOMY_MODEL: 'anthropic/claude-opus-4-5' });
+    expect(described).toBeUndefined();
+    expect(window).toBe(200_000);
+  });
+
+  it('answers undefined for a model no catalog knows, so the designer applies its safe default', async () => {
+    const { window } = await windowFor({ XBOOKMARKS_TAXONOMY_MODEL: 'opus' });
+    expect(window).toBeUndefined();
+    expect(effectiveContextWindow(window)).toBe(DEFAULT_TAXONOMY_CONTEXT_WINDOW);
   });
 });

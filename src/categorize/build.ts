@@ -55,10 +55,7 @@ export function buildCategorizers(
   log: Log = () => {},
 ): BuiltCategorizers {
   const assignment = llm.forRole('assignment');
-  const taxonomer = new LlmTaxonomyDesigner(toRunner(llm.forRole('taxonomy'), { json: true }), {
-    minDepth: config.minCategoryDepth,
-    maxDepth: config.maxCategoryDepth,
-  });
+  const taxonomer = buildTaxonomyDesigner(config, llm, log);
   const llmCategorizer = new Categorizer(toRunner(assignment, { json: true }), {
     model: assignment.model,
     maxDepth: config.maxCategoryDepth,
@@ -93,6 +90,33 @@ export function buildCategorizers(
     },
   );
   return { taxonomer, categorizer };
+}
+
+/**
+ * Pass 1's designer, sized against the taxonomy model's context window (issue
+ * #109). One constructor for every caller that designs a tree - `run`,
+ * `recategorize`, the in-app sync and `eval-categorizers` - so none of them
+ * can design with a different notion of how much fits.
+ */
+export function buildTaxonomyDesigner(config: Config, llm: LlmFactory, log: Log = () => {}): TaxonomyDesigner {
+  return new LlmTaxonomyDesigner(toRunner(llm.forRole('taxonomy'), { json: true }), {
+    minDepth: config.minCategoryDepth,
+    maxDepth: config.maxCategoryDepth,
+    contextWindow: taxonomyContextWindow(llm),
+    log,
+  });
+}
+
+/**
+ * The taxonomy model's context window, from the catalog the providers already
+ * carry - never a second, hand-maintained map. The static entry of a
+ * recommended model answers first (no I/O); a model picked from a provider's
+ * full catalog is asked of its client, which reads that same local catalog
+ * (no request, no spend). Undefined when neither knows, which the designer
+ * turns into its safe default.
+ */
+export function taxonomyContextWindow(llm: LlmFactory): () => Promise<number | undefined> {
+  return async () => llm.describe('taxonomy').contextWindow ?? (await llm.forRole('taxonomy').contextWindow?.());
 }
 
 /**

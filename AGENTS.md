@@ -56,6 +56,15 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   nodes - off-tree paths fall back to `Uncategorized`. `recategorize` rebuilds both passes over all
   stored bookmarks without re-fetching, preserving read state/dates (it designs the new taxonomy
   BEFORE clearing the old one, so a failed LLM call never wipes the DB).
+- **Pass 1 is sized against the taxonomy model's context window** (issue #109,
+  `src/categorize/taxonomy-budget.ts`). The window comes from the provider catalog that already
+  exists (`describe('taxonomy').contextWindow`, else the client's `contextWindow()` catalog read -
+  `taxonomyContextWindow` in `build.ts`), never a hand-kept map; an unknown model gets the modest
+  `DEFAULT_TAXONOMY_CONTEXT_WINDOW`. A prompt within 75% of the window (`chars/4`) is the ONE
+  byte-identical call it always was; past it, `LlmTaxonomyDesigner` designs the fewest fitting
+  batches and a reconciliation call (`buildReconcilePrompt`) merges them. Every designer is built
+  through `buildTaxonomyDesigner`, so no caller sizes differently; any batch or merge failure
+  (including an empty tree) throws, which keeps `recategorize`'s design-before-clear safety.
 - **Secrets resolve through a layered credential chain** (`src/creds/resolve.ts`,
   `CredentialStore`): process env (tier 1, unchanged - `av inject` is one example among several,
   never a requirement) -> a gitignored `.env` in the project root -> the OS keychain via the

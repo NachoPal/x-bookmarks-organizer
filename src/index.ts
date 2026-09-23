@@ -3,9 +3,8 @@ import { loadConfig, requireXCredentials, type Config } from './config';
 import { createCredentialStore, type CredentialStore } from './creds/resolve';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
-import { buildCategorizers, reportCategorizerBilling, requireLlm } from './categorize/build';
+import { buildCategorizers, buildTaxonomyDesigner, reportCategorizerBilling, requireLlm } from './categorize/build';
 import { Categorizer } from './categorize/llm';
-import { LlmTaxonomyDesigner } from './categorize/taxonomy';
 import { recategorizeAll, runIngest } from './ingest';
 import { startServer } from './web/server';
 import { LlmSummaryGenerator } from './summarize/summarizer';
@@ -161,7 +160,7 @@ async function cmdRun(baseConfig: Config, db: Database, store: CredentialStore):
   await requireLlm(llm, ['taxonomy', 'assignment']);
   reportCategorizerBilling(config, llm, (msg) => console.log(msg));
   const client = await getAuthenticatedClient(config, db);
-  const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store);
+  const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store, (msg) => console.log(msg));
 
   const summary = await runIngest({
     db,
@@ -185,7 +184,7 @@ async function cmdRecategorize(baseConfig: Config, db: Database, store: Credenti
   const llm = createLlmFactory(config, process.env, store);
   await requireLlm(llm, ['taxonomy', 'assignment']);
   reportCategorizerBilling(config, llm, (msg) => console.log(msg));
-  const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store);
+  const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store, (msg) => console.log(msg));
 
   const summary = await recategorizeAll({
     db,
@@ -373,10 +372,7 @@ async function cmdEvalCategorizers(
   const { report, markdown } = await runCategorizerEval(
     {
       db,
-      taxonomer: new LlmTaxonomyDesigner(toRunner(llm.forRole('taxonomy'), { json: true }), {
-        minDepth: config.minCategoryDepth,
-        maxDepth: config.maxCategoryDepth,
-      }),
+      taxonomer: buildTaxonomyDesigner(config, llm, (msg) => console.log(msg)),
       claude: new Categorizer(toRunner(assignment, { json: true }), {
         model: assignment.model,
         maxDepth: config.maxCategoryDepth,
