@@ -21,6 +21,8 @@ export interface RoleDescription {
   billing: Billing;
   /** The model's context window from the provider's catalog, when it declares one. */
   contextWindow?: number;
+  /** The provider's risk notice, when it carries one (`ProviderDefinition.warning`). */
+  warning?: string;
 }
 
 /**
@@ -121,6 +123,7 @@ export function createLlmFactory(
         model,
         billing: provider.billingFor ? provider.billingFor(model) : provider.billing,
         contextWindow: provider.models.find((m) => m.id === model)?.contextWindow,
+        ...(provider.warning ? { warning: provider.warning } : {}),
       };
     },
   };

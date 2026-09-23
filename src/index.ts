@@ -104,6 +104,9 @@ pass on an Anthropic, OpenAI, xAI or OpenRouter model (model id
 "<upstream>/<model>") PAID PER TOKEN to that upstream's API key, or on a local
 OpenAI-compatible server (XBOOKMARKS_PIAI_BASE_URL). It is never the default,
 refuses to run without the key, and every run prints each pass's billing first.
+\`pi-claude-subscription\` is an OPT-IN route that runs your Claude subscription
+(CLAUDE_CODE_OAUTH_TOKEN) through pi. Anthropic's Claude Code terms prohibit
+that use and it puts your account at risk; claude-cli stays the default.
 
 XBOOKMARKS_RANKER turns the optional ranking pass on (\`typesafe\`). It is the
 only feature with no free implementation - it is PAID per token - so it is off by

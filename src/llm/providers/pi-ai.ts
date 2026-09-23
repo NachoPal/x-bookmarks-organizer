@@ -34,14 +34,18 @@ import { redactError as redactCliError } from './claude-cli';
  * model's upstream resolves through the credential chain, and every sync
  * announces the per-token billing before it starts (`reportCategorizerBilling`).
  *
- * **The Claude SUBSCRIPTION is deliberately NOT reachable here.** pi can drive
- * a Claude Pro/Max OAuth token, but it does so by presenting itself as Claude
- * Code, and Anthropic's terms reserve subscription OAuth for Claude Code and
- * Anthropic's own apps ("developers may not collect, store, or intermediate
- * Claude.ai credentials or session tokens"). An owner's account is what that
- * would put at risk, so an `sk-ant-oat…` token is refused with a pointer to the
- * `claude-cli` provider - Anthropic's own binary, which is the sanctioned way
- * to spend a subscription - and `CLAUDE_CODE_OAUTH_TOKEN` is never read.
+ * **The Claude SUBSCRIPTION is deliberately NOT reachable through THIS
+ * provider.** pi can drive a Claude Pro/Max OAuth token, but it does so by
+ * presenting itself as Claude Code, and Anthropic's terms reserve subscription
+ * OAuth for Claude Code and Anthropic's own apps ("developers may not collect,
+ * store, or intermediate Claude.ai credentials or session tokens"). An owner's
+ * account is what that would put at risk, so an `sk-ant-oat…` token is refused
+ * with a pointer to the `claude-cli` provider - Anthropic's own binary, which
+ * is the sanctioned way to spend a subscription - and `CLAUDE_CODE_OAUTH_TOKEN`
+ * is never read. An owner who accepts that risk can still take this route, but
+ * only by selecting the SEPARATE `pi-claude-subscription` provider
+ * (`./pi-claude-subscription.ts`), which is never a default and carries the
+ * risk in its label wherever it can be chosen.
  *
  * pi-ai ships as ESM only (its `exports` map has no `require` condition), so
  * it is loaded with a real dynamic `import()`, once, on first use. That keeps
@@ -339,7 +343,7 @@ function callFailureMessage(ref: string, detail: string): string {
 }
 
 /** An Anthropic subscription OAuth token, as `claude setup-token` issues it. */
-function isSubscriptionToken(value: string): boolean {
+export function isSubscriptionToken(value: string): boolean {
   return value.includes('sk-ant-oat');
 }
 
@@ -408,10 +412,10 @@ function textOf(message: AssistantMessage): string {
     .join('');
 }
 
-/** Build the provider around a runtime loader - the real SDK, or a test's fake. */
-export function createPiAiProvider(load: () => Promise<PiRuntime> = loadPiRuntime): ProviderDefinition {
+/** Load the runtime once, on first use. */
+export function lazyRuntime(load: () => Promise<PiRuntime>): () => Promise<PiRuntime> {
   let runtime: Promise<PiRuntime> | undefined;
-  const getRuntime = (): Promise<PiRuntime> => {
+  return () => {
     runtime ??= load().catch((err) => {
       // A failed load is not cached: the next call gets a fresh attempt.
       runtime = undefined;
@@ -419,6 +423,68 @@ export function createPiAiProvider(load: () => Promise<PiRuntime> = loadPiRuntim
     });
     return runtime;
   };
+}
+
+/**
+ * One completion on a resolved pi model, authenticated with the credential
+ * this app resolved - never one pi finds on its own. Shared by every provider
+ * built on pi, so what counts as a failed, cut-off or usable response is
+ * decided in one place.
+ */
+export async function completeOnPi(opts: {
+  rt: PiRuntime;
+  model: Model<Api>;
+  apiKey?: string;
+  params: ProviderParams;
+  req: CompletionRequest;
+  /** The id the result reports as its model. */
+  ref: string;
+  providerId: string;
+  /** The user-facing message for a failure, given its raw detail. */
+  failure: (detail: string) => string;
+}): Promise<CompletionResult> {
+  const { rt, model, apiKey, params, req, ref, providerId, failure } = opts;
+  const effort = normalizeEffort(params.effort);
+  const clamped = effort && model.reasoning ? rt.clampEffort(model, effort) : 'off';
+  const context: Context = {
+    ...(req.system ? { systemPrompt: req.system } : {}),
+    messages: [{ role: 'user', content: req.prompt, timestamp: Date.now() }],
+  };
+
+  let message: AssistantMessage;
+  try {
+    message = await rt.complete(model, context, {
+      ...(apiKey ? { apiKey } : {}),
+      ...(clamped !== 'off' ? { reasoning: clamped } : {}),
+      ...(req.maxOutputTokens ?? params.maxOutputTokens
+        ? { maxTokens: req.maxOutputTokens ?? params.maxOutputTokens }
+        : {}),
+      ...(req.signal ? { signal: req.signal } : {}),
+    });
+  } catch (err) {
+    throw new Error(failure(err instanceof Error ? err.message : String(err)));
+  }
+
+  // pi reports a failed request as a message, not a throw.
+  if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+    throw new Error(failure(message.errorMessage ?? message.stopReason));
+  }
+  if (message.stopReason === 'length') {
+    // A cut-off response is truncated JSON to every caller in this app;
+    // saying so beats a parse error that points nowhere.
+    throw new Error(failure(`the response hit the model's output limit (${model.maxTokens} tokens) before it finished`));
+  }
+  return {
+    text: textOf(message),
+    model: ref,
+    providerId,
+    usage: { inputTokens: message.usage.input, outputTokens: message.usage.output },
+  };
+}
+
+/** Build the provider around a runtime loader - the real SDK, or a test's fake. */
+export function createPiAiProvider(load: () => Promise<PiRuntime> = loadPiRuntime): ProviderDefinition {
+  const getRuntime = lazyRuntime(load);
 
   /** pi's model for a reference, or an actionable reason it cannot be run. */
   async function modelFor(
@@ -530,45 +596,16 @@ export function createPiAiProvider(load: () => Promise<PiRuntime> = loadPiRuntim
           const key = resolveUpstreamKey(cfg, parsed);
           if (!key.ok) throw new Error(key.health.detail);
 
-          const rt = await getRuntime();
-          const effort = normalizeEffort(params.effort);
-          const clamped = effort && model.reasoning ? rt.clampEffort(model, effort) : 'off';
-          const context: Context = {
-            ...(req.system ? { systemPrompt: req.system } : {}),
-            messages: [{ role: 'user', content: req.prompt, timestamp: Date.now() }],
-          };
-
-          let message: AssistantMessage;
-          try {
-            message = await rt.complete(model, context, {
-              ...(key.apiKey ? { apiKey: key.apiKey } : {}),
-              ...(clamped !== 'off' ? { reasoning: clamped } : {}),
-              ...(req.maxOutputTokens ?? params.maxOutputTokens
-                ? { maxTokens: req.maxOutputTokens ?? params.maxOutputTokens }
-                : {}),
-              ...(req.signal ? { signal: req.signal } : {}),
-            });
-          } catch (err) {
-            throw new Error(callFailureMessage(ref, err instanceof Error ? err.message : String(err)));
-          }
-
-          // pi reports a failed request as a message, not a throw.
-          if (message.stopReason === 'error' || message.stopReason === 'aborted') {
-            throw new Error(callFailureMessage(ref, message.errorMessage ?? message.stopReason));
-          }
-          if (message.stopReason === 'length') {
-            // A cut-off response is truncated JSON to every caller in this app;
-            // saying so beats a parse error that points nowhere.
-            throw new Error(
-              callFailureMessage(ref, `the response hit the model's output limit (${model.maxTokens} tokens) before it finished`),
-            );
-          }
-          return {
-            text: textOf(message),
-            model: ref,
+          return completeOnPi({
+            rt: await getRuntime(),
+            model,
+            apiKey: key.apiKey,
+            params,
+            req,
+            ref,
             providerId: PI_AI_PROVIDER_ID,
-            usage: { inputTokens: message.usage.input, outputTokens: message.usage.output },
-          };
+            failure: (detail) => callFailureMessage(ref, detail),
+          });
         },
       };
     },

@@ -6405,13 +6405,6 @@
   // render from the server's catalog, so a provider added later (issue #70)
   // appears in both with no change here.
 
-  /** How each billing model reads to the owner, in one line. */
-  const BILLING_HINTS = {
-    subscription: "Runs on your Claude subscription - no per-call charge.",
-    "per-token": "PAID per token, billed to the API key of the model's own provider.",
-    local: "Runs locally.",
-  };
-
   function buildField(idPrefix, name, labelText) {
     const field = el("div", "field");
     const select = document.createElement("select");
@@ -6537,8 +6530,9 @@
         const p = providerOf(pass);
         const paid = !!p && p.billing === "per-token";
         const { provider, model } = passes[pass];
-        provider.hint.textContent = p ? BILLING_HINTS[p.billing] || "" : "";
-        provider.hint.classList.toggle("field-billing", paid);
+        const notice = categorization().providerNotice(p);
+        provider.hint.textContent = notice.text;
+        provider.hint.classList.toggle("field-billing", notice.emphasis);
         model.hint.textContent = hintFor(categorization().modelOptions(p, pass), model.select.value);
         model.hint.classList.toggle("field-billing", paid && model.select.value !== "");
       }
@@ -6576,7 +6570,7 @@
         const providerOptions = (next.providers || []).map((p) => ({
           value: p.id,
           label: p.label,
-          hint: BILLING_HINTS[p.billing] || "",
+          hint: categorization().providerNotice(p).text,
         }));
         for (const pass of ["taxonomy", "assignment"]) {
           const select = passes[pass].provider.select;

@@ -34,11 +34,16 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   #61) and the `pi-ai` provider (issue #70), which reads `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/
   `XAI_API_KEY`/`OPENROUTER_API_KEY` only for a pass the owner put on it. No code path may silently
   spend money, and any new paid path needs the same explicit opt-in + key + billing line.
-- **A Claude SUBSCRIPTION is spent only through `claude-cli`**, i.e. Anthropic's own binary.
-  Anthropic's terms reserve subscription OAuth for Claude Code and its own apps, and pi-ai drives
-  one only by impersonating Claude Code - so `pi-ai` refuses an `sk-ant-oat…` token and never reads
-  `CLAUDE_CODE_OAUTH_TOKEN`. This is why issue #70 kept two provider paths instead of unifying on pi
-  (verification gate outcome (c)); do not "unify" by routing a subscription token through pi.
+- **A Claude SUBSCRIPTION is spent through `claude-cli` (Anthropic's own binary) by default.**
+  Anthropic's terms reserve subscription OAuth for Claude Code and its own apps, and pi drives one
+  only by impersonating Claude Code - so `pi-ai` refuses an `sk-ant-oat…` token and never reads
+  `CLAUDE_CODE_OAUTH_TOKEN`. The owner has knowingly accepted that account risk for ONE opt-in
+  route: the separate `pi-claude-subscription` provider (`src/llm/providers/pi-claude-subscription.ts`),
+  which reads only `CLAUDE_CODE_OAUTH_TOKEN` via the credential chain, refuses a non-`sk-ant-oat`
+  value (pi would bill an API key per token), is registered LAST, and carries
+  `ProviderDefinition.warning` - shown under the selector and printed with the pass's billing line
+  every run. Keep it a separate id (selecting it IS the opt-in), never a default, never a mode of
+  `pi-ai`, and never drop the warning; do not "unify" `claude-cli` into it.
 - **Categorization is two passes** (`src/ingest.ts`): pass 1 designs a taxonomy holistically over
   ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus-class + high effort, configurable) so
   the tree is genuinely deep; pass 2 files each bookmark into that fixed tree in batches
