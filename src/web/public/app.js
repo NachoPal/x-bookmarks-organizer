@@ -2531,23 +2531,40 @@
    * (hence the popover's `aria-hidden`, and no `aria-expanded` claiming to
    * reveal something to AT).
    */
+  /**
+   * The active preset's name, as shown by the ranking rules picker - the
+   * label the score chip's hover detail attributes a verdict to. Read off
+   * `/api/setup`'s ranking block (not `/api/rubric`), so it is correct even
+   * before the rubric editor's own state has ever been fetched.
+   */
+  function activeRubricPresetName() {
+    const preset = setupState && setupState.ranking && setupState.ranking.preset;
+    return preset ? rubricApi().presetLabel(preset) : "";
+  }
+
   function renderScoreChip(bm, cardEl) {
     if (!window.XBOSortOrder) return null;
     const breakdown = window.XBOSortOrder.scoreBreakdown(bm.score);
     if (breakdown === null) return renderEmptyScoreChip(bm, cardEl);
 
+    // Captured once, alongside the breakdown: every score the viewer shows is
+    // already scoped to the ACTIVE preset's version (`AGENTS.md`), and a
+    // switch of rules re-pages the visible cards through `patchScoreChip`
+    // (`refreshAfterRank`) exactly as a finished run does, which is what keeps
+    // this from going stale without a full rebuild here.
+    const presetName = activeRubricPresetName();
     const chip = el("button", "score-chip");
     chip.type = "button";
     chip.appendChild(gaugeIcon());
     chip.appendChild(el("span", "score-chip-value", breakdown.rating));
-    const description = window.XBOSortOrder.describeScore(bm.score);
+    const description = window.XBOSortOrder.describeScore(bm.score, presetName);
     if (description) chip.setAttribute("aria-label", description);
 
     // Hover is mouse-only on purpose: a touch `pointerenter` fires immediately
     // before the `click` that follows it, so without the guard a tap would
     // open the graph and then instantly toggle it shut again.
     chip.addEventListener("pointerenter", (e) => {
-      if (e.pointerType === "mouse") openScoreDetail(chip, breakdown);
+      if (e.pointerType === "mouse") openScoreDetail(chip, breakdown, presetName);
     });
     chip.addEventListener("pointerleave", (e) => {
       // A chip the keyboard is sitting on keeps its graph when the pointer
@@ -2557,14 +2574,14 @@
     // `:focus-visible` rather than plain focus: a mouse click focuses the chip
     // too, and opening from that would fight the click's own toggle.
     chip.addEventListener("focus", () => {
-      if (chip.matches(":focus-visible")) openScoreDetail(chip, breakdown);
+      if (chip.matches(":focus-visible")) openScoreDetail(chip, breakdown, presetName);
     });
     chip.addEventListener("blur", () => {
       if (scoreDetailAnchor === chip) closeScoreDetail();
     });
     chip.addEventListener("click", () => {
       if (scoreDetailAnchor === chip) closeScoreDetail();
-      else openScoreDetail(chip, breakdown);
+      else openScoreDetail(chip, breakdown, presetName);
     });
     return chip;
   }
@@ -2623,13 +2640,17 @@
     return row;
   }
 
-  function renderScoreDetail(breakdown) {
+  function renderScoreDetail(breakdown, presetName) {
     const head = el("div", "score-detail-head");
     head.appendChild(el("span", "score-detail-label", "Ranking score"));
     head.appendChild(el("span", "score-detail-rating", breakdown.rating));
     head.appendChild(el("span", "score-detail-scale", "/ 10"));
 
     const nodes = [head];
+    // Which set of ranking rules produced this verdict - the owner authors
+    // the questions (issue #102), so the chip cannot claim to know what the
+    // number measures without naming them.
+    if (presetName) nodes.push(el("p", "score-detail-rules", `Ranked with "${presetName}"`));
     if (breakdown.confidencePercent !== null) {
       nodes.push(el("p", "score-detail-confidence", `${breakdown.confidencePercent}% model confidence`));
     }
@@ -2668,10 +2689,10 @@
     scoreDetailEl.style.left = `${Math.round(left)}px`;
   }
 
-  function openScoreDetail(anchor, breakdown) {
+  function openScoreDetail(anchor, breakdown, presetName) {
     if (!scoreDetailEl) return;
     scoreDetailAnchor = anchor;
-    renderScoreDetail(breakdown);
+    renderScoreDetail(breakdown, presetName);
     scoreDetailEl.hidden = false;
     positionScoreDetail(anchor);
     // One frame with the popover laid out but still transparent, so the fade
@@ -4682,16 +4703,18 @@
     catDeleteConfirmBtn.addEventListener("click", () => void confirmCatDelete());
   }
 
-  // ---- the Jev rules (rubric) editor (issue #102) --------------------------
+  // ---- the Jev rules (rubric) editor (issue #102, manage/select split) -----
   //
-  // One dialog with two views: the saved sets of rules (a native radiogroup -
-  // exactly one ranks) and the authoring form for one of them. `app.js` owns
-  // only the markup and the round trips; every RULE - what is valid, what a
-  // weight is as a share of the score, what switching would leave unranked -
-  // is the pure `rubric-editor.js`.
+  // One dialog with two views: the saved sets of rules, and the authoring
+  // form for one of them. It is MANAGE-ONLY - create, edit, duplicate,
+  // delete - and no longer selects which set ranks; that choice moved to the
+  // ranking panel's own picker (below), which is what actually calls
+  // `/api/rubric/active`. `app.js` owns only the markup and the round trips;
+  // every RULE - what is valid, what a weight is as a share of the score,
+  // what switching would leave unranked - is the pure `rubric-editor.js`.
   //
   // The paid-safety line, and it is the whole reason this dialog may exist at
-  // all: nothing in here spends anything. Authoring, saving, switching and
+  // all: nothing in here spends anything. Authoring, saving, selecting and
   // deleting are free server-side (`/api/rubric*` never calls TypeSafe), so
   // the re-rank a new set of rules invites is surfaced as a SENTENCE, never as
   // an action. Spending still happens in exactly one place: the confirmation
@@ -4707,7 +4730,6 @@
   const rubricListViewEl = document.getElementById("rubric-list-view");
   const rubricEditViewEl = document.getElementById("rubric-edit-view");
   const rubricListEl = document.getElementById("rubric-list");
-  const rubricSwitchNoteEl = document.getElementById("rubric-switch-note");
   const rubricListActionsEl = document.getElementById("rubric-list-actions");
   const rubricEditActionsEl = document.getElementById("rubric-edit-actions");
   const rubricNameInput = document.getElementById("rubric-name");
@@ -4715,7 +4737,6 @@
   const rubricAddDimensionBtn = document.getElementById("rubric-add-dimension");
   const rubricErrorEl = document.getElementById("rubric-error");
   const rubricAnnouncerEl = document.getElementById("rubric-announcer");
-  const rubricRulesActiveEl = document.getElementById("rank-rules-active");
 
   /** The last `/api/rubric` payload. */
   let rubricState = null;
@@ -4742,6 +4763,7 @@
     coverageLine: () => "",
     switchWarning: () => null,
     activePreset: () => undefined,
+    pickerEntries: () => [],
   };
 
   function rubricApi() {
@@ -4762,21 +4784,219 @@
     rubricErrorEl.hidden = !message;
   }
 
-  /**
-   * The active set of rules, named in the ranking popover.
-   *
-   * It reads off `/api/setup`'s ranking block, not off `/api/rubric`, so the
-   * line is correct before the editor has ever been opened - and stays correct
-   * after a run, since every path that re-reads setup passes through here.
-   */
-  function updateRubricSummary() {
-    if (!rubricRulesActiveEl) return;
+  // ---- the ranking panel's active-rules picker ---------------------------
+  //
+  // The manage/select split (issue): the dialog above is manage-only, so this
+  // ARIA combobox - styled and behaved like the pi model picker (issue #118),
+  // never a native <select> - is the one place the owner chooses which set of
+  // rules a run scores against. Picking an entry calls the same
+  // `/api/rubric/active` route the removed editor selector used
+  // (`activateRubricPreset`, above), which already refreshes exactly as a
+  // finished run does - "Rank now", the unranked dot and "Top score" all
+  // re-resolve for the newly active rule. Selecting never starts a run or
+  // spends: only the paid confirmation above does that.
+  const rankRulesInputEl = document.getElementById("rank-rules-input");
+  const rankRulesListEl = document.getElementById("rank-rules-list");
+  const rankRulesStatusRowEl = document.getElementById("rank-rules-status-row");
+  const rankRulesStatusEl = document.getElementById("rank-rules-status");
+  const rankRulesRetryBtn = document.getElementById("rank-rules-retry");
+  const rankRulesHintEl = document.getElementById("rank-rules-hint");
+  const rankRulesAnnouncerEl = document.getElementById("rank-rules-announcer");
+
+  /** "idle" before the first fetch, then "loading" | "ready" | "error". */
+  let rubricLoadState = "idle";
+  const rankRulesPicker = { query: "", open: false, active: -1, entries: [], selectError: "" };
+
+  function rankRulesAnnounce(message) {
+    if (rankRulesAnnouncerEl) rankRulesAnnouncerEl.textContent = message;
+  }
+
+  function showRankRulesError(message) {
+    rankRulesPicker.selectError = message || "";
+    renderRankRulesStatus();
+  }
+
+  function rankRulesEntries(query) {
+    return rubricState ? rubricApi().pickerEntries(rubricState, query) : [];
+  }
+
+  /** The active preset's entry, read off the picker's OWN full (query "") list. */
+  function rankRulesSelectedEntry() {
+    if (!rubricState) return null;
+    return rankRulesEntries("").find((e) => e.value === rubricState.activeId) || null;
+  }
+
+  function renderRankRulesStatus() {
+    if (!rankRulesStatusEl) return;
+    if (rankRulesRetryBtn) rankRulesRetryBtn.hidden = rubricLoadState !== "error";
+    if (rankRulesStatusRowEl) {
+      rankRulesStatusRowEl.setAttribute("data-state", rankRulesPicker.selectError ? "error" : rubricLoadState);
+    }
+    if (rankRulesPicker.selectError) {
+      rankRulesStatusEl.textContent = rankRulesPicker.selectError;
+    } else if (rubricLoadState === "loading" || rubricLoadState === "idle") {
+      rankRulesStatusEl.textContent = "Loading ranking rules…";
+    } else if (rubricLoadState === "error") {
+      rankRulesStatusEl.textContent = "Couldn't load your ranking rules.";
+    } else if (rankRulesPicker.open && rankRulesPicker.query && rankRulesPicker.entries.length === 0) {
+      rankRulesStatusEl.textContent = `No ranking rules match "${rankRulesPicker.query.trim()}".`;
+    } else {
+      rankRulesStatusEl.textContent = "";
+    }
+  }
+
+  function syncRankRulesInput() {
+    if (!rankRulesInputEl) return;
+    const selected = rankRulesSelectedEntry();
     const preset = setupState && setupState.ranking && setupState.ranking.preset;
-    if (!preset) {
-      rubricRulesActiveEl.textContent = "Ranking rules are unavailable.";
+    // Correct even before `/api/rubric` has resolved: the active preset's
+    // name already travels on `/api/setup`'s ranking block.
+    rankRulesInputEl.value = selected ? selected.label : preset ? rubricApi().presetLabel(preset) : "";
+    rankRulesInputEl.disabled = rubricLoadState !== "ready" || rubricBusy;
+  }
+
+  function renderRankRulesHint() {
+    if (!rankRulesHintEl) return;
+    const selected = rankRulesSelectedEntry();
+    rankRulesHintEl.textContent = selected ? selected.hint || selected.meta || "" : "";
+  }
+
+  function renderRankRulesList() {
+    rankRulesPicker.entries = rubricLoadState === "ready" ? rankRulesEntries(rankRulesPicker.query) : [];
+    if (rankRulesPicker.active >= rankRulesPicker.entries.length) {
+      rankRulesPicker.active = rankRulesPicker.entries.length - 1;
+    }
+    if (rankRulesListEl) {
+      rankRulesListEl.replaceChildren(
+        ...rankRulesPicker.entries.map((entry, i) => {
+          const option = el("li", "model-picker-option");
+          option.id = `rank-rules-opt-${i}`;
+          option.setAttribute("role", "option");
+          const selected = rubricState && entry.value === rubricState.activeId;
+          option.setAttribute("aria-selected", selected ? "true" : "false");
+          if (i === rankRulesPicker.active) option.classList.add("is-active");
+          const top = el("span", "model-picker-option-top");
+          top.append(el("span", "model-picker-option-label", entry.label));
+          if (entry.badge) top.append(el("span", "model-picker-badge", entry.badge));
+          option.append(top);
+          if (entry.meta) option.append(el("span", "model-picker-option-meta", entry.meta));
+          option.addEventListener("pointerdown", (e) => e.preventDefault());
+          option.addEventListener("click", () => void chooseRankRules(i));
+          return option;
+        }),
+      );
+      const showList = rankRulesPicker.open && rankRulesPicker.entries.length > 0;
+      rankRulesListEl.hidden = !showList;
+      if (rankRulesInputEl) {
+        rankRulesInputEl.setAttribute("aria-expanded", showList ? "true" : "false");
+        if (showList && rankRulesPicker.active >= 0) {
+          rankRulesInputEl.setAttribute("aria-activedescendant", `rank-rules-opt-${rankRulesPicker.active}`);
+          const node = rankRulesListEl.children[rankRulesPicker.active];
+          if (node) node.scrollIntoView({ block: "nearest" });
+        } else {
+          rankRulesInputEl.removeAttribute("aria-activedescendant");
+        }
+      }
+    }
+    renderRankRulesStatus();
+  }
+
+  /**
+   * Push the picker back in step with `rubricState`/`setupState`: the closed
+   * input's value, the list (only rebuilt when open, so a background refresh
+   * never yanks a filter query out from under the owner), and the status row.
+   */
+  function renderRankRulesPicker() {
+    if (!rankRulesInputEl) return;
+    syncRankRulesInput();
+    renderRankRulesHint();
+    renderRankRulesList();
+  }
+
+  function openRankRulesList() {
+    if (rankRulesPicker.open || rubricLoadState !== "ready") return;
+    rankRulesPicker.open = true;
+    rankRulesPicker.query = "";
+    const all = rankRulesEntries("");
+    rankRulesPicker.active = Math.max(0, all.findIndex((e) => rubricState && e.value === rubricState.activeId));
+    renderRankRulesList();
+  }
+
+  function closeRankRulesList(restore) {
+    rankRulesPicker.open = false;
+    rankRulesPicker.query = "";
+    rankRulesPicker.active = -1;
+    renderRankRulesList();
+    if (restore) syncRankRulesInput();
+  }
+
+  async function chooseRankRules(i) {
+    const entry = rankRulesPicker.entries[i];
+    closeRankRulesList(true);
+    if (!entry || !rubricState || entry.value === rubricState.activeId) return;
+    await activateRubricPreset(entry.value);
+  }
+
+  function moveRankRules(delta) {
+    if (!rankRulesPicker.open) {
+      openRankRulesList();
       return;
     }
-    rubricRulesActiveEl.textContent = `Ranking with: ${rubricApi().presetLabel(preset)}`;
+    const n = rankRulesPicker.entries.length;
+    if (n === 0) return;
+    rankRulesPicker.active =
+      rankRulesPicker.active < 0
+        ? delta > 0
+          ? 0
+          : n - 1
+        : Math.min(n - 1, Math.max(0, rankRulesPicker.active + delta));
+    renderRankRulesList();
+  }
+
+  function initRankRulesPicker() {
+    if (!rankRulesInputEl) return;
+    rankRulesInputEl.addEventListener("focus", () => rankRulesInputEl.select());
+    rankRulesInputEl.addEventListener("click", () =>
+      rankRulesPicker.open ? closeRankRulesList(true) : openRankRulesList(),
+    );
+    rankRulesInputEl.addEventListener("input", () => {
+      if (rubricLoadState !== "ready") return;
+      rankRulesPicker.open = true;
+      rankRulesPicker.query = rankRulesInputEl.value;
+      rankRulesPicker.active = 0;
+      renderRankRulesList();
+    });
+    rankRulesInputEl.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        moveRankRules(1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        moveRankRules(-1);
+      } else if (e.key === "Enter") {
+        if (rankRulesPicker.open && rankRulesPicker.active >= 0) {
+          e.preventDefault();
+          void chooseRankRules(rankRulesPicker.active);
+        }
+      } else if (e.key === "Escape") {
+        if (rankRulesPicker.open) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeRankRulesList(true);
+        }
+      } else if (e.key === "Tab" && rankRulesPicker.open) {
+        closeRankRulesList(true);
+      }
+    });
+    rankRulesInputEl.addEventListener("blur", () => {
+      if (rankRulesPicker.open) closeRankRulesList(true);
+    });
+    if (rankRulesRetryBtn) {
+      rankRulesRetryBtn.addEventListener("click", () => {
+        void loadRubricState();
+        rankRulesInputEl.focus();
+      });
+    }
   }
 
   async function openRubricEditor(triggerEl) {
@@ -4819,15 +5039,21 @@
   }
 
   async function loadRubricState() {
+    rubricLoadState = "loading";
+    renderRankRulesPicker();
     try {
       rubricState = await getJSON("/api/rubric");
+      rubricLoadState = "ready";
     } catch (_) {
       rubricState = null;
+      rubricLoadState = "error";
       showRubricError("Could not load your ranking rules. Please try again.");
+      renderRankRulesPicker();
       return;
     }
     if (rubricDraft) renderRubricEdit();
     else renderRubricList();
+    renderRankRulesPicker();
   }
 
   function rubricPresets() {
@@ -4851,57 +5077,36 @@
     setRubricView(false);
     if (!rubricState) {
       rubricListEl.replaceChildren(el("p", "rubric-item-meta", "Loading your ranking rules…"));
-      if (rubricSwitchNoteEl) rubricSwitchNoteEl.hidden = true;
       return;
     }
 
-    const api = rubricApi();
     const group = el("div", "rubric-list-group");
-    group.setAttribute("role", "radiogroup");
-    group.setAttribute("aria-label", "Which ranking rules to score with");
     group.append(...rubricPresets().map((preset) => renderRubricItem(preset)));
     rubricListEl.replaceChildren(group);
-
-    // What switching has already cost the library, stated once for the ACTIVE
-    // set rather than repeated under every row.
-    const active = api.activePreset(rubricState);
-    const warning = active ? api.switchWarning(active, rubricTotal()) : null;
-    if (rubricSwitchNoteEl) {
-      rubricSwitchNoteEl.textContent = warning || "";
-      rubricSwitchNoteEl.hidden = !warning;
-    }
   }
 
   function renderRubricItem(preset) {
     const api = rubricApi();
     const active = rubricState && rubricState.activeId === preset.id;
     const item = el("div", "rubric-item");
+    item.dataset.presetId = preset.id;
     if (active) item.classList.add("is-active");
 
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.className = "rubric-radio";
-    radio.name = "rubric-active";
-    radio.id = `rubric-preset-${preset.id}`;
-    radio.value = preset.id;
-    radio.checked = !!active;
-    radio.disabled = rubricBusy;
-    radio.addEventListener("change", () => {
-      if (radio.checked) void activateRubricPreset(preset.id);
-    });
-
     const main = el("div", "rubric-item-main");
-    const name = el("label", "rubric-item-name", api.presetLabel(preset));
-    name.htmlFor = radio.id;
+    const nameRow = el("div", "rubric-item-name-row");
+    nameRow.append(el("span", "rubric-item-name", api.presetLabel(preset)));
+    // Informational only (issue: manage/select split) - which rules a run
+    // scores against is now chosen from the ranking panel's own picker, never
+    // from here, so this is a fact about the set, not a control.
+    if (active) nameRow.append(el("span", "model-picker-badge rubric-item-active-badge", "Active"));
+    main.append(nameRow);
     const questions = (preset.dimensions || []).length;
     const meta = el(
       "p",
       "rubric-item-meta",
       `${questions} question${questions === 1 ? "" : "s"} · ${api.coverageLine(preset, rubricTotal())}`,
     );
-    meta.id = `${radio.id}-meta`;
-    radio.setAttribute("aria-describedby", meta.id);
-    main.append(name, meta);
+    main.append(meta);
 
     const actions = el("div", "rubric-item-actions");
     // The built-in set is the fallback everything else depends on, so it is
@@ -4944,34 +5149,43 @@
         renderRubricList();
         // Focus follows the button through the re-render, so the second press
         // is where the first one left the keyboard.
-        const again = Array.from(rubricListEl.querySelectorAll(".rubric-radio")).find(
-          (input) => input.value === preset.id,
+        const again = Array.from(rubricListEl.querySelectorAll(".rubric-item")).find(
+          (node) => node.dataset.presetId === preset.id,
         );
-        const btn = again && again.closest(".rubric-item").querySelector(".is-danger");
+        const btn = again && again.querySelector(".is-danger");
         if (btn) btn.focus();
         rubricAnnounce(`Press again to delete "${preset.name}". Your scores are kept.`);
       });
       actions.append(remove);
     }
 
-    item.append(radio, main, actions);
+    item.append(main, actions);
     return item;
   }
 
+  /**
+   * Activate a set of ranking rules. Called from the ranking panel's own
+   * picker (below) - the editor is manage-only and no longer offers this.
+   */
   async function activateRubricPreset(id) {
     if (rubricBusy) return;
     rubricBusy = true;
     showRubricError("");
+    renderRankRulesPicker();
     try {
       const body = await sendRubric("PUT", "/api/rubric/active", { id });
       await afterRubricChange(body);
       const preset = rubricApi().activePreset(rubricState);
-      rubricAnnounce(`Now ranking with ${rubricApi().presetLabel(preset)}.`);
+      const label = rubricApi().presetLabel(preset);
+      rubricAnnounce(`Now ranking with ${label}.`);
+      rankRulesAnnounce(`Now ranking with ${label}.`);
     } catch (err) {
       showRubricError(err.message);
+      showRankRulesError(err.message);
     } finally {
       rubricBusy = false;
       renderRubricList();
+      renderRankRulesPicker();
     }
   }
 
@@ -5800,7 +6014,7 @@
   function applySetupState() {
     updateSyncButton();
     updateRankControl();
-    updateRubricSummary();
+    renderRankRulesPicker();
     updateEmptyLibraryState();
     updateToolbarVisibility();
     updateSortAvailability();
@@ -7741,6 +7955,11 @@
   initMovePicker();
   initCategoryEditor();
   initRubricEditor();
+  initRankRulesPicker();
+  // Eager, not on first popover open: the picker needs the full preset list
+  // before the owner can pick anything, and the ranking panel can be opened
+  // before the editor ever is.
+  void loadRubricState();
   void restoreLastView();
   window.addEventListener("pagehide", persistViewSnapshot);
   document.addEventListener("visibilitychange", () => {

@@ -329,13 +329,20 @@
    * This is the chip's accessible NAME, and the graph the chip reveals is the
    * same facts drawn - both are built from one `scoreBreakdown`, so they can
    * never disagree about what the model said.
+   *
+   * `presetName` (optional, added for the manage/select split) names WHICH
+   * ranking rules produced the number. Every score the viewer shows is
+   * already scoped to the ACTIVE preset's version (`AGENTS.md`), so the active
+   * preset's name is always the right label - callers pass
+   * `setupState.ranking.preset.name`, never a per-score value.
    */
-  function describeScore(score) {
+  function describeScore(score, presetName) {
     const breakdown = scoreBreakdown(score);
     if (breakdown === null) return null;
     // "Ranking score", not "Learning value": since issue #102 the owner writes
     // the questions, so the chip cannot claim to know what the number measures.
     const parts = [`Ranking score ${breakdown.rating} of 10`];
+    if (presetName) parts.push(`ranked with "${presetName}"`);
     if (breakdown.confidencePercent !== null) parts.push(`confidence ${breakdown.confidencePercent}%`);
     if (breakdown.dimensions.length > 0) {
       parts.push(breakdown.dimensions.map((dimension) => `${dimension.short} ${dimension.rating}`).join(", "));

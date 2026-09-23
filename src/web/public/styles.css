@@ -2470,6 +2470,15 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   color: var(--color-text-muted);
   font-weight: 600;
 }
+/* Which saved set of ranking rules produced this verdict (the manage/select
+   split moved choosing them to the ranking panel, so the chip is what now
+   names them). */
+.score-detail-rules {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
 .score-detail-confidence {
   margin: var(--space-1) 0 0;
   color: var(--color-text-muted);
@@ -4712,23 +4721,12 @@ body.is-card-dragging .tree-node {
 .rubric-item:hover {
   background: var(--color-surface-2);
 }
-/* The active set is marked by the checked radio AND a stronger border with a
-   tinted surface - never by color alone. */
+/* Which set is active is informational here (manage/select split - the
+   ranking panel's picker is where it is CHOSEN), marked by a stronger border
+   with a tinted surface AND the badge below - never by color alone. */
 .rubric-item.is-active {
   border-color: var(--color-accent);
   background: var(--color-accent-soft);
-}
-.rubric-item:has(.rubric-radio:focus-visible) {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 1px;
-}
-.rubric-radio {
-  flex: 0 0 auto;
-  width: 1.1rem;
-  height: 1.1rem;
-  margin: 0.2rem 0 0;
-  accent-color: var(--color-accent);
-  cursor: pointer;
 }
 .rubric-item-main {
   flex: 1 1 auto;
@@ -4737,10 +4735,20 @@ body.is-card-dragging .tree-node {
   flex-direction: column;
   gap: var(--space-1);
 }
+.rubric-item-name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
 .rubric-item-name {
   font-weight: 600;
   overflow-wrap: anywhere;
-  cursor: pointer;
+}
+.rubric-item-active-badge {
+  /* `.model-picker-badge` carries the pill shape/color; this only cancels its
+     inline flow so it sits beside the name rather than colliding with it. */
+  flex: 0 0 auto;
 }
 .rubric-item-meta {
   margin: 0;
@@ -4782,21 +4790,6 @@ body.is-card-dragging .tree-node {
   color: var(--color-text-disabled);
   background: none;
 }
-/* What switching would leave unranked. A statement, never a button: selecting
-   a set of rules is free, and the re-rank it invites is a separate paid run. */
-.rubric-switch-note {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-2);
-  color: var(--color-text);
-  font-size: var(--text-small);
-  line-height: var(--leading-body);
-}
-.rubric-switch-note[hidden] {
-  display: none;
-}
-
 /* --- authoring one set ---------------------------------------------------- */
 .rubric-edit-body {
   display: flex;

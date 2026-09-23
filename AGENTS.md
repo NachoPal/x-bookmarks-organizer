@@ -1162,9 +1162,24 @@ The chip is patched in place (`patchScoreChip`), so no X embed reloads.
 ## The rubric editor: named, versioned ranking rules (issue #102)
 
 The rubric is no longer a constant in this repository. It is **named presets** the owner authors in
-the ranking popover ("Edit ranking rules"), and two decisions of the owner's shape everything here:
+the ranking popover ("Manage ranking rules"), and two decisions of the owner's shape everything here:
 FULL authoring (question, levels and weight per dimension, plus add/remove/reorder), and **scores
 kept per preset** - a switch never wipes anything.
+
+**Manage and select are two different controls (the manage/select split).** The "Manage ranking
+rules" dialog is MANAGE-ONLY - create, edit, duplicate, delete - and does not choose which preset is
+active; that choice lives in the ranking panel's own picker, right above the dialog's entry point.
+Both read and write the same `/api/rubric*` surface (the select action is `PUT /api/rubric/active`,
+unchanged since #102), so there is still only ONE place `resolveActiveRubric` resolves from - this
+split only relocates which UI control calls that route. The picker is a searchable ARIA combobox
+styled like the pi model picker (issue #118: `.model-picker-*` CSS classes, reused directly rather
+than duplicated), NOT a native `<select>`; its pure entries (label, coverage meta, switch-warning
+hint, "Active" badge) are `XBORubricEditor.pickerEntries` in `rubric-editor.js`. Picking an entry
+calls `activateRubricPreset` in `app.js`, which is unchanged from before the split except for WHERE
+it is invoked from. The score chip's hover detail and accessible name also name the active preset
+(`describeScore(score, presetName)` in `sort-order.js`, `presetName` optional and additive), read
+off `setupState.ranking.preset.name` - already carried on `/api/setup`'s `ranking` block before this
+split, so no new server surface was needed for it.
 
 - **The built-in preset is synthesized, never stored** (`src/rank/preset-store.ts`). That is what
   makes it impossible to lose, keeps it following `XBOOKMARKS_RANKER_INTERESTS` as it always has,
@@ -1199,10 +1214,13 @@ kept per preset** - a switch never wipes anything.
   sync or a ranking run is going, since a run in flight is writing rows keyed by the active version.
 - Frontend: `src/web/public/rubric-editor.js` (`XBORubricEditor`) is the pure, unit-tested half;
   `app.js` owns the markup - one dialog with two views (the sets, and the authoring form), because
-  a ~400px viewport has no room for both. A change to the rules has exactly a finished run's
-  consequences, so it reuses `refreshAfterRank` rather than restating the refresh. Levels are
-  auto-growing textareas, not inputs: they are the tuning surface the model reads, and a field
-  showing two of their four lines hides the thing the editor exists for.
+  a ~400px viewport has no room for both. The dialog's list view is informational only since the
+  manage/select split (no radio, no click-to-activate - an `.rubric-item-active-badge` states which
+  one is active); the ranking panel's own picker is the only place that changes it. A change to the
+  rules has exactly a finished run's consequences, so both the picker and the dialog's create/edit/
+  duplicate/delete reuse `refreshAfterRank`/`afterRubricChange` rather than restating the refresh.
+  Levels are auto-growing textareas, not inputs: they are the tuning surface the model reads, and a
+  field showing two of their four lines hides the thing the editor exists for.
 - `sort-order.js`'s `DIMENSIONS` is now a register of NICER NAMES for the questions this tool
   ships with, not the set of questions that can exist: an authored dimension is labelled from its
   own key (`humanizeDimensionId`) and the chip says "Ranking score", not "Learning value" - the

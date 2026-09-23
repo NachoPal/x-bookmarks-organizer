@@ -302,6 +302,39 @@
     })[0];
   }
 
+  /**
+   * The active-preset picker's entries (issue's manage/select split): one per
+   * saved set of rules, in the SAME order `/api/rubric` lists them, filtered
+   * by `query` against the label the way the pi model picker's own entries
+   * are (issue #118) - so the two widgets read as one pattern.
+   *
+   * Each entry's `hint` is what switching TO it would cost - the same
+   * statement {@link switchWarning} put in the (now-removed) editor note,
+   * relocated to the control that actually makes the choice - falling back to
+   * {@link coverageLine} once nothing would go unranked, so the field's
+   * standing hint always has something true to say.
+   */
+  function pickerEntries(state, query) {
+    var s = state || {};
+    var presets = s.presets || [];
+    var total = s.total || 0;
+    var q = text(query).toLowerCase();
+    return presets
+      .filter(function (p) {
+        return !q || presetLabel(p).toLowerCase().indexOf(q) !== -1;
+      })
+      .map(function (p) {
+        var questions = (p.dimensions || []).length;
+        return {
+          value: p.id,
+          label: presetLabel(p),
+          meta: plural(questions, "question", "questions") + " · " + coverageLine(p, total),
+          hint: switchWarning(p, total) || coverageLine(p, total),
+          badge: s.activeId === p.id ? "Active" : "",
+        };
+      });
+  }
+
   var api = {
     BUILT_IN_ID: BUILT_IN_ID,
     slugifyKey: slugifyKey,
@@ -320,6 +353,7 @@
     coverageLine: coverageLine,
     switchWarning: switchWarning,
     activePreset: activePreset,
+    pickerEntries: pickerEntries,
   };
 
   root.XBORubricEditor = api;
