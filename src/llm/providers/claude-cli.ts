@@ -241,6 +241,17 @@ export function createClaudeCliProvider(load: () => Promise<PiRuntime> = loadPiR
         providerId: CLAUDE_CLI_PROVIDER_ID,
         model: opts.model,
         billing: 'subscription',
+        // The CLI cannot report its own models (see `anthropic-catalog.ts`),
+        // so the window comes from the same pi Anthropic catalog `modelCatalog`
+        // lists - a local read, no request, no quota. A legacy alias (`opus`)
+        // is not a catalog id and answers undefined.
+        async contextWindow() {
+          try {
+            return (await (await getRuntime()).findModel('anthropic', rawModel))?.contextWindow;
+          } catch {
+            return undefined;
+          }
+        },
         async complete(req): Promise<CompletionResult> {
           const text = await runPrompt(cfg, rawModel, params, req);
           return { text, model: opts.model, providerId: CLAUDE_CLI_PROVIDER_ID };

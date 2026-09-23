@@ -5,7 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../config';
 import { createLlmFactory } from '../factory';
 import { toRunner } from '../runner';
-import { claudeCliProvider, redactError } from './claude-cli';
+import { claudeCliProvider, createClaudeCliProvider, redactError } from './claude-cli';
+import type { PiRuntime } from './pi-ai';
 import type { ResolvedProviderConfig } from '../types';
 
 /**
@@ -194,5 +195,42 @@ describe('the whole seam, end to end and offline', () => {
     expect(summary.argv[summary.argv.indexOf('--model') + 1]).toBe('claude-sonnet-5');
     expect(summary.argv).toContain('--safe-mode');
     expect(summary.argv).not.toContain('--effort');
+  });
+});
+
+describe('claude-cli contextWindow (issue #109)', () => {
+  const cfg: ResolvedProviderConfig = { get: () => undefined };
+  const runtime = (findModel: PiRuntime['findModel']): PiRuntime => ({
+    findModel,
+    listModels: async () => [],
+    localModel: () => {
+      throw new Error('never a local model');
+    },
+    clampEffort: (_model, level) => level,
+    complete: async () => {
+      throw new Error('a window lookup must never make a call');
+    },
+  });
+
+  it("reads the stripped model id's window from pi's local Anthropic catalog", async () => {
+    const lookups: string[] = [];
+    const provider = createClaudeCliProvider(async () =>
+      runtime(async (upstream, id) => {
+        lookups.push(`${upstream}/${id}`);
+        return { contextWindow: 200_000 } as Awaited<ReturnType<PiRuntime['findModel']>>;
+      }),
+    );
+    const client = provider.create(cfg, { model: 'anthropic/claude-opus-4-5' });
+    expect(await client.contextWindow?.()).toBe(200_000);
+    expect(lookups).toEqual(['anthropic/claude-opus-4-5']);
+  });
+
+  it('answers undefined - never throws - when the catalog does not know the model or cannot load', async () => {
+    const unknown = createClaudeCliProvider(async () => runtime(async () => undefined));
+    expect(await unknown.create(cfg, { model: 'opus' }).contextWindow?.()).toBeUndefined();
+    const broken = createClaudeCliProvider(async () => {
+      throw new Error('pi failed to load');
+    });
+    expect(await broken.create(cfg, { model: 'anthropic/claude-opus-4-8' }).contextWindow?.()).toBeUndefined();
   });
 });
