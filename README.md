@@ -1,3 +1,16 @@
+<p align="center">
+  <img src="docs/banner.png" alt="X Bookmarks Organizer" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/NachoPal/x-bookmarks-organizer/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/NachoPal/x-bookmarks-organizer/ci.yml?branch=main&style=flat&label=CI" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" alt="License: Apache-2.0"></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat" alt="PRs welcome"></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/Made%20with-TypeScript-3178C6?style=flat&logo=typescript&logoColor=white" alt="Made with TypeScript"></a>
+  <a href="https://github.com/NachoPal/x-bookmarks-organizer/releases"><img src="https://img.shields.io/github/v/release/NachoPal/x-bookmarks-organizer?style=flat" alt="Release"></a>
+  <a href="https://github.com/sponsors/NachoPal"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?style=flat&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors"></a>
+</p>
+
 # X Bookmarks Organizer
 
 Fetch your X (Twitter) bookmarks, auto-categorize them into a nested topic tree with an LLM,
@@ -534,4 +547,4 @@ under the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)
