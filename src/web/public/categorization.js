@@ -309,6 +309,21 @@
     return problems;
   }
 
+  /**
+   * Whether the current selection would be REJECTED by `PUT /api/settings` -
+   * the same conditions `passProblems` already flags with `blocksSave` (a
+   * catalog source picked with no model in it yet, or a local model with no
+   * typed name). Used to disable Save proactively, rather than let the owner
+   * find out only after clicking it. A missing key is a run-time concern
+   * (`blocksSave: false`) and never disables Save - the choice still saves
+   * fine, the key is only needed at sync time.
+   */
+  function hasSaveBlocker(values, catalog) {
+    return passProblems(values, catalog, {}).some(function (p) {
+      return p.blocksSave;
+    });
+  }
+
   /** How each billing model reads to the owner, in one line. */
   var BILLING_HINTS = {
     subscription: "Runs on your Claude subscription - no per-call charge.",
@@ -495,6 +510,7 @@
     pickerEntries: pickerEntries,
     sourceNotice: sourceNotice,
     passProblems: passProblems,
+    hasSaveBlocker: hasSaveBlocker,
     providerNotice: providerNotice,
     BILLING_HINTS: BILLING_HINTS,
     effortOptions: effortOptions,

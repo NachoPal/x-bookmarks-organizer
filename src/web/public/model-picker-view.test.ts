@@ -130,10 +130,16 @@ async function boot(opts: { failSources?: string[] } = {}) {
 const tick = () => new Promise((r) => setTimeout(r, 120));
 
 describe("the searchable model picker", () => {
-  it("swaps the model select for source + picker on pi-ai, and auto-loads the source's catalog", async () => {
+  it("shows claude-cli's own dynamic Claude catalog by default, then swaps to pi-ai's own on switching provider", async () => {
     const { $, change, sent } = await boot();
-    expect($("settings-taxonomyModel").closest(".field")!.hasAttribute("hidden")).toBe(false);
-    expect($("settings-taxonomySource").closest(".field")!.hasAttribute("hidden")).toBe(true);
+    // claude-cli (the default provider) now has a catalog too, so the
+    // searchable picker - not the old three-item dropdown - is what's on
+    // screen from the start.
+    expect($("settings-taxonomyModel").closest(".field")!.hasAttribute("hidden")).toBe(true);
+    expect($("settings-taxonomySource").closest(".field")!.hasAttribute("hidden")).toBe(false);
+    expect($<HTMLSelectElement>("settings-taxonomySource").value).toBe("anthropic");
+    expect(sent.some((s) => s.url === "/api/models?provider=claude-cli&source=anthropic")).toBe(true);
+    expect($<HTMLInputElement>("settings-taxonomyModelSearch").value).toMatch(/^Recommended: Claude Opus 4\.8/);
 
     change("settings-taxonomyProvider", "pi-ai");
     await tick();
@@ -203,7 +209,7 @@ describe("the searchable model picker", () => {
     expect(input.value).toBe("");
   });
 
-  it("shows a source's missing key in words, and refuses to save a source with no model picked", async () => {
+  it("shows a source's missing key in words, and DISABLES Save while a source has no model picked", async () => {
     const { $, change, sent } = await boot();
     change("settings-taxonomyProvider", "pi-ai");
     change("settings-taxonomySource", "opencode");
@@ -213,15 +219,41 @@ describe("the searchable model picker", () => {
     expect(hint.textContent).toContain("Needs OPENCODE_API_KEY - not found");
     expect(hint.textContent).toContain("PAID per token");
 
-    $("settings-save").click();
+    const saveBtn = $<HTMLButtonElement>("settings-save");
+    expect(saveBtn.disabled).toBe(true);
+    expect($("settings-categorization-note").hidden).toBe(false);
+    expect($("settings-categorization-note").textContent).toContain("Phase 1: choose a model from OpenCode Zen.");
+    expect(saveBtn.getAttribute("aria-describedby")).toBe("settings-categorization-note");
+
+    // A disabled button never dispatches click, so nothing is even attempted.
+    saveBtn.click();
     await tick();
     expect(sent.some((s) => s.method === "PUT")).toBe(false);
-    expect($("settings-save-status").textContent).toBe("Phase 1: choose a model from OpenCode Zen.");
 
     change("settings-taxonomySource", "anthropic");
     await tick();
     expect($("settings-taxonomySource-hint").dataset.key).toBe("present");
     expect($("settings-taxonomySource-hint").textContent).toContain("ANTHROPIC_API_KEY found (env)");
+    // Recommended-on-its-own-source is a valid, saveable choice again.
+    expect(saveBtn.disabled).toBe(false);
+    expect(saveBtn.hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  it("never disables Save for a missing key alone - only picking an actual model matters", async () => {
+    const { $, change, key, type } = await boot();
+    change("settings-taxonomyProvider", "pi-ai");
+    change("settings-taxonomySource", "opencode");
+    await tick();
+    const input = $<HTMLInputElement>("settings-taxonomyModelSearch");
+    input.focus();
+    type(input, "kimi");
+    key(input, "Enter");
+    await tick();
+
+    // OPENCODE_API_KEY is still missing - a run-time concern - but a real
+    // model is now chosen, so the selection itself is valid.
+    expect($("settings-taxonomySource-hint").dataset.key).toBe("missing");
+    expect($<HTMLButtonElement>("settings-save").disabled).toBe(false);
   });
 
   it("shows the load error with a Retry, and never blocks choosing another source", async () => {

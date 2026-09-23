@@ -5807,7 +5807,7 @@
     if (settingsForm && setupState && !settingsDirty) {
       settingsForm.setCatalog(setupState.catalog);
       settingsForm.setValues(setupState.settings);
-      updateFormNote(settingsForm, settingsNoteEl);
+      updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn);
     }
     if (setupForm && setupState) setupForm.setCatalog(setupState.catalog);
     if (isSetupOpen()) renderSetupStep();
@@ -6588,7 +6588,9 @@
         } else if (state.open && state.query) {
           statusText.textContent = `${state.entries.length} of ${count} models match.`;
         } else {
-          statusText.textContent = `${count} ${state.sourceLabel} ${count === 1 ? "model" : "models"}, prices per 1M tokens - type to search.`;
+          const source = categorization().findSource(state.provider, state.sourceId);
+          const priced = source && source.billing === "per-token" ? ", prices per 1M tokens" : "";
+          statusText.textContent = `${count} ${state.sourceLabel} ${count === 1 ? "model" : "models"}${priced} - type to search.`;
         }
       } else {
         statusText.textContent = "";
@@ -7061,17 +7063,30 @@
     return api;
   }
 
-  /** Show why the currently selected method cannot run, or hide the note. */
-  function updateFormNote(form, noteEl) {
+  /**
+   * Show why the currently selected method cannot run, or hide the note.
+   * `saveBtn`, when given, is kept DISABLED for as long as the selection
+   * would be rejected on save (a save-blocking error, e.g. a catalog source
+   * picked with no model chosen yet) - never for a missing key alone, which
+   * is a run-time concern the choice still saves fine under. The note is
+   * what states the reason in visible text; `aria-describedby` ties the
+   * button to it for the same reason while it is disabled.
+   */
+  function updateFormNote(form, noteEl, saveBtn) {
     if (!form || !noteEl || !setupState) return;
     const values = form.getValues();
     const credentials = setupState.credentials || {};
     const blocker = categorization().methodBlocker(setupState.catalog, values.categorizer, credentials);
-    const lines = [blocker]
-      .concat(categorization().passProblems(values, setupState.catalog, credentials.providerKeys).map((p) => p.text))
-      .filter(Boolean);
+    const problems = categorization().passProblems(values, setupState.catalog, credentials.providerKeys);
+    const lines = [blocker].concat(problems.map((p) => p.text)).filter(Boolean);
     noteEl.textContent = lines.join(" ");
     noteEl.hidden = lines.length === 0;
+    if (saveBtn) {
+      const blocked = categorization().hasSaveBlocker(values, setupState.catalog);
+      saveBtn.disabled = blocked;
+      if (blocked) saveBtn.setAttribute("aria-describedby", noteEl.id);
+      else saveBtn.removeAttribute("aria-describedby");
+    }
   }
 
   async function saveCategorization(form) {
@@ -7118,7 +7133,7 @@
     settingsForm = createCategorizationForm(settingsFormEl, "settings", () => {
       settingsDirty = true;
       setSaveStatus("");
-      updateFormNote(settingsForm, settingsNoteEl);
+      updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn);
     });
     if (!settingsSaveBtn) return;
     settingsSaveBtn.addEventListener("click", async () => {
@@ -7134,7 +7149,10 @@
         setSaveStatus(err.message, "error");
       } finally {
         settingsSaveBtn.classList.remove("is-loading");
-        settingsSaveBtn.disabled = false;
+        // Re-derive from the current selection rather than force it back on:
+        // a save the SERVER rejected (the async catalog check the client
+        // cannot run live) must stay disabled, not read as clickable again.
+        updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn);
       }
     });
   }

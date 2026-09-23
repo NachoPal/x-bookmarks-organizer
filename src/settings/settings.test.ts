@@ -26,12 +26,12 @@ describe('the settings catalog', () => {
   it('is built from the provider registry, so a new provider needs no change here', () => {
     const claude = catalog.providers.find((p) => p.id === 'claude-cli')!;
     expect(claude.billing).toBe('subscription');
-    expect(claude.models.map((m) => m.id)).toContain('claude-opus-4-8');
+    expect(claude.models.map((m) => m.id)).toContain('anthropic/claude-opus-4-8');
     // The effort axis the adapter actually accepts, ascending.
     expect(claude.efforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     // The Recommended option's real value per pass: Opus designs, Haiku files.
-    expect(claude.suggested.taxonomy).toBe('claude-opus-4-8');
-    expect(claude.suggested.assignment).toBe('claude-haiku-4-5');
+    expect(claude.suggested.taxonomy).toBe('anthropic/claude-opus-4-8');
+    expect(claude.suggested.assignment).toBe('anthropic/claude-haiku-4-5');
   });
 });
 
@@ -41,14 +41,14 @@ describe('validateSettings', () => {
       {
         categorizer: 'claude-cli',
         provider: 'claude-cli',
-        taxonomyModel: 'claude-opus-4-8',
-        assignmentModel: 'claude-haiku-4-5',
+        taxonomyModel: 'anthropic/claude-opus-4-8',
+        assignmentModel: 'anthropic/claude-haiku-4-5',
         effort: 'max',
       },
       catalog,
     );
     expect(errors).toEqual([]);
-    expect(settings.taxonomyModel).toBe('claude-opus-4-8');
+    expect(settings.taxonomyModel).toBe('anthropic/claude-opus-4-8');
     expect(settings.effort).toBe('max');
   });
 
@@ -72,7 +72,7 @@ describe('validateSettings', () => {
     );
     expect(errors).toHaveLength(3);
     expect(errors[0]).toContain('claude-cli, typesafe');
-    expect(errors[1]).toContain('claude-opus-4-8');
+    expect(errors[1]).toContain('names no model source of provider "claude-cli"');
     expect(errors[2]).toContain('low, medium, high');
   });
 
@@ -100,8 +100,8 @@ describe('settings persistence', () => {
       categorizer: 'typesafe',
       taxonomyProvider: 'claude-cli',
       assignmentProvider: 'claude-cli',
-      taxonomyModel: 'claude-sonnet-5',
-      assignmentModel: 'claude-haiku-4-5',
+      taxonomyModel: 'anthropic/claude-sonnet-5',
+      assignmentModel: 'anthropic/claude-haiku-4-5',
       effort: 'low',
       configuredAt: '2026-01-02T03:04:05.000Z',
     };
@@ -242,7 +242,7 @@ describe('per-pass providers (issue #70)', () => {
         taxonomyProvider: 'pi-ai',
         taxonomyModel: 'openrouter/google/gemini-2.5-flash',
         assignmentProvider: 'claude-cli',
-        assignmentModel: 'claude-haiku-4-5',
+        assignmentModel: 'anthropic/claude-haiku-4-5',
         effort: 'medium',
       },
       catalog,
@@ -252,7 +252,7 @@ describe('per-pass providers (issue #70)', () => {
       taxonomyProvider: 'pi-ai',
       taxonomyModel: 'openrouter/google/gemini-2.5-flash',
       assignmentProvider: 'claude-cli',
-      assignmentModel: 'claude-haiku-4-5',
+      assignmentModel: 'anthropic/claude-haiku-4-5',
     });
   });
 
@@ -265,7 +265,7 @@ describe('per-pass providers (issue #70)', () => {
     expect(viaPi.warning).toMatch(/Account risk/);
     expect(viaPi.warning).toMatch(/terms prohibit/);
     expect(viaPi.label).toMatch(/against Anthropic's terms/);
-    expect(viaPi.suggested).toEqual({ taxonomy: 'claude-opus-4-8', assignment: 'claude-haiku-4-5' });
+    expect(viaPi.suggested).toEqual({ taxonomy: 'anthropic/claude-opus-4-8', assignment: 'anthropic/claude-haiku-4-5' });
 
     // Either route, on either pass, is a valid saved choice.
     for (const [taxonomyProvider, assignmentProvider] of [
@@ -274,7 +274,12 @@ describe('per-pass providers (issue #70)', () => {
       ['pi-claude-subscription', 'pi-claude-subscription'],
     ]) {
       const { settings, errors } = validateSettings(
-        { taxonomyProvider, taxonomyModel: 'claude-opus-4-8', assignmentProvider, assignmentModel: 'claude-haiku-4-5' },
+        {
+          taxonomyProvider,
+          taxonomyModel: 'anthropic/claude-opus-4-8',
+          assignmentProvider,
+          assignmentModel: 'anthropic/claude-haiku-4-5',
+        },
         catalog,
       );
       expect(errors).toEqual([]);
@@ -298,7 +303,7 @@ describe('per-pass providers (issue #70)', () => {
 
   it('reads a pre-#70 document (one `provider`) as both passes\' provider', () => {
     const { settings, errors } = validateSettings(
-      { categorizer: 'claude-cli', provider: 'claude-cli', taxonomyModel: 'claude-opus-4-8' },
+      { categorizer: 'claude-cli', provider: 'claude-cli', taxonomyModel: 'anthropic/claude-opus-4-8' },
       catalog,
     );
     expect(errors).toEqual([]);
@@ -348,9 +353,14 @@ describe('a provider with a full model catalog (pi-ai)', () => {
     const pi = catalog.providers.find((p) => p.id === 'pi-ai')!;
     expect(pi.sources!.map((s) => s.id)).toEqual(expect.arrayContaining(['opencode', 'openrouter', 'google', 'local']));
     expect(pi.models.length).toBeLessThan(20);
-    // claude-cli and the subscription route keep exactly their own short lists.
-    expect(catalog.providers.find((p) => p.id === 'claude-cli')).not.toHaveProperty('sources');
-    expect(catalog.providers.find((p) => p.id === 'pi-claude-subscription')).not.toHaveProperty('sources');
+    // claude-cli and the subscription route each carry only ONE source - pi's
+    // Anthropic catalog - so their recommended list stays a short curated one
+    // while the full Claude catalog is still reachable by browsing it.
+    const cli = catalog.providers.find((p) => p.id === 'claude-cli')!;
+    const viaPi = catalog.providers.find((p) => p.id === 'pi-claude-subscription')!;
+    expect(cli.sources!.map((s) => s.id)).toEqual(['anthropic']);
+    expect(viaPi.sources!.map((s) => s.id)).toEqual(['anthropic']);
+    expect(cli.models.length).toBe(3);
   });
 
   it('accepts (and reads back) any <source>/<model> of the catalog, per pass', () => {

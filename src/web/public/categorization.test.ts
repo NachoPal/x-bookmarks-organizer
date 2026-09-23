@@ -440,9 +440,57 @@ describe('catalog sources (the full pi catalog)', () => {
     );
   });
 
-  it('leaves providers without a catalog (claude-cli) out of all of it', () => {
+  it('leaves a provider with no catalog out of all of it', () => {
     const values = { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' };
     expect(XBO.passProblems(values, piCatalog, {})).toEqual([]);
     expect(XBO.sourcesOf(catalog.providers[0])).toEqual([]);
+  });
+});
+
+describe('hasSaveBlocker', () => {
+  it('disables Save for exactly the conditions passProblems marks blocksSave: true', () => {
+    const values = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: '',
+      taxonomySource: 'opencode',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'openrouter/google/gemini-2.5-flash',
+      assignmentSource: 'openrouter',
+    };
+    expect(XBO.hasSaveBlocker(values, piCatalog)).toBe(true);
+  });
+
+  it('never disables Save for a missing key alone - only a genuinely invalid selection does', () => {
+    const values = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'anthropic/claude-opus-4-8',
+      taxonomySource: 'anthropic',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'openrouter/google/gemini-2.5-flash',
+      assignmentSource: 'openrouter',
+    };
+    // ANTHROPIC_API_KEY / OPENROUTER_API_KEY are both absent here, but every
+    // pass names a real model, so this is a valid, saveable choice.
+    expect(XBO.hasSaveBlocker(values, piCatalog)).toBe(false);
+  });
+
+  it('re-enables the instant the selection becomes valid again', () => {
+    const blocked = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: '',
+      taxonomySource: 'opencode',
+      assignmentProvider: 'claude-cli',
+    };
+    expect(XBO.hasSaveBlocker(blocked, piCatalog)).toBe(true);
+    const fixed = { ...blocked, taxonomySource: 'anthropic' };
+    expect(XBO.hasSaveBlocker(fixed, piCatalog)).toBe(false);
+  });
+
+  it('is false whenever no pass uses a catalog provider', () => {
+    const values = { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' };
+    expect(XBO.hasSaveBlocker(values, catalog)).toBe(false);
   });
 });

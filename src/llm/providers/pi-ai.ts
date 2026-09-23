@@ -19,7 +19,7 @@ import type {
   ProviderParams,
   ResolvedProviderConfig,
 } from '../types';
-import { redactError as redactCliError } from './claude-cli';
+import { redactError as redactCliError } from './redact';
 import {
   PI_UPSTREAMS,
   PI_UPSTREAM_IDS,
