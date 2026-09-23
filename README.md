@@ -384,14 +384,28 @@ pinned to an exact version). Either categorization pass can use it, independentl
 | --- | --- | --- | --- |
 | `anthropic` | `anthropic/claude-haiku-4-5` | `ANTHROPIC_API_KEY` (an `sk-ant-api…` **API** key) | **Pay per token** |
 | `openai` | `openai/gpt-5-mini` | `OPENAI_API_KEY` | **Pay per token** |
+| `google` | `google/gemini-2.5-flash` | `GEMINI_API_KEY` | **Pay per token** |
 | `xai` | `xai/grok-4.6` | `XAI_API_KEY` | **Pay per token** |
-| `openrouter` | `openrouter/google/gemini-2.5-flash` | `OPENROUTER_API_KEY` | **Pay per token** |
+| `deepseek`, `mistral`, `moonshotai`, `zai`, `minimax`, `groq`, `cerebras` | `groq/openai/gpt-oss-120b` | `DEEPSEEK_API_KEY`, `MISTRAL_API_KEY`, `MOONSHOT_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY` | **Pay per token** |
+| `openrouter` (gateway) | `openrouter/google/gemini-2.5-flash` | `OPENROUTER_API_KEY` | **Pay per token** |
+| `opencode` / `opencode-go` (OpenCode Zen / Go gateways) | `opencode/claude-fable-5` | `OPENCODE_API_KEY` (one key for both) | **Pay per token** |
+| `vercel-ai-gateway`, `together`, `fireworks`, `huggingface` (gateways) | `together/deepseek-ai/DeepSeek-V4-Flash-0731` | `AI_GATEWAY_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `HF_TOKEN` | **Pay per token** |
 | `local` | `local/llama3.1:8b` | `XBOOKMARKS_PIAI_BASE_URL` (e.g. `http://127.0.0.1:11434/v1`), optional `XBOOKMARKS_PIAI_API_KEY` / `XBOOKMARKS_PIAI_CONTEXT_WINDOW` | Local |
 
-The selector offers a short curated list per upstream, each showing its price, context window and the
-key it needs; any other model pi knows works by id through `XBOOKMARKS_TAXONOMY_MODEL` /
-`XBOOKMARKS_MODEL`. It is never a default, a pass without its upstream's key refuses to start (the
-message names the key), and every sync prints each pass's billing before it makes a call.
+In the app, a pi-ai pass gets an **API provider** dropdown (the upstreams above, gateways grouped
+separately) and a **searchable model picker** that loads that upstream's FULL model list from pi's own
+catalog - every model with its context window and price - the moment you pick it. Type to filter
+(OpenRouter alone lists hundreds), arrow keys and Enter to choose. A few recommended picks lead the
+list. Browsing is **free**: the catalog is data bundled in the pi package, read locally - no request,
+no key, no spend - so an upstream you have no key for still lists its models, and the dropdown says in
+words which key it needs and whether the server found it. On the CLI, any model pi knows works by id
+through `XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_MODEL`.
+
+It is never a default, a pass without its upstream's key refuses to start (the message names the
+key), and every sync prints each pass's billing before it makes a call. Upstreams that need cloud IAM
+or an account id (Bedrock, Vertex, Azure, Cloudflare) or a subscription login (Codex, Copilot, Kimi
+Coding) are deliberately not wired; `src/llm/providers/pi-upstreams.ts` lists them and why, and adding
+a plain-key upstream is one row there.
 
 **`pi-ai` never uses your Claude subscription.** It refuses a subscription token (`sk-ant-oat…`) in
 `ANTHROPIC_API_KEY`, pointing you at `claude-cli`, and never reads `CLAUDE_CODE_OAUTH_TOKEN`. The only

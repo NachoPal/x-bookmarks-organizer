@@ -91,6 +91,224 @@
     return options;
   }
 
+  // ---- providers with a full model catalog (pi's upstreams) -------------
+  //
+  // A provider that declares `sources` reaches far more models than its short
+  // `models` list: each source (Anthropic, OpenRouter, OpenCode...) has its own
+  // catalog, fetched on demand from `GET /api/models` and searched in the
+  // picker. A model id there is `<source>/<model>`, so the prefix names the
+  // source - and with it the key the model needs and who bills it.
+
+  function sourcesOf(provider) {
+    return (provider && provider.sources) || [];
+  }
+
+  function findSource(provider, sourceId) {
+    var sources = sourcesOf(provider);
+    for (var i = 0; i < sources.length; i++) {
+      if (sources[i].id === sourceId) return sources[i];
+    }
+    return null;
+  }
+
+  /** The source a `<source>/<model>` id belongs to, or null (mirrors the server's shape check). */
+  function sourceOfModel(provider, modelId) {
+    if (!modelId) return null;
+    var slash = modelId.indexOf("/");
+    if (slash <= 0 || !modelId.slice(slash + 1).trim()) return null;
+    return findSource(provider, modelId.slice(0, slash));
+  }
+
+  /**
+   * Which source a pass's picker opens on: the chosen model's own, else the
+   * one hosting the provider's suggestion for the pass (what "Recommended"
+   * resolves to), else the first.
+   */
+  function passSource(provider, pass, modelId) {
+    var own = sourceOfModel(provider, modelId);
+    if (own) return own.id;
+    var suggested = provider && provider.suggested ? provider.suggested[pass] : undefined;
+    var host = sourceOfModel(provider, suggested);
+    if (host) return host.id;
+    var sources = sourcesOf(provider);
+    return sources[0] ? sources[0].id : "";
+  }
+
+  function compactTokens(n) {
+    if (!n) return "";
+    if (n >= 1000000) return Number((n / 1000000).toFixed(2)) + "M";
+    return Math.round(n / 1000) + "k";
+  }
+
+  function formatPrice(usd) {
+    if (usd === 0) return "$0";
+    return Number.isInteger(usd) ? "$" + usd : "$" + usd.toFixed(2);
+  }
+
+  /**
+   * The picker's second line for a model: context window and price per
+   * million tokens (the unit is stated once, in the picker's status line).
+   */
+  function modelMeta(model) {
+    var parts = [];
+    if (model.contextWindow) parts.push(compactTokens(model.contextWindow) + " context");
+    if (model.price) {
+      parts.push(
+        model.price.input === 0 && model.price.output === 0
+          ? "listed at $0 per token"
+          : formatPrice(model.price.input) + "\u00a0in · " + formatPrice(model.price.output) + "\u00a0out",
+      );
+    }
+    return parts.join(" · ");
+  }
+
+  /** Every whitespace-separated term of the query appears in the model's name or id. */
+  function matchesQuery(model, query) {
+    var q = String(query || "").trim().toLowerCase();
+    if (!q) return true;
+    var haystack = (model.label + " " + model.id).toLowerCase();
+    var terms = q.split(/\s+/);
+    for (var i = 0; i < terms.length; i++) {
+      if (haystack.indexOf(terms[i]) === -1) return false;
+    }
+    return true;
+  }
+
+  var PASS_WORD = { taxonomy: "tree design", assignment: "filing" };
+
+  /**
+   * The picker's options for one source, in order: "Recommended" (only on the
+   * source that hosts the provider's suggestion - elsewhere it would silently
+   * mean a model from ANOTHER source), then the provider's recommended picks
+   * on this source, then the rest of the catalog alphabetically. Each carries
+   * a `meta` line and, for a pick suggested for this pass, a `badge`.
+   */
+  function pickerEntries(provider, sourceId, models, pass, query) {
+    var entries = [];
+    var suggested = provider && provider.suggested ? provider.suggested[pass] : undefined;
+    var suggestedSource = sourceOfModel(provider, suggested);
+    var recommended = (provider && provider.models) || [];
+    var picks = {};
+    for (var r = 0; r < recommended.length; r++) {
+      var src = sourceOfModel(provider, recommended[r].id);
+      if (src && src.id === sourceId) picks[recommended[r].id] = recommended[r];
+    }
+    if (suggestedSource && suggestedSource.id === sourceId) {
+      var rec = {
+        value: "",
+        label: "Recommended: " + labelFor(provider, suggested),
+        meta: "Follows the provider's own choice for this pass.",
+        id: "",
+      };
+      if (matchesQuery({ label: rec.label + " recommended", id: suggested }, query)) entries.push(rec);
+    }
+    var list = models || [];
+    var rest = [];
+    var head = [];
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (!matchesQuery(m, query)) continue;
+      var entry = {
+        value: m.id,
+        label: m.label,
+        id: m.id,
+        meta: modelMeta(m),
+        hint: m.description || "",
+        badge: m.suggestedFor && m.suggestedFor.indexOf(pass) !== -1 ? "Suggested for " + PASS_WORD[pass] : "",
+      };
+      if (picks[m.id]) head.push(entry);
+      else rest.push(entry);
+    }
+    return entries.concat(head, rest);
+  }
+
+  /**
+   * Whether a source's key is in place, as the one line under the source
+   * select. The catalog lists a source's models whether or not the key is
+   * there - browsing is free - so this is what says a choice cannot RUN yet,
+   * in words, never by color alone.
+   */
+  function sourceNotice(source, providerKeys) {
+    if (!source) return { text: "", state: "none" };
+    if (source.freeform) {
+      return {
+        text:
+          "Runs on your own OpenAI-compatible server (set XBOOKMARKS_PIAI_BASE_URL) - no per-call charge.",
+        state: "none",
+      };
+    }
+    var paid = source.billing === "per-token" ? "PAID per token, billed to your " + source.label + " key." : "";
+    if (!source.requiresKey) return { text: paid, state: "none" };
+    var status = providerKeys && providerKeys[source.requiresKey];
+    if (status && status.present) {
+      return {
+        text: source.requiresKey + " found" + (status.source ? " (" + status.source + ")" : "") + ". " + paid,
+        state: "present",
+      };
+    }
+    return {
+      text: "Needs " + source.requiresKey + " - not found. " + paid + " You can still browse and pick a model.",
+      state: "missing",
+    };
+  }
+
+  var CHAIN =
+    "an environment variable, a .env file in the project root, your OS keychain, or " +
+    "~/.config/x-bookmarks-organizer/credentials.json";
+
+  /**
+   * What a pass's model choice needs before it can run, one sentence each,
+   * for the form's note: a catalog source picked with no model in it yet or a
+   * local model with no name (both `blocksSave` - saving would silently mean
+   * something else), or a source whose key the server cannot find (saving is
+   * fine; a sync is what needs the key). `values` carries each pass's
+   * `<pass>Source` beside its model.
+   */
+  function passProblems(values, catalog, providerKeys) {
+    var problems = [];
+    var fields = fieldsFor(values.categorizer);
+    var passes = [
+      { pass: "taxonomy", name: "Phase 1", used: true },
+      { pass: "assignment", name: "Phase 2", used: fields.assignmentModel },
+    ];
+    for (var i = 0; i < passes.length; i++) {
+      var p = passes[i];
+      if (!p.used) continue;
+      var provider = findProvider(catalog, values[p.pass + "Provider"]);
+      if (sourcesOf(provider).length === 0) continue;
+      var model = values[p.pass + "Model"] || "";
+      var suggested = provider.suggested ? provider.suggested[p.pass] : undefined;
+      var source = sourceOfModel(provider, model || suggested);
+      var chosen = findSource(provider, values[p.pass + "Source"]) || source;
+      if (!model && chosen && (!source || source.id !== chosen.id)) {
+        problems.push({
+          text: chosen.freeform
+            ? p.name + ": type the model name your local server serves."
+            : p.name + ": choose a model from " + chosen.label + ".",
+          blocksSave: true,
+        });
+        continue;
+      }
+      var notice = sourceNotice(source, providerKeys);
+      if (notice.state === "missing") {
+        problems.push({
+          text:
+            p.name +
+            " runs on " +
+            source.label +
+            ", which needs " +
+            source.requiresKey +
+            ". Make it available to the server - " +
+            CHAIN +
+            " - then restart the viewer.",
+          // A choice can be saved before its key exists; only a sync needs it.
+          blocksSave: false,
+        });
+      }
+    }
+    return problems;
+  }
+
   /** How each billing model reads to the owner, in one line. */
   var BILLING_HINTS = {
     subscription: "Runs on your Claude subscription - no per-call charge.",
@@ -268,6 +486,15 @@
     findProvider: findProvider,
     findMethod: findMethod,
     modelOptions: modelOptions,
+    sourcesOf: sourcesOf,
+    findSource: findSource,
+    sourceOfModel: sourceOfModel,
+    passSource: passSource,
+    modelMeta: modelMeta,
+    matchesQuery: matchesQuery,
+    pickerEntries: pickerEntries,
+    sourceNotice: sourceNotice,
+    passProblems: passProblems,
     providerNotice: providerNotice,
     BILLING_HINTS: BILLING_HINTS,
     effortOptions: effortOptions,

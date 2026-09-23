@@ -293,7 +293,7 @@ describe('per-pass providers (issue #70)', () => {
       catalog,
     );
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain('Taxonomy model "claude-opus-4-8" is not available for provider "pi-ai"');
+    expect(errors[0]).toContain('Taxonomy model "claude-opus-4-8" names no model source of provider "pi-ai"');
   });
 
   it('reads a pre-#70 document (one `provider`) as both passes\' provider', () => {
@@ -338,5 +338,42 @@ describe('per-pass providers (issue #70)', () => {
     expect(after.llm.defaultProvider).toBe('pi-ai');
     expect(after.llm.roles.taxonomy.provider).toBeUndefined();
     expect(after.llm.roles.assignment.provider).toBeUndefined();
+  });
+});
+
+describe('a provider with a full model catalog (pi-ai)', () => {
+  const catalog = buildSettingsCatalog();
+
+  it('ships its sources - every wired pi upstream - beside the recommended picks', () => {
+    const pi = catalog.providers.find((p) => p.id === 'pi-ai')!;
+    expect(pi.sources!.map((s) => s.id)).toEqual(expect.arrayContaining(['opencode', 'openrouter', 'google', 'local']));
+    expect(pi.models.length).toBeLessThan(20);
+    // claude-cli and the subscription route keep exactly their own short lists.
+    expect(catalog.providers.find((p) => p.id === 'claude-cli')).not.toHaveProperty('sources');
+    expect(catalog.providers.find((p) => p.id === 'pi-claude-subscription')).not.toHaveProperty('sources');
+  });
+
+  it('accepts (and reads back) any <source>/<model> of the catalog, per pass', () => {
+    const { settings, errors } = validateSettings(
+      {
+        taxonomyProvider: 'pi-ai',
+        taxonomyModel: 'opencode/claude-fable-5',
+        assignmentProvider: 'pi-ai',
+        assignmentModel: 'openrouter/z-ai/glm-5',
+      },
+      catalog,
+    );
+    expect(errors).toEqual([]);
+    expect(settings).toMatchObject({ taxonomyModel: 'opencode/claude-fable-5', assignmentModel: 'openrouter/z-ai/glm-5' });
+  });
+
+  it('refuses a source pi-ai does not wire, listing the ones it does', () => {
+    const { errors } = validateSettings(
+      { taxonomyProvider: 'pi-ai', taxonomyModel: 'amazon-bedrock/claude', assignmentProvider: 'claude-cli' },
+      catalog,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('names no model source of provider "pi-ai"');
+    expect(errors[0]).toContain('opencode');
   });
 });

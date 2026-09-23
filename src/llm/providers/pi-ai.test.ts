@@ -74,9 +74,22 @@ function reply(text: string, extra: Partial<AssistantMessage> = {}): AssistantMe
 /** A pi runtime that knows a couple of models and records every call. */
 function fakeRuntime(next: () => AssistantMessage = () => reply('{"ok":true}')) {
   const calls: Call[] = [];
-  const known = new Set(['anthropic/claude-haiku-4-5', 'openrouter/google/gemini-2.5-flash', 'openai/gpt-5-mini']);
+  const known = new Set([
+    'anthropic/claude-haiku-4-5',
+    'openrouter/google/gemini-2.5-flash',
+    'openai/gpt-5-mini',
+    'opencode/claude-fable-5',
+    'opencode/big-pickle',
+  ]);
+  const listed: string[] = [];
   const runtime: PiRuntime = {
-    findModel: (upstream, id) => (known.has(`${upstream}/${id}`) ? fakeModel(upstream, id) : undefined),
+    findModel: async (upstream, id) => (known.has(`${upstream}/${id}`) ? fakeModel(upstream, id) : undefined),
+    listModels: async (upstream) => {
+      listed.push(upstream);
+      return [...known]
+        .filter((ref) => ref.startsWith(`${upstream}/`))
+        .map((ref) => fakeModel(upstream, ref.slice(upstream.length + 1)));
+    },
     localModel: (id, endpoint) => fakeModel('local', id, { reasoning: false, contextWindow: endpoint.contextWindow }),
     clampEffort: (_model, level) => (level === 'max' ? 'high' : level),
     async complete(model, context, options) {
@@ -87,6 +100,7 @@ function fakeRuntime(next: () => AssistantMessage = () => reply('{"ok":true}')) 
   let loads = 0;
   return {
     calls,
+    listed,
     loads: () => loads,
     provider: createPiAiProvider(async () => {
       loads += 1;
@@ -345,7 +359,7 @@ describe('the curated model table vs the installed pi catalog', () => {
       const ref = parseModelRef(curated.ref);
       expect(ref, curated.ref).toBeDefined();
       if (!ref || ref.upstream === 'local') continue;
-      const model = runtime.findModel(ref.upstream, ref.modelId);
+      const model = await runtime.findModel(ref.upstream, ref.modelId);
       expect(model, `${curated.ref} is not in the installed pi catalog`).toBeDefined();
       expect({ ref: curated.ref, contextWindow: curated.contextWindow, maxOutputTokens: curated.maxOutputTokens }).toEqual({
         ref: curated.ref,
@@ -406,5 +420,120 @@ describe('the REAL pi SDK against a local OpenAI-compatible endpoint', () => {
     expect(messages[0]).toMatchObject({ role: 'system', content: 'you design taxonomies' });
     expect(JSON.stringify(messages.at(-1))).toContain('design a tree');
     expect(request.body).not.toHaveProperty('reasoning_effort');
+  });
+});
+
+describe('the full pi model catalog (issue: auto-load the selector)', () => {
+  it('offers every wired upstream as a source, with its key and per-token billing', () => {
+    const catalog = createPiAiProvider(async () => {
+      throw new Error('listing sources must not load the SDK');
+    }).modelCatalog!;
+    const ids = catalog.sources.map((s) => s.id);
+    // The #70 four, OpenCode's two plans, the other gateways and the direct APIs, then local.
+    for (const id of ['anthropic', 'openai', 'xai', 'openrouter', 'opencode', 'opencode-go', 'google', 'groq',
+      'deepseek', 'mistral', 'together', 'cerebras', 'fireworks', 'moonshotai', 'vercel-ai-gateway']) {
+      expect(ids, id).toContain(id);
+    }
+    expect(ids.at(-1)).toBe('local');
+    expect(catalog.sources.find((s) => s.id === 'opencode')).toEqual({
+      id: 'opencode',
+      label: 'OpenCode Zen',
+      kind: 'gateway',
+      billing: 'per-token',
+      requiresKey: 'OPENCODE_API_KEY',
+    });
+    expect(catalog.sources.find((s) => s.id === 'local')).toMatchObject({ billing: 'local', freeform: true });
+    expect(catalog.sources.every((s) => s.id === 'local' || s.billing === 'per-token')).toBe(true);
+  });
+
+  it('lists one upstream on demand, sorted, with price and context from the catalog', async () => {
+    const { provider, listed, loads } = fakeRuntime();
+    expect(loads()).toBe(0);
+    const models = await provider.modelCatalog!.listModels('opencode');
+    expect(listed).toEqual(['opencode']);
+    expect(models.map((m) => m.id)).toEqual(['opencode/big-pickle', 'opencode/claude-fable-5']);
+    expect(models[1]).toMatchObject({
+      contextWindow: 123_456,
+      maxOutputTokens: 4_096,
+      price: { input: 1, output: 5 },
+      requiresKey: 'OPENCODE_API_KEY',
+      suggestedFor: [],
+    });
+    expect(models[1]!.description).toContain('PAID');
+    await expect(provider.modelCatalog!.listModels('bedrock')).rejects.toThrow(/no upstream "bedrock"/);
+    expect(await provider.modelCatalog!.listModels('local')).toEqual([]);
+  });
+
+  it('keeps a recommended pick\'s role and suggestion when it is found in the full list', async () => {
+    const { provider } = fakeRuntime();
+    const [haiku] = await provider.modelCatalog!.listModels('anthropic');
+    expect(haiku).toMatchObject({ id: 'anthropic/claude-haiku-4-5', suggestedFor: ['assignment', 'chat'] });
+    expect(haiku!.description).toMatch(/^Fast and cheap/);
+  });
+
+  it('runs an OpenCode model on OPENCODE_API_KEY, billed per token - never on another upstream\'s key', async () => {
+    const { provider, calls } = fakeRuntime();
+    const ref = 'opencode/claude-fable-5';
+    const withoutKey = cfgOf({ ANTHROPIC_API_KEY: 'sk-ant-api03-other', OPENROUTER_API_KEY: 'sk-or-other' });
+    const missing = await provider.check(withoutKey, { model: ref });
+    expect(missing.state).toBe('unconfigured');
+    expect(missing.detail).toContain('OPENCODE_API_KEY');
+    expect(missing.detail).toContain('PAID per token');
+
+    const cfg = cfgOf({ OPENCODE_API_KEY: 'oc-live-key-123456' });
+    expect(await provider.check(cfg, { model: ref })).toEqual({
+      state: 'ok',
+      detail: `pi-ai / ${ref} is configured (PAID per token).`,
+    });
+    const client = provider.create(cfg, { model: ref });
+    expect(client.billing).toBe('per-token');
+    expect(provider.billingFor!(ref)).toBe('per-token');
+    await client.complete({ prompt: 'p' });
+    expect(calls[0]!.options.apiKey).toBe('oc-live-key-123456');
+    expect(calls[0]!.model.provider).toBe('opencode');
+  });
+
+  it('declares each upstream key once, OpenCode\'s two plans sharing one', () => {
+    const keys = createPiAiProvider().configKeys.map((k) => k.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).toEqual(expect.arrayContaining(['OPENCODE_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'HF_TOKEN']));
+    const opencode = createPiAiProvider().configKeys.find((k) => k.key === 'OPENCODE_API_KEY')!;
+    expect(opencode.description).toContain('OpenCode Zen / OpenCode Go');
+  });
+
+  it('scrubs the literal key a call sent from its failure, whatever its format', async () => {
+    const { provider } = fakeRuntime(() => reply('', { stopReason: 'error', errorMessage: 'bad key oc-live-key-123456 rejected' }));
+    const failure = provider
+      .create(cfgOf({ OPENCODE_API_KEY: 'oc-live-key-123456' }), { model: 'opencode/claude-fable-5' })
+      .complete({ prompt: 'p' });
+    await expect(failure).rejects.toThrow(/bad key \[redacted\] rejected/);
+  });
+
+  it('reads the REAL installed catalog locally - every upstream loads and lists, with no network at all', async () => {
+    const realFetch = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests += 1;
+      throw new Error('the catalog browse must never reach the network');
+    }) as typeof fetch;
+    try {
+      const provider = createPiAiProvider();
+      for (const source of provider.modelCatalog!.sources) {
+        const models = await provider.modelCatalog!.listModels(source.id);
+        if (source.freeform) continue;
+        expect(models.length, `${source.id} lists no models`).toBeGreaterThan(0);
+        for (const m of models) {
+          expect(m.id.startsWith(`${source.id}/`)).toBe(true);
+          expect(m.contextWindow).toBeGreaterThan(0);
+          expect(m.price).toBeDefined();
+        }
+      }
+      // The big gateways are the reason the picker is searchable.
+      expect((await provider.modelCatalog!.listModels('openrouter')).length).toBeGreaterThan(100);
+      expect((await provider.modelCatalog!.listModels('opencode')).length).toBeGreaterThan(20);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(requests).toBe(0);
   });
 });

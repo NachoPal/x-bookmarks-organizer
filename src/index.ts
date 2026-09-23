@@ -12,6 +12,7 @@ import { LlmSummaryGenerator } from './summarize/summarizer';
 import { billingLabel, createLlmFactory } from './llm/factory';
 import { toRunner } from './llm/runner';
 import { buildSettingsCatalog } from './settings/catalog';
+import { createModelBrowser } from './settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from './settings/settings';
 import { createSyncJob } from './web/sync-job';
 import { createRankWiring } from './web/rank-job';
@@ -458,6 +459,7 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // would read a freshly-ranked library as unranked.
     rankerInterests: baseConfig.ranker.interests,
     credentials: store,
+    modelBrowser: createModelBrowser(),
     xLogin: async () => {
       const current = applySettingsToConfig(
         loadConfig(process.env, store),

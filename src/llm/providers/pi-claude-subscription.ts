@@ -154,7 +154,7 @@ export function createPiClaudeSubscriptionProvider(
   const getRuntime = lazyRuntime(load);
 
   async function modelFor(modelId: string): Promise<{ model: Model<Api> } | { health: Health }> {
-    const model = (await getRuntime()).findModel('anthropic', modelId);
+    const model = await (await getRuntime()).findModel('anthropic', modelId);
     return model ? { model } : { health: { state: 'unconfigured', detail: unknownModelDetail(modelId) } };
   }
 

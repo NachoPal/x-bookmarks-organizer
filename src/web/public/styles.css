@@ -75,6 +75,10 @@
      the field so a long option label never runs underneath it. */
   --select-chevron-size: 0.4rem;
   --select-chevron-gutter: 2rem;
+  /* How tall the model picker's list grows before it scrolls: about six
+     two-line options, enough to scan without pushing the panel's Save off
+     a laptop screen. */
+  --model-picker-list-height: 17rem;
 
   /* Radii */
   --radius-sm: 6px;
@@ -96,6 +100,7 @@
 
   /* Type */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --text-body: clamp(0.9375rem, 0.9rem + 0.2vw, 1.0625rem);
   --text-title: clamp(1.25rem, 1.1rem + 0.8vw, 1.75rem);
   --text-h2: clamp(1.05rem, 1rem + 0.3vw, 1.25rem);
@@ -3374,6 +3379,161 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 .field-billing {
   font-weight: 600;
   color: var(--color-favorite);
+}
+/* A catalog source's key state, stated in the hint's words AND marked with a
+   glyph - never by the color alone. */
+.field-hint[data-key="missing"]::before,
+.field-hint[data-key="present"]::before {
+  display: inline-block;
+  margin-right: var(--space-1);
+  font-weight: 700;
+}
+.field-hint[data-key="missing"]::before {
+  /* The glyph is decoration: the hint's own words already say it. */
+  content: "!" / "";
+  width: 1.1em;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  line-height: 1;
+  text-align: center;
+}
+.field-hint[data-key="present"]::before {
+  content: "\2713" / "";
+}
+
+/* ============================================================
+   Searchable model picker (pi's full catalogs)
+   A combobox over one source's models - hundreds for OpenRouter - so it
+   filters as the owner types. The list opens IN FLOW under the input: the
+   picker sits in a scrolling popover and a dialog, and a floating popup
+   would be clipped by either.
+   ============================================================ */
+.model-picker-input {
+  padding-right: var(--select-chevron-gutter);
+  text-overflow: ellipsis;
+}
+.model-picker-input[aria-expanded="true"] {
+  border-color: var(--color-accent);
+}
+.model-picker-list {
+  max-height: var(--model-picker-list-height);
+  margin: 0;
+  padding: var(--space-1);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+.model-picker-list[hidden] {
+  display: none;
+}
+.model-picker-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease);
+}
+.model-picker-option:hover {
+  background: var(--color-surface-2);
+}
+/* The keyboard's current option: a fill AND an edge bar, so it survives a
+   theme or a color-vision difference. */
+.model-picker-option.is-active {
+  background: var(--color-accent-soft);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+.model-picker-option:active {
+  background: var(--color-accent-soft);
+}
+.model-picker-option-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.model-picker-option-label {
+  font-size: var(--text-small);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* The chosen model carries a check mark, not just a tint. */
+.model-picker-option[aria-selected="true"] .model-picker-option-label::before {
+  content: "\2713\00a0" / "";
+  color: var(--color-accent);
+}
+.model-picker-option-meta {
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+/* The exact id, for telling near-twins apart - a ":batch" variant differs
+   only at the END, so it wraps rather than ellipsizing. */
+.model-picker-option-id {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.model-picker-badge {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-accent);
+  border-radius: 999px;
+  color: var(--color-accent);
+  font-size: var(--text-small);
+  white-space: nowrap;
+}
+.model-picker-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 1.5rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.model-picker-status-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.model-picker-status-text:empty {
+  display: none;
+}
+.model-picker-status[data-state="loading"] .model-picker-status-text::before {
+  content: "";
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-right: var(--space-2);
+  vertical-align: -0.1rem;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.model-picker-status[data-state="error"] {
+  color: var(--color-danger);
+}
+.model-picker-retry {
+  flex: 0 0 auto;
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-small);
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-picker-option {
+    transition: none;
+  }
+  .model-picker-status[data-state="loading"] .model-picker-status-text::before {
+    animation: none;
+    border-top-color: currentColor;
+    opacity: 0.6;
+  }
 }
 
 .settings-note {

@@ -20,7 +20,8 @@ import {
 import { xArticleUrl } from '../x/article';
 import type { BookmarkXArticle } from '../db/database';
 import { buildBookmarkContent, buildBookmarkContents } from '../content/bookmark-content';
-import { buildSettingsCatalog, type SettingsCatalog } from '../settings/catalog';
+import { buildSettingsCatalog, catalogKeyNames, type SettingsCatalog } from '../settings/catalog';
+import { verifyCatalogModels, type ModelBrowser } from '../settings/model-browser';
 import {
   effectiveSettings,
   readSettings,
@@ -125,7 +126,20 @@ export interface ServerOptions {
    * the CLI login instead.
    */
   xLogin?: () => Promise<void>;
+  /**
+   * Lists a provider's full model catalog, one source at a time, for the
+   * settings selector's searchable model picker (`GET /api/models`) - and
+   * checks a pinned model against it on save. A LOCAL read of catalog data
+   * the provider ships with: no request, no key, no spend. Undefined answers
+   * that route 503 and leaves a save to the shape check alone, which is what a
+   * test-built server gets.
+   */
+  modelBrowser?: ModelBrowser;
 }
+
+/** Shown when the model picker asks a viewer with no model browser for a list. */
+export const MODELS_UNAVAILABLE_MESSAGE =
+  'Browsing the model catalog is not available in this viewer. Start it with `node dist/index.js serve`.';
 
 /** Shown when the Sync button is pressed on a viewer with no ingest wiring. */
 export const SYNC_UNAVAILABLE_MESSAGE =
@@ -485,6 +499,10 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         xClientId: credentialStatus('XBOOKMARKS_CLIENT_ID'),
         xClientSecret: credentialStatus('XBOOKMARKS_CLIENT_SECRET'),
         typesafeApiKey: credentialStatus(TYPESAFE_API_KEY),
+        // Every key a choosable model can need (each pi upstream's), by NAME
+        // with presence + source only, so the selector can say "needs
+        // OPENCODE_API_KEY" or "found in .env" at the point of choice.
+        providerKeys: Object.fromEntries(catalogKeyNames(catalog).map((name) => [name, credentialStatus(name)])),
       },
       x: {
         connected: !!db.getRefreshToken(),
@@ -516,6 +534,10 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     const body = (req.body ?? {}) as Record<string, unknown>;
     const { settings, errors } = validateSettings(body, catalog);
     if (errors.length > 0) return reply.code(400).send({ error: errors.join(' '), errors });
+    if (opts.modelBrowser) {
+      const unknown = await verifyCatalogModels(settings, catalog, opts.modelBrowser);
+      if (unknown.length > 0) return reply.code(400).send({ error: unknown.join(' '), errors: unknown });
+    }
 
     // The first save is what marks setup finished - which is what stops the
     // guided flow reopening on the next load. A later edit in the Settings
@@ -527,6 +549,28 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     };
     writeSettings(db, saved);
     return { settings: saved };
+  });
+
+  // One source's full model list for the settings selector's searchable
+  // picker, e.g. `?provider=pi-ai&source=opencode`. Read from the provider's
+  // own bundled catalog - free, no key needed, nothing is called - so it
+  // answers for a source the owner has no key for too.
+  app.get<{ Querystring: { provider?: string; source?: string } }>('/api/models', async (req, reply) => {
+    if (!opts.modelBrowser) return reply.code(503).send({ error: MODELS_UNAVAILABLE_MESSAGE });
+    const provider = req.query.provider?.trim();
+    const source = req.query.source?.trim();
+    if (!provider || !source) {
+      return reply.code(400).send({ error: 'Pass both `provider` and `source`, e.g. ?provider=pi-ai&source=openrouter.' });
+    }
+    let listing;
+    try {
+      listing = await opts.modelBrowser.list(provider, source);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return reply.code(500).send({ error: `Could not read the model catalog: ${detail.slice(0, 200)}` });
+    }
+    if (!listing.ok) return reply.code(404).send({ error: listing.error });
+    return { provider, source, models: listing.models };
   });
 
   // Start a sync. Returns immediately with the status; the client polls
