@@ -59,6 +59,52 @@
     return methods[0] || null;
   }
 
+  /**
+   * The single phase-2 "who files" choice (bug: choosing an LLM provider for
+   * phase 2 did not actually run on it - `buildCategorizers` decides the
+   * method FIRST and ignores the assignment provider entirely once the
+   * method is Jev, src/categorize/build.ts). Before this, "Method" (LLM vs
+   * Jev) and "Filing provider" were two independently-settable fields that
+   * could disagree with no UI ever forcing them back into agreement. One
+   * control now owns both: picking Jev sets ONLY `categorizer`; picking a
+   * provider sets the language-model method AND that provider together, so
+   * the two can never point in different directions.
+   */
+  function filingOptions(catalog) {
+    var options = [];
+    var jev = findMethod(catalog, "typesafe");
+    if (jev) options.push({ value: "typesafe", label: jev.label, hint: jev.description });
+    var providers = (catalog && catalog.providers) || [];
+    for (var i = 0; i < providers.length; i++) {
+      options.push({ value: providers[i].id, label: providers[i].label, hint: providerNotice(providers[i]).text });
+    }
+    return options;
+  }
+
+  /** The combined selector's value for a settings document: Jev, or its filing provider. */
+  function filingSelection(values) {
+    if (!values) return "";
+    if (values.categorizer === "typesafe") return "typesafe";
+    return passProvider(values, "assignment") || "";
+  }
+
+  /**
+   * What picking `selected` in the combined filing selector sets `categorizer`
+   * and `assignmentProvider` to. Jev only ever sets the METHOD - the provider
+   * is left as `previousAssignmentProvider`, since Jev's `extend` mode still
+   * falls back to it (AGENTS.md: "Unused by Jev except as its fallback"). Any
+   * other value is a provider id, which sets BOTH the language-model method
+   * (the "claude-cli" id predates issue #70 and just means "a model files
+   * it") and that provider, in the same action - so a saved LLM-provider
+   * choice can never resolve to `categorizer === "typesafe"`.
+   */
+  function applyFilingSelection(selected, previousAssignmentProvider) {
+    if (selected === "typesafe") {
+      return { categorizer: "typesafe", assignmentProvider: previousAssignmentProvider || "" };
+    }
+    return { categorizer: "claude-cli", assignmentProvider: selected || "" };
+  }
+
   function labelFor(provider, modelId) {
     var models = (provider && provider.models) || [];
     for (var i = 0; i < models.length; i++) {
@@ -362,7 +408,12 @@
       }
     }
     if (isUnchanged(values, savedSettings)) {
-      problems.push({ text: "No changes to save.", blocksSave: true });
+      // Still blocks Save (there is nothing to save), but the owner found the
+      // visible reason ugly and pointless for this one case - a plain
+      // disabled button says enough. `silent` is the marker `updateFormNote`
+      // filters on before building the note's visible text; it must keep
+      // blocking Save regardless.
+      problems.push({ text: "No changes to save.", blocksSave: true, silent: true });
     }
     return problems;
   }
@@ -565,6 +616,9 @@
     passProvider: passProvider,
     findProvider: findProvider,
     findMethod: findMethod,
+    filingOptions: filingOptions,
+    filingSelection: filingSelection,
+    applyFilingSelection: applyFilingSelection,
     modelOptions: modelOptions,
     sourcesOf: sourcesOf,
     findSource: findSource,

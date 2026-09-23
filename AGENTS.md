@@ -199,6 +199,26 @@ error text alone; `saveCategorization` already updates `setupState.settings` to 
 the handler's `finally` calls `updateFormNote` again, which is what makes Save read disabled the
 moment the panel reopens - no separate "mark baseline" step. A FAILED save never closes the panel,
 never clears the owner's selection, and leaves `settings-save-status` showing the server's message.
+The "unchanged" reason is SILENT (`silent: true` on that one `passProblems` entry) - the owner found
+the "No changes to save." text ugly and pointless, so `updateFormNote` filters it out of the visible
+note (a plain disabled button, and no `aria-describedby`, is enough) while it still counts toward
+`hasSaveBlocker`/`blocksSave` exactly as before. The missing-key/unavailable-provider/invalid-choice
+reasons above are unaffected and stay visible - `silent` is that one reason's own flag, not a general
+"blocks but doesn't explain" mode.
+
+**Phase 2 is ONE combined "Filing method" selector, not a method dropdown plus a separately-hideable
+provider dropdown** (bug fix: choosing an LLM provider for phase 2 used to leave `categorizer` on
+`typesafe`, so Jev silently ran instead - see the `buildCategorizers` paragraph above).
+`categorization.js`'s `filingOptions`/`filingSelection`/`applyFilingSelection` are the pure mapping:
+the ONE select's options are Jev followed by every catalog provider (`filingOptions`), its value is
+derived from a settings document by `filingSelection` (`'typesafe'`, or the saved
+`assignmentProvider`), and picking a value applies BOTH `categorizer` and `assignmentProvider`
+together via `applyFilingSelection` - so the two settings fields can no longer be set independently
+and can never disagree. In `app.js`'s `createCategorizationForm`, the old `assignmentProvider` field
+still exists as an internal (never-appended) `<select>` - it still drives the Filing model/source
+picker below and still holds Jev's `extend`-mode fallback provider - but the owner can only ever move
+it by picking a provider in the combined selector; `method.select`'s `change` handler is what keeps
+it in sync and re-renders the filing model list only when the underlying provider actually changed.
 
 ## Assignment-pass categorizers (`XBOOKMARKS_CATEGORIZER`, issue #61)
 
@@ -209,6 +229,15 @@ prompt and returns no text, so it cannot implement `LlmClient`, and it must neve
 for the `summary`/`chat` roles. `src/ingest.ts` is untouched by the choice - it already injects the
 seam, which is the whole reason this fit. **Pass 1 (taxonomy design) is always the LLM**; Jev
 invents no labels, so it structurally cannot do that pass.
+
+**`buildCategorizers` (`src/categorize/build.ts`) decides the METHOD first, and the
+`assignmentProvider`/`assignmentModel` settings matter ONLY when that method is the LLM one** - once
+`config.categorizer === 'typesafe'`, they are read solely as Jev's `extend`-mode fallback provider,
+never as what files a bookmark. A bug (fixed alongside the phase-2 UI below) let the owner pick an
+LLM provider for phase 2 while the method was still Jev, so the chosen provider silently never ran.
+The fix is UI-only - `buildCategorizers` itself was already correct for a self-consistent settings
+document - but any new phase-2 UI must keep it impossible to leave the method and the provider
+disagreeing; see the settings-form paragraph below.
 
 `typesafe` (`src/categorize/typesafe/`) is PAID per token and opt-in only: `buildCategorizers`
 (`src/index.ts`) calls `requireTypeSafeCredentials` before constructing anything, and

@@ -346,6 +346,52 @@ describe('per-pass providers (issue #70)', () => {
   });
 });
 
+describe('phase-2 provider wiring (bug fix): a saved LLM choice never resolves to Jev', () => {
+  // Bug: choosing an LLM provider (e.g. OpenAI via pi-ai) for the phase-2
+  // assignment pass did not actually run on it - `buildCategorizers`
+  // (src/categorize/build.ts) decides the METHOD first and, whenever
+  // `config.categorizer === 'typesafe'`, ignores the assignment
+  // provider/model entirely and runs TypeSafe/Jev instead. These pin that a
+  // settings document naming an LLM provider for phase 2 always maps to the
+  // language-model method, never to `categorizer: 'typesafe'`.
+  it('validates and maps an LLM assignment provider (pi-ai/openai) to the language-model method', () => {
+    const { settings, errors } = validateSettings(
+      {
+        categorizer: 'claude-cli',
+        taxonomyProvider: 'claude-cli',
+        assignmentProvider: 'pi-ai',
+        assignmentModel: 'opencode/gpt-5.1',
+      },
+      catalog,
+    );
+    expect(errors).toEqual([]);
+    expect(settings.categorizer).toBe('claude-cli');
+    expect(settings.assignmentProvider).toBe('pi-ai');
+
+    const config = applySettingsToConfig(loadConfig({}), settings);
+    expect(config.categorizer).not.toBe('typesafe');
+    expect(config.categorizer).toBe('claude-cli');
+    expect(config.llm.roles.assignment.provider).toBe('pi-ai');
+    expect(config.llm.roles.assignment.model).toBe('opencode/gpt-5.1');
+  });
+
+  it('only Jev explicitly chosen as the method resolves to categorizer "typesafe"', () => {
+    const withJev = applySettingsToConfig(loadConfig({}), {
+      categorizer: 'typesafe',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'pi-ai',
+    });
+    expect(withJev.categorizer).toBe('typesafe');
+
+    const withLlm = applySettingsToConfig(loadConfig({}), {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'pi-ai',
+    });
+    expect(withLlm.categorizer).toBe('claude-cli');
+  });
+});
+
 describe('a provider with a full model catalog (pi-ai)', () => {
   const catalog = buildSettingsCatalog();
 

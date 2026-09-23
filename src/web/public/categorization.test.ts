@@ -631,9 +631,13 @@ describe('passProblems / hasSaveBlocker compose with the unchanged check (issue 
     effort: '',
   };
 
-  it('adds "No changes to save" and blocks Save when the selection equals the baseline', () => {
+  it('adds a SILENT "No changes to save" reason and blocks Save when the selection equals the baseline', () => {
+    // `silent: true` is what `updateFormNote` filters on to keep this reason
+    // out of the visible note (the owner found the text ugly and pointless)
+    // while `hasSaveBlocker` still disables Save - it composes on `blocksSave`
+    // alone, unaffected by `silent`.
     expect(XBO.passProblems(values, catalog, {}, {}, values)).toEqual([
-      { text: 'No changes to save.', blocksSave: true },
+      { text: 'No changes to save.', blocksSave: true, silent: true },
     ]);
     expect(XBO.hasSaveBlocker(values, catalog, {}, {}, values)).toBe(true);
   });
@@ -685,5 +689,61 @@ describe('passProblems / hasSaveBlocker compose with the unchanged check (issue 
     expect(problems).toHaveLength(2);
     expect(problems.some((p: { text: string }) => p.text === 'No changes to save.')).toBe(true);
     expect(problems.some((p: { text: string }) => /ANTHROPIC_API_KEY/.test(p.text))).toBe(true);
+  });
+});
+
+describe('filingOptions / filingSelection / applyFilingSelection (the single phase-2 selector)', () => {
+  // Bug: "Method" (LLM vs Jev) and "Filing provider" used to be two
+  // independently-settable fields. `buildCategorizers` (src/categorize/build.ts)
+  // decides the method FIRST and ignores the assignment provider entirely
+  // once the method is Jev, so a chosen LLM provider could sit on screen
+  // while Jev silently ran. These three functions are what make that
+  // combination structurally impossible: ONE control now owns both fields.
+
+  it('lists Jev first, then every LLM provider - never the generic "claude-cli" method entry', () => {
+    const options = XBO.filingOptions(piCatalog);
+    expect(options.map((o: { value: string }) => o.value)).toEqual(['typesafe', 'claude-cli', 'pi-ai']);
+    expect(options[0].label).toBe('Jev (TypeSafe)');
+    expect(options[1].label).toBe('Claude Code subscription');
+    expect(options[2].label).toBe('pi-ai');
+  });
+
+  it('resolves a settings document to Jev, or to its filing provider', () => {
+    expect(XBO.filingSelection({ categorizer: 'typesafe', assignmentProvider: 'pi-ai' })).toBe('typesafe');
+    expect(XBO.filingSelection({ categorizer: 'claude-cli', assignmentProvider: 'pi-ai' })).toBe('pi-ai');
+    expect(XBO.filingSelection({ categorizer: 'claude-cli', assignmentProvider: '' })).toBe('');
+    expect(XBO.filingSelection(null)).toBe('');
+  });
+
+  it('picking an LLM provider sets the language-model method AND that provider together', () => {
+    expect(XBO.applyFilingSelection('pi-ai', 'claude-cli')).toEqual({
+      categorizer: 'claude-cli',
+      assignmentProvider: 'pi-ai',
+    });
+  });
+
+  it('picking Jev sets ONLY the method - the prior provider survives as the extend-mode fallback', () => {
+    expect(XBO.applyFilingSelection('typesafe', 'pi-ai')).toEqual({
+      categorizer: 'typesafe',
+      assignmentProvider: 'pi-ai',
+    });
+  });
+
+  it('round-trips: whatever the selector resolves to reapplies to the same pair', () => {
+    for (const values of [
+      { categorizer: 'claude-cli', assignmentProvider: 'pi-ai' },
+      { categorizer: 'claude-cli', assignmentProvider: 'claude-cli' },
+      { categorizer: 'typesafe', assignmentProvider: 'pi-ai' },
+    ]) {
+      const selected = XBO.filingSelection(values);
+      expect(XBO.applyFilingSelection(selected, values.assignmentProvider)).toEqual(values);
+    }
+  });
+
+  it('never resolves a saved LLM-provider choice to categorizer "typesafe"', () => {
+    for (const providerId of ['claude-cli', 'pi-ai']) {
+      const { categorizer } = XBO.applyFilingSelection(providerId, 'typesafe-leftover');
+      expect(categorizer).not.toBe('typesafe');
+    }
   });
 });
