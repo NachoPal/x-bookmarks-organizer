@@ -5,13 +5,18 @@ import type {
   Health,
   LlmClient,
   ProviderDefinition,
-  ProviderModel,
   ProviderParams,
   ResolvedProviderConfig,
 } from '../types';
 import { CLAUDE_TOKEN_KEY } from './claude-cli';
 import {
-  CURATED_PI_MODELS,
+  CURATED_ANTHROPIC_MODELS,
+  anthropicModelId,
+  buildAnthropicModelCatalog,
+  curatedAnthropicModels,
+  parseAnthropicModelId,
+} from './anthropic-catalog';
+import {
   PI_AI_EFFORTS,
   completeOnPi,
   isSubscriptionToken,
@@ -58,46 +63,8 @@ export const PI_CLAUDE_SUBSCRIPTION_WARNING =
   'OAuth and allow Anthropic to act against your account without notice. The "claude-cli" provider ' +
   'is the sanctioned way to use your subscription.';
 
-/**
- * The Claude models pi's Anthropic catalog knows, offered under the same ids
- * `claude-cli` uses so the two Claude options read alike. Context windows and
- * output limits come from pi's catalog entry (pinned in `pi-ai.test.ts`).
- */
-const SUBSCRIPTION_MODELS: readonly { id: string; label: string; role: string; suggestedFor: ProviderModel['suggestedFor'] }[] = [
-  {
-    id: 'claude-opus-4-8',
-    label: 'Claude Opus 4.8',
-    role: 'Most capable - the pick for designing the tree',
-    suggestedFor: ['taxonomy'],
-  },
-  {
-    id: 'claude-haiku-4-5',
-    label: 'Claude Haiku 4.5',
-    role: 'Fast - the pick for filing each bookmark, to conserve quota',
-    suggestedFor: ['assignment', 'chat'],
-  },
-  { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', role: 'Balanced', suggestedFor: ['summary'] },
-];
-
-function compactTokens(n: number): string {
-  return n >= 1_000_000 ? `${Number((n / 1_000_000).toFixed(2))}M` : `${Math.round(n / 1000)}k`;
-}
-
-function toProviderModel(m: (typeof SUBSCRIPTION_MODELS)[number]): ProviderModel {
-  const catalog = CURATED_PI_MODELS.find((c) => c.ref === `anthropic/${m.id}`);
-  return {
-    id: m.id,
-    label: m.label,
-    suggestedFor: m.suggestedFor,
-    description:
-      `${m.role}. Uses your subscription quota via pi` +
-      (catalog ? `, ${compactTokens(catalog.contextWindow)} context` : '') +
-      `. Needs ${CLAUDE_TOKEN_KEY}.`,
-    contextWindow: catalog?.contextWindow,
-    maxOutputTokens: catalog?.maxOutputTokens,
-    requiresKey: CLAUDE_TOKEN_KEY,
-  };
-}
+/** What the model list's hint line says this route costs and needs. */
+const BILLING_NOTE = `Uses your subscription quota via pi. Needs ${CLAUDE_TOKEN_KEY}.`;
 
 type TokenResolution = { ok: true; token: string } | { ok: false; health: Health };
 
@@ -138,7 +105,8 @@ export function resolveSubscriptionToken(cfg: ResolvedProviderConfig): TokenReso
 function unknownModelDetail(modelId: string): string {
   return (
     `pi does not know the Claude model "${modelId}". ` +
-    `Available here: ${SUBSCRIPTION_MODELS.map((m) => m.id).join(', ')}.`
+    `Recommended here: ${CURATED_ANTHROPIC_MODELS.map((m) => anthropicModelId(m.id)).join(', ')} - ` +
+    'or browse the full catalog.'
   );
 }
 
@@ -154,7 +122,7 @@ export function createPiClaudeSubscriptionProvider(
   const getRuntime = lazyRuntime(load);
 
   async function modelFor(modelId: string): Promise<{ model: Model<Api> } | { health: Health }> {
-    const model = await (await getRuntime()).findModel('anthropic', modelId);
+    const model = await (await getRuntime()).findModel('anthropic', parseAnthropicModelId(modelId));
     return model ? { model } : { health: { state: 'unconfigured', detail: unknownModelDetail(modelId) } };
   }
 
@@ -194,7 +162,8 @@ export function createPiClaudeSubscriptionProvider(
         secret: true,
       },
     ],
-    models: SUBSCRIPTION_MODELS.map(toProviderModel),
+    models: curatedAnthropicModels({ requiresKey: CLAUDE_TOKEN_KEY, billingNote: BILLING_NOTE }),
+    modelCatalog: buildAnthropicModelCatalog(getRuntime, { requiresKey: CLAUDE_TOKEN_KEY, billingNote: BILLING_NOTE }),
     capabilities: { jsonMode: false, effort: true, temperature: false, streaming: false },
     efforts: PI_AI_EFFORTS,
     check,

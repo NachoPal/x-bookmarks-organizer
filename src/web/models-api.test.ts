@@ -6,6 +6,7 @@ import { buildSettingsCatalog } from '../settings/catalog';
 import { createModelBrowser, type ModelBrowser } from '../settings/model-browser';
 import { readSettings } from '../settings/settings';
 import { createPiAiProvider, type PiRuntime } from '../llm/providers/pi-ai';
+import { createClaudeCliProvider } from '../llm/providers/claude-cli';
 import type { CredentialStore, ResolvedCredential } from '../creds/resolve';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ProviderDefinition } from '../llm/types';
@@ -52,6 +53,34 @@ function fakePi() {
   const provider = createPiAiProvider(async () => runtime);
   const lookup = (id: string): ProviderDefinition | undefined => (id === provider.id ? provider : undefined);
   return { browser: createModelBrowser(lookup), completions: () => completions };
+}
+
+/**
+ * A fake Anthropic catalog with more than the old hardcoded three, standing
+ * in for pi's real one - `claude-cli` and `pi-claude-subscription` now read
+ * their full Claude model list through the same no-spend mechanism `pi-ai`
+ * uses (see `src/llm/providers/anthropic-catalog.ts`).
+ */
+function fakeClaudeCatalog() {
+  const models = [
+    fakeModel('anthropic', 'claude-opus-4-8', 'Claude Opus 4.8'),
+    fakeModel('anthropic', 'claude-haiku-4-5', 'Claude Haiku 4.5'),
+    fakeModel('anthropic', 'claude-sonnet-5', 'Claude Sonnet 5'),
+    fakeModel('anthropic', 'claude-opus-5', 'Claude Opus 5'),
+    fakeModel('anthropic', 'claude-sonnet-4-6', 'Claude Sonnet 4.6'),
+  ];
+  const runtime: PiRuntime = {
+    findModel: async (_upstream, id) => models.find((m) => m.id === id),
+    listModels: async () => models,
+    localModel: (id) => fakeModel('local', id),
+    clampEffort: (_m, level) => level,
+    complete: async () => {
+      throw new Error('no completion may run here');
+    },
+  };
+  const provider = createClaudeCliProvider(async () => runtime);
+  const lookup = (id: string): ProviderDefinition | undefined => (id === provider.id ? provider : undefined);
+  return { browser: createModelBrowser(lookup) };
 }
 
 function fakeStore(values: Record<string, string>): CredentialStore {
@@ -122,6 +151,19 @@ describe('GET /api/models', () => {
     expect(unknownSource.json().error).toContain('opencode');
     const noProvider = await app.inject({ method: 'GET', url: '/api/models?provider=nope&source=x' });
     expect(noProvider.statusCode).toBe(404);
+  });
+
+  it("lists claude-cli's own dynamic Claude catalog - more than the old hardcoded three, with context windows", async () => {
+    const claude = fakeClaudeCatalog();
+    app = buildServer(db, { modelBrowser: claude.browser });
+    await app.ready();
+    const res = await app.inject({ method: 'GET', url: '/api/models?provider=claude-cli&source=anthropic' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toMatchObject({ provider: 'claude-cli', source: 'anthropic' });
+    expect(body.models.length).toBeGreaterThan(3);
+    expect(body.models.map((m: { id: string }) => m.id)).toContain('anthropic/claude-opus-5');
+    expect(body.models.every((m: { contextWindow?: number }) => typeof m.contextWindow === 'number')).toBe(true);
   });
 
   it('answers 500 with the reason when the catalog cannot be read', async () => {
@@ -201,7 +243,7 @@ describe('PUT /api/settings against the full catalog', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('leaves claude-cli exactly as it was: its own short list, nothing else', async () => {
+  it("refuses a pi-ai source id for claude-cli, which only ever browses its OWN (Anthropic) catalog", async () => {
     app = buildServer(db, { modelBrowser: fakePi().browser });
     await app.ready();
     const res = await app.inject({
@@ -210,8 +252,9 @@ describe('PUT /api/settings against the full catalog', () => {
       payload: { taxonomyProvider: 'claude-cli', taxonomyModel: 'opencode/claude-fable-5', assignmentProvider: 'claude-cli' },
     });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toContain('is not available for provider "claude-cli"');
-    expect(catalog.providers.find((p) => p.id === 'claude-cli')).not.toHaveProperty('sources');
+    expect(res.json().error).toContain('names no model source of provider "claude-cli"');
+    const cli = catalog.providers.find((p) => p.id === 'claude-cli')!;
+    expect(cli.sources!.map((s) => s.id)).toEqual(['anthropic']);
   });
 });
 

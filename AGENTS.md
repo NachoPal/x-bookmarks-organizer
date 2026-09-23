@@ -144,6 +144,34 @@ as both); applying them sets `roles.{taxonomy,assignment}.provider` and leaves `
 (summaries, chat) alone. On the CLI an env-claimed provider also drops the stored model for that
 pass, since a model id belongs to its provider. `reportCategorizerBilling` prints BOTH passes.
 
+**`claude-cli` and `pi-claude-subscription` share ONE dynamic Claude catalog**
+(`src/llm/providers/anthropic-catalog.ts`), instead of each hardcoding its own three models. The
+`claude` CLI documents no way to enumerate its own models (`claude --help` only takes an alias or a
+full snapshot name for `--model`, and the installed binary is a single compiled executable with no
+model manifest to read), so both providers read pi's Anthropic catalog through the same
+`modelCatalog` mechanism the pi upstreams use - free, static, local, no spend. A model id from
+either is `anthropic/<pi model id>` (the `<source>/<model>` shape `sourceOfModel` requires), and
+`parseAnthropicModelId` strips that prefix back off before the id is actually used - tolerating a
+legacy unprefixed id too, so an old stored document or an `XBOOKMARKS_*_MODEL` env var still runs.
+**`claude-cli` runs the CLI with exactly that stripped id via `--model`** - never the source-prefixed
+form - which is what keeps every catalog id CLI-runnable. `curatedAnthropicModels`/
+`buildAnthropicModelCatalog` take a `billingNote` + optional `requiresKey` so the two providers'
+hint text differs (subscription via the local CLI vs. via pi, which needs `CLAUDE_CODE_OAUTH_TOKEN`)
+while sharing everything else. `claude-cli.ts`'s own `redactError` moved to
+`src/llm/providers/redact.ts` so `pi-ai.ts` (which `anthropic-catalog.ts` depends on for
+`CURATED_PI_MODELS`/`PiRuntime`) never has to import `claude-cli.ts` back - avoiding a cycle.
+
+**The categorization settings form disables Save for a save-blocking selection, never for a missing
+key** (`XBOCategorization.hasSaveBlocker` in `categorization.js`, wired in `app.js`'s
+`updateFormNote`): the same `passProblems`/`blocksSave` computation the note text already used is
+now also what flips `settingsSaveBtn.disabled`, with `aria-describedby` pointing at the note while
+disabled. A missing API key is a run-time concern (`blocksSave: false` - the choice still saves,
+the key is only needed at sync time) and must never disable Save; only a genuinely invalid selection
+(a catalog source picked with no model in it yet, or an empty local model name) does. Re-enabling
+after a save attempt re-derives from the current selection rather than forcing it back on, so a
+selection the SERVER rejects (the async `verifyCatalogModels` check the client cannot run live)
+does not read as clickable again for no reason.
+
 ## Assignment-pass categorizers (`XBOOKMARKS_CATEGORIZER`, issue #61)
 
 Pass 2 (filing a bookmark into the existing tree) has TWO implementations behind the one

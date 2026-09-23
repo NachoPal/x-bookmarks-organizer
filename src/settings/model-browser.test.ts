@@ -57,11 +57,24 @@ describe('createModelBrowser', () => {
     const source = await browser.list('pi-ai', 'bedrock');
     expect(source).toMatchObject({ ok: false, reason: 'unknown-source' });
     expect(!source.ok && source.error).toContain('opencode, openrouter, local');
+    // claude-cli now has ONE source of its own (its Claude catalog); a
+    // provider with genuinely no catalog is what still answers this way.
     const real = createModelBrowser();
-    expect(await real.list('claude-cli', 'anything')).toMatchObject({
+    expect(await real.list('claude-cli', 'bedrock')).toMatchObject({
       ok: false,
-      error: 'Provider "claude-cli" has no model catalog to browse.',
+      reason: 'unknown-source',
+      error: 'Provider "claude-cli" has no model source "bedrock" (sources: anthropic).',
     });
+  });
+
+  it("reads claude-cli's own Claude catalog - a real, local, no-spend read", async () => {
+    const real = createModelBrowser();
+    const listing = await real.list('claude-cli', 'anthropic');
+    expect(listing.ok).toBe(true);
+    if (listing.ok) {
+      expect(listing.models.length).toBeGreaterThan(3);
+      expect(listing.models.every((m) => typeof m.contextWindow === 'number')).toBe(true);
+    }
   });
 });
 

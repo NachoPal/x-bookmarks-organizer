@@ -132,8 +132,8 @@ describe('createSyncJob', () => {
     writeSettings(db, {
       categorizer: 'typesafe',
       provider: 'claude-cli',
-      taxonomyModel: 'claude-sonnet-5',
-      assignmentModel: 'claude-opus-4-8',
+      taxonomyModel: 'anthropic/claude-sonnet-5',
+      assignmentModel: 'anthropic/claude-opus-4-8',
       effort: 'max',
       configuredAt: '2026-01-01T00:00:00.000Z',
     });
@@ -144,9 +144,9 @@ describe('createSyncJob', () => {
     const config = seenConfigs[0]!;
     expect(config.categorizer).toBe('typesafe');
     expect(config.llm.defaultProvider).toBe('claude-cli');
-    expect(config.llm.roles.taxonomy.model).toBe('claude-sonnet-5');
+    expect(config.llm.roles.taxonomy.model).toBe('anthropic/claude-sonnet-5');
     expect(config.llm.roles.taxonomy.params?.effort).toBe('max');
-    expect(config.llm.roles.assignment.model).toBe('claude-opus-4-8');
+    expect(config.llm.roles.assignment.model).toBe('anthropic/claude-opus-4-8');
     // The paid path announces itself every run - never silently.
     expect(messages[0]).toContain('TypeSafe Jev');
     expect(messages[0]).toContain('pay-per-token');

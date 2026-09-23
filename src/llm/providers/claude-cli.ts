@@ -8,6 +8,11 @@ import type {
   ProviderParams,
   ResolvedProviderConfig,
 } from '../types';
+import { curatedAnthropicModels, buildAnthropicModelCatalog, parseAnthropicModelId } from './anthropic-catalog';
+import { lazyRuntime, loadPiRuntime, type PiRuntime } from './pi-ai';
+import { redactError } from './redact';
+
+export { redactError };
 
 /** Provider id, and the default value of `XBOOKMARKS_LLM_PROVIDER`. */
 export const CLAUDE_CLI_PROVIDER_ID = 'claude-cli';
@@ -57,20 +62,6 @@ function normalizeEffort(raw: string | undefined): string | undefined {
   const value = raw.trim().toLowerCase();
   if (!value) return undefined;
   return VALID_EFFORTS.has(value) ? value : DEFAULT_EFFORT;
-}
-
-/**
- * Make an adapter failure safe to show a user: no secrets, bounded length.
- * CLI stderr is untrusted output that reaches the viewer through the summary
- * endpoint, so it is scrubbed here rather than at the call site.
- */
-export function redactError(raw: string): string {
-  return raw
-    .replace(/sk-[A-Za-z0-9_-]{16,}/g, '[redacted]')
-    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 300);
 }
 
 /** The message a failed call surfaces - actionable, and identical wherever it is shown. */
@@ -198,66 +189,66 @@ function runPrompt(
   });
 }
 
+/** What the model list's hint line says this route costs. */
+const BILLING_NOTE = 'Runs on your Claude subscription via the local CLI - no per-call charge.';
+
 /**
  * The Claude Code subscription, driven through the local `claude` CLI in print
  * mode. Billing is `subscription`: calls consume the owner's Claude plan and
  * never the paid Anthropic API.
+ *
+ * `models` stays a maintained shortlist (see `anthropic-catalog.ts`); the full
+ * Claude catalog beyond it is `modelCatalog`, pi's own Anthropic model list -
+ * read locally, no request, no spend - since the CLI itself exposes no way to
+ * enumerate its own models (see that module's doc comment). A model chosen
+ * from either carries the `anthropic/` source prefix the searchable picker
+ * and `validateSettings` expect; `parseAnthropicModelId` strips it back off
+ * before the id reaches `--model`, so only ids the CLI can actually run (real
+ * Anthropic snapshot names, exactly as pi's catalog states them) are ever
+ * passed to it.
  */
-export const claudeCliProvider: ProviderDefinition = {
-  id: CLAUDE_CLI_PROVIDER_ID,
-  label: 'Claude Code subscription (local `claude` CLI)',
-  billing: 'subscription',
-  configKeys: [
-    {
-      key: CLAUDE_TOKEN_KEY,
-      required: false,
-      description:
-        'Claude subscription token. Optional - a CLI you have logged into interactively works without it.',
-      secret: true,
-    },
-    {
-      key: CLAUDE_BIN_KEY,
-      required: false,
-      description: 'Path to the `claude` binary when it is not on PATH.',
-      secret: false,
-    },
-  ],
-  models: [
-    {
-      id: 'claude-opus-4-8',
-      label: 'Claude Opus 4.8',
-      suggestedFor: ['taxonomy'],
-      description: 'Most capable. The default for designing the category tree.',
-      contextWindow: 200_000,
-    },
-    {
-      id: 'claude-haiku-4-5',
-      label: 'Claude Haiku 4.5',
-      suggestedFor: ['assignment', 'chat'],
-      description: 'Fastest and lightest. The default for filing each bookmark.',
-      contextWindow: 200_000,
-    },
-    {
-      id: 'claude-sonnet-5',
-      label: 'Claude Sonnet 5',
-      suggestedFor: ['summary'],
-      description: 'Balanced. The default for summaries.',
-      contextWindow: 200_000,
-    },
-  ],
-  capabilities: { jsonMode: false, effort: true, temperature: false, streaming: false },
-  efforts: CLAUDE_CLI_EFFORTS,
-  check: checkClaudeCli,
-  create(cfg, opts): LlmClient {
-    const params = opts.params ?? {};
-    return {
-      providerId: CLAUDE_CLI_PROVIDER_ID,
-      model: opts.model,
-      billing: 'subscription',
-      async complete(req): Promise<CompletionResult> {
-        const text = await runPrompt(cfg, opts.model, params, req);
-        return { text, model: opts.model, providerId: CLAUDE_CLI_PROVIDER_ID };
+export function createClaudeCliProvider(load: () => Promise<PiRuntime> = loadPiRuntime): ProviderDefinition {
+  const getRuntime = lazyRuntime(load);
+
+  return {
+    id: CLAUDE_CLI_PROVIDER_ID,
+    label: 'Claude Code subscription (local `claude` CLI)',
+    billing: 'subscription',
+    configKeys: [
+      {
+        key: CLAUDE_TOKEN_KEY,
+        required: false,
+        description:
+          'Claude subscription token. Optional - a CLI you have logged into interactively works without it.',
+        secret: true,
       },
-    };
-  },
-};
+      {
+        key: CLAUDE_BIN_KEY,
+        required: false,
+        description: 'Path to the `claude` binary when it is not on PATH.',
+        secret: false,
+      },
+    ],
+    models: curatedAnthropicModels({ billingNote: BILLING_NOTE }),
+    modelCatalog: buildAnthropicModelCatalog(getRuntime, { billingNote: BILLING_NOTE }),
+    capabilities: { jsonMode: false, effort: true, temperature: false, streaming: false },
+    efforts: CLAUDE_CLI_EFFORTS,
+    check: checkClaudeCli,
+    create(cfg, opts): LlmClient {
+      const params = opts.params ?? {};
+      const rawModel = parseAnthropicModelId(opts.model);
+      return {
+        providerId: CLAUDE_CLI_PROVIDER_ID,
+        model: opts.model,
+        billing: 'subscription',
+        async complete(req): Promise<CompletionResult> {
+          const text = await runPrompt(cfg, rawModel, params, req);
+          return { text, model: opts.model, providerId: CLAUDE_CLI_PROVIDER_ID };
+        },
+      };
+    },
+  };
+}
+
+/** The registered instance, backed by the real pi runtime for its full catalog. */
+export const claudeCliProvider: ProviderDefinition = createClaudeCliProvider();

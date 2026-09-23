@@ -127,14 +127,14 @@ describe('PUT /api/settings', () => {
       payload: {
         categorizer: 'claude-cli',
         provider: 'claude-cli',
-        taxonomyModel: 'claude-opus-4-8',
+        taxonomyModel: 'anthropic/claude-opus-4-8',
         effort: 'xhigh',
       },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().settings).toMatchObject({
       categorizer: 'claude-cli',
-      taxonomyModel: 'claude-opus-4-8',
+      taxonomyModel: 'anthropic/claude-opus-4-8',
       effort: 'xhigh',
     });
 
@@ -153,7 +153,7 @@ describe('PUT /api/settings', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().errors).toHaveLength(2);
-    expect(res.json().error).toContain('claude-haiku-4-5');
+    expect(res.json().error).toContain('names no model source of provider "claude-cli"');
     // Nothing was written.
     expect(readSettings(db, catalog)).toBeUndefined();
   });
@@ -167,7 +167,7 @@ describe('PUT /api/settings', () => {
         taxonomyProvider: 'pi-ai',
         taxonomyModel: 'openrouter/google/gemini-2.5-flash',
         assignmentProvider: 'claude-cli',
-        assignmentModel: 'claude-haiku-4-5',
+        assignmentModel: 'anthropic/claude-haiku-4-5',
       },
     });
     expect(res.statusCode).toBe(200);
@@ -176,7 +176,7 @@ describe('PUT /api/settings', () => {
       taxonomyProvider: 'pi-ai',
       taxonomyModel: 'openrouter/google/gemini-2.5-flash',
       assignmentProvider: 'claude-cli',
-      assignmentModel: 'claude-haiku-4-5',
+      assignmentModel: 'anthropic/claude-haiku-4-5',
     });
     // The catalog ships each pi model's context window and the key it needs -
     // names only, never a value.
