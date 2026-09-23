@@ -17,7 +17,6 @@ Fetch your X (Twitter) bookmarks, auto-categorize them into a nested topic tree 
 store them in a local SQLite database you fully own, and browse them through a local web
 viewer with read-tracking, favorites and an optional relevance ranking.
 
-- Requirements / acceptance spec: [`docs/prds/0001-x-bookmarks-organizer.md`](docs/prds/0001-x-bookmarks-organizer.md)
 - One-time setup (X app, OAuth, credit): [`docs/setup.md`](docs/setup.md)
 
 ## Why X Bookmarks Organizer?
