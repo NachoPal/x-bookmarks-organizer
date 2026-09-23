@@ -256,27 +256,16 @@
               hidden
             >
               <h2 id="rank-panel-title" class="settings-panel-title">Ranking</h2>
-              <p id="rank-coverage" class="rank-note">Loading…</p>
-              <button id="rank-open" class="btn btn-primary panel-action rank-btn" type="button">
-                <span class="rank-btn-label">Rank now</span>
-              </button>
-              <div id="rank-blocker" class="rank-blocker" hidden>
-                <p id="rank-blocker-headline" class="rank-blocker-headline"></p>
-                <details id="rank-blocker-more" class="rank-blocker-more" hidden>
-                  <summary class="rank-blocker-summary">Where to put the key</summary>
-                  <p id="rank-blocker-detail" class="rank-blocker-detail"></p>
-                </details>
-              </div>
-              <p class="rank-note">
-                Scoring is paid per token. A run always asks you to confirm the cost first.
-                Its progress appears in the strip under the filter tabs, next to a sync's.
-              </p>
               <!-- Which saved set of rules a run scores against (manage/select
                    split): a searchable combobox styled and behaved like the pi
                    model picker (issue #118), never a native <select>. Picking
-                   one is free - only "Rank now" above spends. The dialog this
-                   opens (issue #102) is MANAGE-ONLY: create, edit, duplicate,
-                   delete - it no longer selects. -->
+                   one is free - only "Rank now" below spends. FIRST in the
+                   panel, above "Rank now" and everything else (issue: owner
+                   feedback on #119) - there can be many rules, so the owner
+                   must see which one is active before reaching the button
+                   that spends against it. The dialog this opens (issue #102)
+                   is MANAGE-ONLY: create, edit, duplicate, delete - it no
+                   longer selects. -->
               <div class="rank-rules">
                 <h3 class="rank-rules-title">Ranking rules</h3>
                 <div class="field model-picker rank-rules-picker">
@@ -315,6 +304,21 @@
                 </button>
                 <p id="rank-rules-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
               </div>
+              <p id="rank-coverage" class="rank-note">Loading…</p>
+              <button id="rank-open" class="btn btn-primary panel-action rank-btn" type="button">
+                <span class="rank-btn-label">Rank now</span>
+              </button>
+              <div id="rank-blocker" class="rank-blocker" hidden>
+                <p id="rank-blocker-headline" class="rank-blocker-headline"></p>
+                <details id="rank-blocker-more" class="rank-blocker-more" hidden>
+                  <summary class="rank-blocker-summary">Where to put the key</summary>
+                  <p id="rank-blocker-detail" class="rank-blocker-detail"></p>
+                </details>
+              </div>
+              <p class="rank-note">
+                Scoring is paid per token. A run always asks you to confirm the cost first.
+                Its progress appears in the strip under the filter tabs, next to a sync's.
+              </p>
             </div>
           </div>
 

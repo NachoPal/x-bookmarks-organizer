@@ -258,13 +258,18 @@
 
   /**
    * What a pass's model choice needs before it can run, one sentence each,
-   * for the form's note: a catalog source picked with no model in it yet or a
-   * local model with no name (both `blocksSave` - saving would silently mean
-   * something else), or a source whose key the server cannot find (saving is
-   * fine; a sync is what needs the key). `values` carries each pass's
-   * `<pass>Source` beside its model.
+   * for the form's note: a provider that cannot run at all right now (its
+   * own `check()`, e.g. `claude-cli` when the CLI isn't installed or logged
+   * in), a catalog source picked with no model in it yet, a local model with
+   * no name, or a source whose key the server cannot find - all `blocksSave`,
+   * since the owner reversed #120's "missing key never blocks Save" after
+   * using it: a selection that cannot actually run is no more saveable than
+   * one with no model chosen. `values` carries each pass's `<pass>Source`
+   * beside its model. `providerAvailability` covers a provider with no
+   * credential-chain key of its own (only `claude-cli` today, issue #35) -
+   * a keyed provider/source is covered by `providerKeys` instead.
    */
-  function passProblems(values, catalog, providerKeys) {
+  function passProblems(values, catalog, providerKeys, providerAvailability) {
     var problems = [];
     var fields = fieldsFor(values.categorizer);
     var passes = [
@@ -275,6 +280,20 @@
       var p = passes[i];
       if (!p.used) continue;
       var provider = findProvider(catalog, values[p.pass + "Provider"]);
+      var availability = provider && providerAvailability ? providerAvailability[provider.id] : null;
+      if (availability && availability.available === false) {
+        problems.push({
+          text:
+            p.name +
+            " runs on " +
+            (provider.label || provider.id) +
+            ", which is not available right now" +
+            (availability.reason ? ": " + availability.reason : ".") +
+            (availability.reason && !/[.!?]$/.test(availability.reason) ? "." : ""),
+          blocksSave: true,
+        });
+        continue;
+      }
       if (sourcesOf(provider).length === 0) continue;
       var model = values[p.pass + "Model"] || "";
       var suggested = provider.suggested ? provider.suggested[p.pass] : undefined;
@@ -301,8 +320,9 @@
             ". Make it available to the server - " +
             CHAIN +
             " - then restart the viewer.",
-          // A choice can be saved before its key exists; only a sync needs it.
-          blocksSave: false,
+          // Reversed from #120: a selection whose key is missing cannot run,
+          // so it blocks Save just like an incomplete model choice does.
+          blocksSave: true,
         });
       }
     }
@@ -310,16 +330,20 @@
   }
 
   /**
-   * Whether the current selection would be REJECTED by `PUT /api/settings` -
-   * the same conditions `passProblems` already flags with `blocksSave` (a
-   * catalog source picked with no model in it yet, or a local model with no
-   * typed name). Used to disable Save proactively, rather than let the owner
-   * find out only after clicking it. A missing key is a run-time concern
-   * (`blocksSave: false`) and never disables Save - the choice still saves
-   * fine, the key is only needed at sync time.
+   * Whether the current selection would be REJECTED by `PUT /api/settings`,
+   * needs a credential the server reports absent, or names a provider that
+   * cannot run right now - the same conditions `passProblems` flags with
+   * `blocksSave` (a catalog source picked with no model in it yet, a local
+   * model with no typed name, a chosen provider/source whose required key is
+   * missing, or a keyless provider like `claude-cli` whose own `check()`
+   * failed). Used to disable Save proactively, rather than let the owner find
+   * out only after clicking it. `providerKeys`/`providerAvailability` must be
+   * the real maps from `/api/setup` - passing `{}` for either would read
+   * every source/provider they cover as unusable regardless of its actual
+   * status.
    */
-  function hasSaveBlocker(values, catalog) {
-    return passProblems(values, catalog, {}).some(function (p) {
+  function hasSaveBlocker(values, catalog, providerKeys, providerAvailability) {
+    return passProblems(values, catalog, providerKeys, providerAvailability).some(function (p) {
       return p.blocksSave;
     });
   }

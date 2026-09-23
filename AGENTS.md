@@ -161,16 +161,26 @@ while sharing everything else. `claude-cli.ts`'s own `redactError` moved to
 `src/llm/providers/redact.ts` so `pi-ai.ts` (which `anthropic-catalog.ts` depends on for
 `CURATED_PI_MODELS`/`PiRuntime`) never has to import `claude-cli.ts` back - avoiding a cycle.
 
-**The categorization settings form disables Save for a save-blocking selection, never for a missing
-key** (`XBOCategorization.hasSaveBlocker` in `categorization.js`, wired in `app.js`'s
-`updateFormNote`): the same `passProblems`/`blocksSave` computation the note text already used is
-now also what flips `settingsSaveBtn.disabled`, with `aria-describedby` pointing at the note while
-disabled. A missing API key is a run-time concern (`blocksSave: false` - the choice still saves,
-the key is only needed at sync time) and must never disable Save; only a genuinely invalid selection
-(a catalog source picked with no model in it yet, or an empty local model name) does. Re-enabling
-after a save attempt re-derives from the current selection rather than forcing it back on, so a
-selection the SERVER rejects (the async `verifyCatalogModels` check the client cannot run live)
-does not read as clickable again for no reason.
+**The categorization settings form disables Save for anything that cannot actually run, including a
+missing key** (`XBOCategorization.hasSaveBlocker`/`passProblems` in `categorization.js`, wired in
+`app.js`'s `updateFormNote`): the same `blocksSave` computation the note text already used is also
+what flips `settingsSaveBtn.disabled`, with `aria-describedby` pointing at the note while disabled.
+This is a REVERSAL of the original #120 behavior ("a missing key never blocks Save, only a
+genuinely invalid selection does") - the owner used it and asked for the opposite: a chosen
+provider/source whose required credential `/api/setup`'s `credentials.providerKeys` reports absent
+now blocks Save exactly like an incomplete model choice does. `claude-cli` has no credential-chain
+key (issue #35), so it cannot be judged by `providerKeys` at all - its own signal is
+`credentials.providerAvailability['claude-cli']`, sourced from the SAME `check()` the summary
+preflight trusts ("does the binary resolve and run", never a token's presence) via the injectable
+`ServerOptions.claudeCliCheck` (undefined - the default for every test-built `buildServer(db)` -
+reports it always available and spawns nothing; `cmdServe` wires the real provider `check()`,
+cached ~5s server-side since `/api/setup` is polled every 2s during first-run's X-auth wait). Both
+maps are threaded through every `passProblems`/`hasSaveBlocker` call site (`updateFormNote`,
+`saveCategorization`) - passing `{}` for either reads everything it covers as unusable, so never do
+that with real data available. Re-enabling after a save attempt re-derives from the current
+selection rather than forcing it back on, so a selection the SERVER rejects (the async
+`verifyCatalogModels` check the client cannot run live) does not read as clickable again for no
+reason.
 
 ## Assignment-pass categorizers (`XBOOKMARKS_CATEGORIZER`, issue #61)
 
@@ -1197,6 +1207,10 @@ kept per preset** - a switch never wipes anything.
 **Manage and select are two different controls (the manage/select split).** The "Manage ranking
 rules" dialog is MANAGE-ONLY - create, edit, duplicate, delete - and does not choose which preset is
 active; that choice lives in the ranking panel's own picker, right above the dialog's entry point.
+The `.rank-rules` block (picker + "Manage ranking rules") is the FIRST content in `#rank-panel`,
+above "Rank now", the coverage/unranked line and the paid blocker (owner feedback after #119: the
+rule in force must be visible before the button that spends against it, and Tab order follows the
+same DOM order) - keep it there; do not let a later addition push it back down.
 Both read and write the same `/api/rubric*` surface (the select action is `PUT /api/rubric/active`,
 unchanged since #102), so there is still only ONE place `resolveActiveRubric` resolves from - this
 split only relocates which UI control calls that route. The picker is a searchable ARIA combobox

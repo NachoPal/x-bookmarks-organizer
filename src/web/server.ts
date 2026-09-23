@@ -21,6 +21,8 @@ import { xArticleUrl } from '../x/article';
 import type { BookmarkXArticle } from '../db/database';
 import { buildBookmarkContent, buildBookmarkContents } from '../content/bookmark-content';
 import { buildSettingsCatalog, catalogKeyNames, type SettingsCatalog } from '../settings/catalog';
+import { CLAUDE_CLI_PROVIDER_ID } from '../llm/providers/claude-cli';
+import type { Health } from '../llm/types';
 import { verifyCatalogModels, type ModelBrowser } from '../settings/model-browser';
 import {
   effectiveSettings,
@@ -135,6 +137,20 @@ export interface ServerOptions {
    * test-built server gets.
    */
   modelBrowser?: ModelBrowser;
+  /**
+   * Whether `claude-cli` can actually run right now - its OWN `check()`
+   * (issue #35: "does the binary resolve and run", never a token's
+   * presence), the same signal the summary preflight already trusts. This is
+   * what lets the settings form disable Save for a chosen claude-cli pass
+   * when the CLI is not installed or not logged in, since claude-cli has no
+   * credential-chain key for `providerKeys` to report missing.
+   *
+   * Undefined (a test-built `buildServer(db)`, which is most of the test
+   * suite) reports it always available and spawns nothing - real tests that
+   * care inject a fake here, exactly like `articleFetcher`/`summaryGenerator`.
+   * `cmdServe` wires the real provider's `check()`.
+   */
+  claudeCliCheck?: () => Promise<Health>;
 }
 
 /** Shown when the model picker asks a viewer with no model browser for a list. */
@@ -450,6 +466,29 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   }
 
   /**
+   * `claude-cli` needs no credential-chain key at all (issue #35: a CLI logged
+   * in interactively needs no token), so its Save-blocking signal cannot come
+   * from `providerKeys` like every other provider - it has to be
+   * `opts.claudeCliCheck`, the same `check()` the summary preflight already
+   * trusts. That spawns `claude --version` in the real wiring, so it is
+   * cached briefly rather than run on every `/api/setup` read - the setup
+   * flow alone polls that route every 2s while it waits for X auth.
+   */
+  let claudeCliAvailability: { checkedAt: number; result: { available: boolean; reason?: string } } | null = null;
+  const CLAUDE_CLI_AVAILABILITY_TTL_MS = 5000;
+
+  async function claudeCliStatus(): Promise<{ available: boolean; reason?: string }> {
+    if (!opts.claudeCliCheck) return { available: true };
+    if (claudeCliAvailability && Date.now() - claudeCliAvailability.checkedAt < CLAUDE_CLI_AVAILABILITY_TTL_MS) {
+      return claudeCliAvailability.result;
+    }
+    const health = await opts.claudeCliCheck();
+    const result = { available: health.state === 'ok', reason: health.state === 'ok' ? undefined : health.detail };
+    claudeCliAvailability = { checkedAt: Date.now(), result };
+    return result;
+  }
+
+  /**
    * The ranking feature's whole state, as both `/api/setup` and `/api/rank`
    * report it. Every field is a cheap local read - the counts are SQL, the
    * blocker is a credential-presence check - so polling it costs nothing and,
@@ -503,6 +542,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         // with presence + source only, so the selector can say "needs
         // OPENCODE_API_KEY" or "found in .env" at the point of choice.
         providerKeys: Object.fromEntries(catalogKeyNames(catalog).map((name) => [name, credentialStatus(name)])),
+        // `claude-cli` has no credential-chain key (issue #35), so its own
+        // Save-blocking signal is its `check()`, not a key's presence.
+        providerAvailability: { [CLAUDE_CLI_PROVIDER_ID]: await claudeCliStatus() },
       },
       x: {
         connected: !!db.getRefreshToken(),

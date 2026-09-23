@@ -11,6 +11,9 @@ import { startServer } from './web/server';
 import { LlmSummaryGenerator } from './summarize/summarizer';
 import { billingLabel, createLlmFactory } from './llm/factory';
 import { toRunner } from './llm/runner';
+import { getProvider } from './llm/registry';
+import { CLAUDE_CLI_PROVIDER_ID } from './llm/providers/claude-cli';
+import type { ResolvedProviderConfig } from './llm/types';
 import { buildSettingsCatalog } from './settings/catalog';
 import { createModelBrowser } from './settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from './settings/settings';
@@ -440,10 +443,21 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
   const summaryGenerator = available
     ? new LlmSummaryGenerator(toRunner(llm.forRole('summary')))
     : undefined;
+  // The settings form's own claude-cli availability probe (issue #35): the
+  // same `check()` above, but callable fresh per `/api/setup` read (cached
+  // server-side) since the owner can pick claude-cli for either pass
+  // independently of the summary role's provider.
+  const providerConfig: ResolvedProviderConfig = { get: (key) => store.get(key).value };
   const app = await startServer(db, config.webPort, '127.0.0.1', {
     pageSize: config.pageSize,
     summaryGenerator,
     summaryUnavailableReason: available ? undefined : health.detail,
+    claudeCliCheck: () => {
+      const provider = getProvider(CLAUDE_CLI_PROVIDER_ID);
+      return provider
+        ? provider.check(providerConfig)
+        : Promise.resolve({ state: 'unconfigured' as const, detail: `Unknown LLM provider "${CLAUDE_CLI_PROVIDER_ID}".` });
+    },
     // The Sync button's work. `baseConfig` (not `config`) is handed over on
     // purpose: the job re-reads the settings on every run, so changing them in
     // the Settings panel takes effect without restarting the viewer.

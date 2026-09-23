@@ -348,3 +348,29 @@ describe("the per-post empty badge (issue #98)", () => {
     expect((doc.getElementById("rank-open") as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe("ranking panel layout: rule selector first (owner feedback after #119)", () => {
+  it("renders the active-rule picker as the panel's first content, above Rank now", () => {
+    const dom = new JSDOM(read("index.html"));
+    const doc = dom.window.document;
+    const panel = doc.getElementById("rank-panel") as HTMLElement;
+    const children = Array.from(panel.children);
+    const titleIndex = children.findIndex((c) => c.id === "rank-panel-title");
+    const rulesIndex = children.findIndex((c) => c.classList.contains("rank-rules"));
+    const rankOpenIndex = children.findIndex((c) => c.contains(doc.getElementById("rank-open")));
+    const coverageIndex = children.findIndex((c) => c.id === "rank-coverage");
+    const blockerIndex = children.findIndex((c) => c.id === "rank-blocker");
+
+    expect(rulesIndex).toBeGreaterThan(-1);
+    // Only the panel's own heading may precede the rule selector - it is the
+    // first FUNCTIONAL content, above "Rank now", the coverage line and the
+    // blocker, matching the DOM order Tab traverses.
+    expect(rulesIndex).toBe(titleIndex + 1);
+    expect(rulesIndex).toBeLessThan(rankOpenIndex);
+    expect(rulesIndex).toBeLessThan(coverageIndex);
+    expect(rulesIndex).toBeLessThan(blockerIndex);
+
+    const picker = panel.querySelector(".rank-rules #rank-rules-input");
+    expect(picker).not.toBeNull();
+  });
+});
