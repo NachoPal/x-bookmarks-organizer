@@ -1267,6 +1267,20 @@ split, so no new server surface was needed for it.
   ships with, not the set of questions that can exist: an authored dimension is labelled from its
   own key (`humanizeDimensionId`) and the chip says "Ranking score", not "Learning value" - the
   owner writes the questions, so the chip cannot claim to know what the number measures.
+- **The ranking panel has TWO independent coverage sources, and both must be refreshed after a
+  sync or a run.** `#rank-coverage`/the unranked dot read `setupState.ranking` (`/api/setup`,
+  already re-read by `refreshAfterSync`/`refreshAfterRank`/`applyRankedOne`). The active-rules
+  picker's OWN hint (`#rank-rules-hint`, and each entry's meta/hint in the dropdown) reads a
+  SEPARATE `rubricState` (`/api/rubric`'s per-preset `scored` + `total`), loaded once at boot and
+  otherwise only touched by rubric-editor actions (`afterRubricChange`) - a sync or a completed run
+  used to leave it showing pre-event numbers even though the main coverage line was already
+  correct. `refreshRubricState()` in `app.js` is the fix: a background re-fetch of `/api/rubric`
+  that never resets `rubricLoadState` to "loading" (so it cannot interrupt an open dropdown's
+  query), called from `refreshAfterSync`, `refreshAfterRank`, and `applyRankedOne` (the per-post
+  rank) alongside their existing `fetchSetup()` call. Regression coverage:
+  `ranking-view.test.ts`'s "the active-rules picker's coverage (ranking-menu refresh)" describe
+  block. Any NEW per-preset number added to the picker must be re-derived here too, not just from
+  `/api/setup`.
 
 ## Categorizer comparison (`eval-categorizers`, issue #83)
 

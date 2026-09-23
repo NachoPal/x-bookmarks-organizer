@@ -57,7 +57,21 @@ interface Posted {
   body: unknown;
 }
 
-async function boot(opts: { ranking?: Partial<RankingState> } = {}) {
+/** The active-rules picker's own state (`/api/rubric`) - a second source of
+ * per-preset coverage numbers alongside `/api/setup`'s `ranking` block. */
+function rubricFixture(scored: number, total: number): Record<string, unknown> {
+  return {
+    activeId: "default",
+    presets: [
+      { id: "default", name: "Default", builtIn: true, version: "v1", dimensions: [{ key: "d" }], scored },
+      { id: "custom", name: "Custom", builtIn: false, version: "v2", dimensions: [{ key: "d" }], scored: 0 },
+    ],
+    total,
+    limits: { maxDimensions: 8, minLevels: 2, maxLevels: 5 },
+  };
+}
+
+async function boot(opts: { ranking?: Partial<RankingState>; rubric?: Record<string, unknown> } = {}) {
   const DATA = [bm(1, SCORE), bm(2), bm(3)];
   const posted: Posted[] = [];
   let sync: Record<string, unknown> = { available: true, lastSyncedAt: null, status: null };
@@ -70,6 +84,7 @@ async function boot(opts: { ranking?: Partial<RankingState> } = {}) {
     status: null,
     ...opts.ranking,
   };
+  let rubric: Record<string, unknown> = opts.rubric || rubricFixture(ranking.scored, ranking.total);
 
   const dom = new JSDOM(read("index.html").replace(/<script[^>]*><\/script>/g, ""), {
     runScripts: "outside-only",
@@ -101,6 +116,7 @@ async function boot(opts: { ranking?: Partial<RankingState> } = {}) {
         const id = Number(url.match(/bookmarks\/(\d+)\/rank/)![1]);
         DATA.find((b) => b.id === id)!.score = SCORE;
         ranking = { ...ranking, scored: ranking.scored + 1, pending: ranking.pending - 1 };
+        rubric = rubricFixture(ranking.scored, ranking.total);
         return json({
           score: SCORE,
           summary: { candidates: 1, scored: 1, skipped: 0, failed: 0, inputTokens: 120 },
@@ -118,6 +134,7 @@ async function boot(opts: { ranking?: Partial<RankingState> } = {}) {
       });
     }
     if (url.startsWith("/api/rank")) return json({ ranking });
+    if (url.startsWith("/api/rubric")) return json(rubric);
     if (url.startsWith("/api/sync")) return json({ ...sync, status: (sync as any).status });
     if (url.startsWith("/api/setup")) {
       return json({
@@ -159,6 +176,7 @@ async function boot(opts: { ranking?: Partial<RankingState> } = {}) {
     "sort-order.js",
     "categorization.js",
     "ranking.js",
+    "rubric-editor.js",
   ]) {
     w.eval(read(f));
   }
@@ -179,9 +197,14 @@ async function boot(opts: { ranking?: Partial<RankingState> } = {}) {
     setSync: (over: Record<string, unknown>) => {
       sync = { ...sync, ...over };
     },
+    /** Move `/api/rubric`'s own answer on, independently of `setRanking`. */
+    setRubric: (scored: number, total: number) => {
+      rubric = rubricFixture(scored, total);
+    },
     strip: () => doc.getElementById("sync-progress") as HTMLElement,
     dot: () => doc.getElementById("rank-dot") as HTMLElement,
     coverage: () => (doc.getElementById("rank-coverage") as HTMLElement).textContent,
+    rulesHint: () => (doc.getElementById("rank-rules-hint") as HTMLElement).textContent,
     card: (id: number) => doc.querySelector(`.bookmark-card[data-bookmark-id="${id}"]`) as HTMLElement,
   };
 }
@@ -292,6 +315,113 @@ describe("the unranked dot and count (issue #98)", () => {
       ranking: { available: false, reason: "Ranking is not available in this viewer.", pending: 0 },
     });
     expect(dot().hidden).toBe(true);
+  });
+});
+
+// Regression coverage for the ranking-menu refresh bug: `rank-coverage` and
+// `rank-dot` read `/api/setup`'s `ranking` block, already re-read above. The
+// active-rules picker's own hint (`rank-rules-hint`) is a SECOND source -
+// `/api/rubric`'s per-preset `scored` count - which used to stay stale after
+// a sync or a run because neither `refreshAfterSync` nor `refreshAfterRank`
+// re-read it, even though the panel's coverage line looked current.
+describe("the active-rules picker's coverage (ranking-menu refresh)", () => {
+  it("updates after a sync adds bookmarks nothing has judged under the active rule", async () => {
+    const { doc, rulesHint, setRanking, setRubric, setSync } = await boot({
+      ranking: { scored: 3, total: 3, pending: 0 },
+      rubric: rubricFixture(3, 3),
+    });
+    expect(rulesHint()).toBe("All 3 bookmarks ranked under these rules.");
+
+    (doc.getElementById("sync-btn") as HTMLElement).click();
+    await tick();
+    setRanking({ scored: 3, total: 7, pending: 4 });
+    setRubric(3, 7);
+    setSync({
+      status: {
+        state: "done",
+        startedAt: "2026-01-01T00:00:00Z",
+        messages: [],
+        summary: { newBookmarks: 4, batches: 1, nodesCreated: 0 },
+      },
+    });
+    await poll();
+
+    expect(rulesHint()).toBe(
+      "4 bookmarks would read as unranked under these rules until you run a (paid) ranking pass. " +
+        "Switching itself costs nothing.",
+    );
+  });
+
+  it("updates after a full 'Rank now' run scores everything under the active rule", async () => {
+    const { doc, rulesHint, setRanking, setRubric } = await boot();
+    expect(rulesHint()).toBe(
+      "2 bookmarks would read as unranked under these rules until you run a (paid) ranking pass. " +
+        "Switching itself costs nothing.",
+    );
+
+    (doc.getElementById("rank-open") as HTMLElement).click();
+    (doc.getElementById("rank-confirm") as HTMLElement).click();
+    await tick();
+
+    setRanking({
+      scored: 3,
+      pending: 0,
+      status: {
+        state: "done",
+        startedAt: "2026-01-01T00:00:01Z",
+        messages: [],
+        summary: { candidates: 2, scored: 2, skipped: 0, failed: 0, inputTokens: 300 },
+      },
+    });
+    setRubric(3, 3);
+    await poll();
+
+    expect(rulesHint()).toBe("All 3 bookmarks ranked under these rules.");
+  });
+
+  it("updates after a per-post rank scores one bookmark under the active rule", async () => {
+    const { doc, card, rulesHint } = await boot();
+    expect(rulesHint()).toBe(
+      "2 bookmarks would read as unranked under these rules until you run a (paid) ranking pass. " +
+        "Switching itself costs nothing.",
+    );
+
+    (card(2).querySelector(".score-chip") as HTMLElement).click();
+    (doc.getElementById("rank-confirm") as HTMLElement).click();
+    await tick();
+
+    expect(rulesHint()).toBe(
+      "1 bookmark would read as unranked under these rules until you run a (paid) ranking pass. " +
+        "Switching itself costs nothing.",
+    );
+  });
+
+  it("is correct on a fresh open too, not only while the panel is already open", async () => {
+    // The panel is CLOSED for the whole run here - the fix must re-render the
+    // picker's state regardless of whether anyone is looking at it, so a
+    // later open finds it already current.
+    const { doc, rulesHint, setRanking, setRubric } = await boot();
+    const rankToggle = doc.getElementById("rank-toggle") as HTMLElement;
+    const rankPanel = doc.getElementById("rank-panel") as HTMLElement;
+    rankToggle.click();
+    expect(rankPanel.hidden).toBe(false);
+    rankToggle.click();
+    expect(rankPanel.hidden).toBe(true);
+
+    (doc.getElementById("rank-open") as HTMLElement).click();
+    (doc.getElementById("rank-confirm") as HTMLElement).click();
+    await tick();
+    setRanking({
+      scored: 3,
+      pending: 0,
+      status: { state: "done", startedAt: "2026-01-01T00:00:01Z", messages: [], summary: null },
+    });
+    setRubric(3, 3);
+    await poll();
+
+    rankToggle.click();
+    expect(rankPanel.hidden).toBe(false);
+    expect(rulesHint()).toBe("All 3 bookmarks ranked under these rules.");
   });
 });
 

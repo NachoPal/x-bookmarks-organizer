@@ -5056,6 +5056,33 @@
     renderRankRulesPicker();
   }
 
+  /**
+   * Bring the active-rules picker's OWN numbers - each preset's `scored`
+   * count and the library `total` behind `rank-rules-hint` - back in step
+   * with a sync or a run that just changed them.
+   *
+   * This is a second source alongside `setupState.ranking` (`/api/setup`,
+   * already re-read by `refreshAfterSync`/`refreshAfterRank`): the picker's
+   * per-preset coverage comes from `/api/rubric` instead, so re-reading
+   * `/api/setup` alone left it showing pre-run/pre-sync numbers. A plain
+   * background re-fetch, never resetting `rubricLoadState` to "loading" once
+   * the picker has already loaded once - `renderRankRulesPicker` only
+   * rebuilds the list's ENTRIES, it never yanks the open dropdown's query or
+   * selection out from under the owner.
+   */
+  async function refreshRubricState() {
+    if (rubricLoadState !== "ready") {
+      await loadRubricState();
+      return;
+    }
+    try {
+      rubricState = await getJSON("/api/rubric");
+    } catch (_) {
+      return; // keep the last good state; the next refresh tries again
+    }
+    renderRankRulesPicker();
+  }
+
   function rubricPresets() {
     return (rubricState && rubricState.presets) || [];
   }
@@ -6157,6 +6184,7 @@
     const keepId = selectedCategoryId;
     await loadTree();
     await fetchSetup();
+    await refreshRubricState();
     if (keepId == null) return;
     const node = categoryIndex.get(keepId);
     const button = treeEl.querySelector(`[data-category-id="${keepId}"]`);
@@ -6516,7 +6544,7 @@
     }
     closeRankConfirm();
     if (target) {
-      applyRankedOne(target, body);
+      void applyRankedOne(target, body);
       return;
     }
     renderRankProgress({
@@ -6536,13 +6564,17 @@
    * go into the shared strip exactly as a full run's do, so a paid call is
    * never silent even at this size.
    */
-  function applyRankedOne(target, body) {
+  async function applyRankedOne(target, body) {
     const data = body || {};
     target.bm.score = data.score || null;
     patchScoreChip(target.bm, target.card);
     if (data.ranking) {
       if (setupState) setupState.ranking = data.ranking;
       applySetupState();
+      // This bookmark scored under the ACTIVE preset, which is the one whose
+      // `scored` count `rank-rules-hint` reads - bring the picker's own
+      // per-preset numbers back in step too, the same as a whole run does.
+      await refreshRubricState();
     }
     renderRankProgress({
       state: "done",
@@ -6599,6 +6631,7 @@
     // keeps this a CONTENT-only refresh (issue #97) - the tab bar and its
     // badges are left alone.
     await fetchSetup();
+    await refreshRubricState();
     if (selectedCategoryId != null) await fetchAndRenderFirstPage({ sameCategory: true });
   }
 
