@@ -565,3 +565,125 @@ describe('providerAvailability (claude-cli, issue #35 generalization)', () => {
     expect(XBO.passProblems(values2, catalog, {}, availability)).toEqual([]);
   });
 });
+
+describe('isUnchanged (issue #122, the dirty check)', () => {
+  const saved = {
+    categorizer: 'claude-cli',
+    taxonomyProvider: 'claude-cli',
+    taxonomyModel: 'claude-opus-4-8',
+    assignmentProvider: 'claude-cli',
+    assignmentModel: 'claude-haiku-4-5',
+    effort: 'high',
+  };
+
+  it('is true when the selection matches the saved configuration exactly', () => {
+    expect(XBO.isUnchanged({ ...saved }, saved)).toBe(true);
+  });
+
+  it('flips false the instant any persisted field changes, and true again on revert', () => {
+    const changed = { ...saved, taxonomyModel: 'claude-haiku-4-5' };
+    expect(XBO.isUnchanged(changed, saved)).toBe(false);
+    expect(XBO.isUnchanged({ ...changed, taxonomyModel: saved.taxonomyModel }, saved)).toBe(true);
+  });
+
+  it('ignores a field a save never persists, such as a catalog pass source', () => {
+    expect(XBO.isUnchanged({ ...saved, taxonomySource: 'anthropic' }, saved)).toBe(true);
+  });
+
+  it('never lets a stray filing-model value read as a change for Jev, which has none', () => {
+    const jevSaved = {
+      categorizer: 'typesafe',
+      taxonomyProvider: 'claude-cli',
+      taxonomyModel: '',
+      assignmentProvider: 'claude-cli',
+      assignmentModel: 'claude-haiku-4-5',
+      effort: '',
+    };
+    // toPayload drops the filing model for Jev on both sides, so a leftover
+    // assignmentModel value in the form must not itself read as a change.
+    expect(XBO.isUnchanged({ ...jevSaved, assignmentModel: 'something-else' }, jevSaved)).toBe(true);
+  });
+
+  it('reads the legacy single `provider` document the same as a per-pass one', () => {
+    const legacy = {
+      categorizer: 'claude-cli',
+      provider: 'claude-cli',
+      taxonomyModel: 'claude-opus-4-8',
+      assignmentModel: 'claude-haiku-4-5',
+      effort: 'high',
+    };
+    expect(XBO.isUnchanged(saved, legacy)).toBe(true);
+  });
+
+  it('is never "unchanged" from nothing - a config that has never been saved', () => {
+    expect(XBO.isUnchanged(saved, null)).toBe(false);
+    expect(XBO.isUnchanged(saved, undefined)).toBe(false);
+  });
+});
+
+describe('passProblems / hasSaveBlocker compose with the unchanged check (issue #122)', () => {
+  const values = {
+    categorizer: 'claude-cli',
+    taxonomyProvider: 'claude-cli',
+    taxonomyModel: '',
+    assignmentProvider: 'claude-cli',
+    assignmentModel: '',
+    effort: '',
+  };
+
+  it('adds "No changes to save" and blocks Save when the selection equals the baseline', () => {
+    expect(XBO.passProblems(values, catalog, {}, {}, values)).toEqual([
+      { text: 'No changes to save.', blocksSave: true },
+    ]);
+    expect(XBO.hasSaveBlocker(values, catalog, {}, {}, values)).toBe(true);
+  });
+
+  it('enables Save the instant the selection differs, and disables it again on revert', () => {
+    const changed = { ...values, taxonomyModel: 'claude-opus-4-8' };
+    expect(XBO.hasSaveBlocker(changed, catalog, {}, {}, values)).toBe(false);
+    expect(XBO.hasSaveBlocker({ ...changed, taxonomyModel: values.taxonomyModel }, catalog, {}, {}, values)).toBe(
+      true,
+    );
+  });
+
+  it('never blocks Save for being unchanged when no baseline is given (existing callers)', () => {
+    expect(XBO.hasSaveBlocker(values, catalog, {}, {})).toBe(false);
+    expect(XBO.hasSaveBlocker(values, catalog, {})).toBe(false);
+  });
+
+  it('still blocks a changed-but-unsaveable selection: the invalid-choice reason composes with the unchanged one', () => {
+    const invalidChange = { ...values, taxonomyProvider: 'pi-ai', taxonomySource: 'opencode', taxonomyModel: '' };
+    // Differs from the baseline, so "unchanged" never fires - a catalog
+    // source picked with no model in it is its own, independent blocker.
+    expect(XBO.hasSaveBlocker(invalidChange, piCatalog, {}, {}, values)).toBe(true);
+  });
+
+  it('still blocks a changed-but-unrunnable selection: the missing-key reason composes too, and clears with the key', () => {
+    const missingKey = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'anthropic/claude-opus-4-8',
+      taxonomySource: 'anthropic',
+      assignmentProvider: 'claude-cli',
+    };
+    expect(XBO.hasSaveBlocker(missingKey, piCatalog, {}, {}, values)).toBe(true);
+    const keyed = { ANTHROPIC_API_KEY: { present: true } };
+    expect(XBO.hasSaveBlocker(missingKey, piCatalog, keyed, {}, values)).toBe(false);
+  });
+
+  it('shows both reasons at once when a saved-and-unchanged selection has since lost its key', () => {
+    const saved = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'anthropic/claude-opus-4-8',
+      assignmentProvider: 'claude-cli',
+      assignmentModel: '',
+      effort: '',
+    };
+    const current = { ...saved, taxonomySource: 'anthropic' };
+    const problems = XBO.passProblems(current, piCatalog, {}, {}, saved);
+    expect(problems).toHaveLength(2);
+    expect(problems.some((p: { text: string }) => p.text === 'No changes to save.')).toBe(true);
+    expect(problems.some((p: { text: string }) => /ANTHROPIC_API_KEY/.test(p.text))).toBe(true);
+  });
+});
