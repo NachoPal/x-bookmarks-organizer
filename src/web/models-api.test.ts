@@ -276,3 +276,80 @@ describe('GET /api/setup - per-upstream key presence', () => {
     }
   });
 });
+
+/**
+ * The models `@earendil-works/pi-ai` 0.87.1 added, read through the REAL
+ * provider registry and the REAL installed catalog - static JSON in the
+ * package, so still no request and no spend. A later pi bump that drops one
+ * fails here instead of silently shrinking the picker.
+ */
+describe('the pi-ai 0.87.1 models, through the real installed catalog', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let realFetch: typeof fetch;
+  let requests = 0;
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    realFetch = globalThis.fetch;
+    requests = 0;
+    globalThis.fetch = (async () => {
+      requests += 1;
+      throw new Error('browsing the catalog must never reach the network');
+    }) as typeof fetch;
+    app = buildServer(db, { modelBrowser: createModelBrowser() });
+    await app.ready();
+  });
+  afterEach(async () => {
+    await app?.close();
+    db.close();
+    globalThis.fetch = realFetch;
+    expect(requests).toBe(0);
+  });
+
+  async function listed(provider: string, source: string) {
+    const res = await app.inject({ method: 'GET', url: `/api/models?provider=${provider}&source=${source}` });
+    expect(res.statusCode).toBe(200);
+    const models = res.json().models as Array<{ id: string; label: string; contextWindow: number; maxOutputTokens: number }>;
+    return new Map(models.map((m) => [m.id, m]));
+  }
+
+  it('lists Claude Opus 5.5 on every Claude route: claude-cli, pi-claude-subscription and pi-ai', async () => {
+    for (const provider of ['claude-cli', 'pi-claude-subscription', 'pi-ai']) {
+      const opus = (await listed(provider, 'anthropic')).get('anthropic/claude-opus-5-5');
+      expect(opus, provider).toMatchObject({ label: 'Claude Opus 5.5', contextWindow: 1_000_000, maxOutputTokens: 128_000 });
+    }
+  });
+
+  it("lists GPT-6 Sol and GPT-6 Luna in pi-ai's OpenAI source", async () => {
+    const openai = await listed('pi-ai', 'openai');
+    expect(openai.get('openai/gpt-6-sol')).toMatchObject({ label: 'GPT-6 Sol', contextWindow: 272_000, maxOutputTokens: 128_000 });
+    expect(openai.get('openai/gpt-6-luna')).toMatchObject({ label: 'GPT-6 Luna', contextWindow: 272_000, maxOutputTokens: 128_000 });
+  });
+
+  it('saves the new models as per-pass picks, and leaves the default suggestions where they were', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        categorizer: 'claude-cli',
+        taxonomyProvider: 'claude-cli',
+        taxonomyModel: 'anthropic/claude-opus-5-5',
+        assignmentProvider: 'pi-ai',
+        assignmentModel: 'openai/gpt-6-luna',
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(readSettings(db, catalog)).toMatchObject({
+      taxonomyModel: 'anthropic/claude-opus-5-5',
+      assignmentModel: 'openai/gpt-6-luna',
+    });
+    for (const id of ['claude-cli', 'pi-claude-subscription', 'pi-ai']) {
+      const provider = catalog.providers.find((p) => p.id === id)!;
+      expect(provider.suggested, id).toMatchObject({
+        taxonomy: 'anthropic/claude-opus-4-8',
+        assignment: 'anthropic/claude-haiku-4-5',
+      });
+    }
+  });
+});

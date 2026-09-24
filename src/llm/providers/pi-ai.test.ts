@@ -7,6 +7,7 @@ import { buildCategorizers, reportCategorizerBilling } from '../../categorize/bu
 import { Database } from '../../db/database';
 import { createCredentialStore } from '../../creds/resolve';
 import { createLlmFactory } from '../factory';
+import { SUMMARY_OUTPUT_TOKENS, TAXONOMY_OUTPUT_TOKENS } from '../output-budget';
 import type { ResolvedProviderConfig } from '../types';
 import {
   CURATED_PI_MODELS,
@@ -577,6 +578,22 @@ describe('outputCeiling (security review 2, #19)', () => {
   it('leaves the call uncapped only when no budget was given at all', () => {
     expect(outputCeiling({ maxTokens: 128_000 }, undefined, 'off')).toBeUndefined();
     expect(outputCeiling({ maxTokens: 128_000 }, 0, 'off')).toBeUndefined();
+  });
+
+  it("resolves a real cap for the models pi-ai 0.87.1 added, from the installed catalog's own maximum", async () => {
+    const runtime = await loadPiRuntime();
+    for (const [upstream, id] of [
+      ['anthropic', 'claude-opus-5-5'],
+      ['openai', 'gpt-6-sol'],
+      ['openai', 'gpt-6-luna'],
+    ] as const) {
+      const model = await runtime.findModel(upstream, id);
+      expect(model, `${upstream}/${id} is not in the installed pi catalog`).toBeDefined();
+      expect(model!.maxTokens).toBe(128_000);
+      expect(outputCeiling(model!, SUMMARY_OUTPUT_TOKENS, 'off')).toBe(SUMMARY_OUTPUT_TOKENS);
+      expect(outputCeiling(model!, TAXONOMY_OUTPUT_TOKENS, 'high')).toBe(TAXONOMY_OUTPUT_TOKENS + REASONING_ALLOWANCE.high);
+      expect(outputCeiling(model!, TAXONOMY_OUTPUT_TOKENS, 'max')).toBe(TAXONOMY_OUTPUT_TOKENS + REASONING_ALLOWANCE.max);
+    }
   });
 
   it('keeps every level well under the 128k maximum that made #19 costly', () => {

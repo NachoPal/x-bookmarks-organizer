@@ -451,7 +451,7 @@ Selecting it **is** the opt-in: in the app pick **Claude subscription via pi (ag
 terms)** as a pass's provider in Settings → Categorization (the selector shows the warning above
 under it); on the CLI set `XBOOKMARKS_TAXONOMY_PROVIDER=pi-claude-subscription` and/or
 `XBOOKMARKS_ASSIGNMENT_PROVIDER=pi-claude-subscription`. It is never a default. Its models use the
-`claude-cli` ids (`claude-opus-4-8`, `claude-haiku-4-5`, `claude-sonnet-5`), with the same Opus-for-pass-1 /
+`claude-cli` ids (`claude-opus-4-8`, `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-5-5`), with the same Opus-for-pass-1 /
 Haiku-for-pass-2 suggestion. The token comes through the usual credential chain and is handed to pi on
 every call - pi never looks for a credential itself, and `ANTHROPIC_API_KEY` is never read. A value that
 is not a subscription token is refused, because pi would bill an API key per token. Every run prints
