@@ -1023,8 +1023,9 @@
           <div class="setup-heading">
             <h2 id="cat-editor-title" class="setup-title">Edit categories</h2>
             <p id="cat-editor-intro" class="setup-step-hint">
-              Add a category anywhere in the tree, or delete one. Deleting a category also
-              deletes its sub-categories, and permanently deletes any post left filed nowhere else.
+              Categories you add are yours: syncs file posts into them but never change them. The
+              person icon marks a category as yours; the magnifier finds stored bookmarks that fit
+              it. Deleting a category deletes its sub-categories and any post filed nowhere else.
             </p>
           </div>
           <div class="reader-header-actions">
@@ -1083,6 +1084,55 @@
           <button id="cat-delete-confirm" class="btn btn-danger" type="button" disabled>
             Delete category
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- "Find bookmarks for this category", opened from a row of the editor
+         and stacked over it like the delete confirmation. What it states - how
+         many bookmarks it checks, which filing model, and whether that model
+         is billed per token - is read fresh from the server when it opens.
+         Cancel is focused first; a per-token model turns the primary button
+         into "Start paid search", the one place `{ confirm: true }` is sent. -->
+    <div id="cat-find-backdrop" class="reader-backdrop is-over-modal" hidden></div>
+    <div
+      id="cat-find-modal"
+      class="reader-modal setup-modal is-over-modal"
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cat-find-title"
+      aria-describedby="cat-find-text"
+    >
+      <div class="setup-panel reset-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="cat-find-title" class="setup-title">Find bookmarks for this category?</h2>
+          </div>
+        </div>
+        <div class="reset-body">
+          <p id="cat-find-text" class="reset-text"></p>
+          <p id="cat-find-cost" class="rank-cost" hidden>
+            <svg class="rank-cost-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M12.4 7.4A3 3 0 0 0 10 6.3c-1.4 0-2.4.7-2.4 1.8 0 2.5 5 1.2 5 3.8 0 1.1-1.1 1.8-2.6 1.8a3.2 3.2 0 0 1-2.5-1.1"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+              <line x1="10" y1="4.6" x2="10" y2="15.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span id="cat-find-cost-text" class="rank-cost-text"></span>
+          </p>
+          <p id="cat-find-model" class="reset-text reset-text-muted" hidden></p>
+          <p id="cat-find-warning" class="reset-text reset-text-muted" hidden></p>
+          <p id="cat-find-error" class="setup-error" hidden></p>
+        </div>
+        <div class="setup-footer">
+          <button id="cat-find-cancel" class="btn btn-secondary" type="button">Cancel</button>
+          <button id="cat-find-confirm" class="btn btn-primary" type="button" disabled>Find bookmarks</button>
         </div>
       </div>
     </div>

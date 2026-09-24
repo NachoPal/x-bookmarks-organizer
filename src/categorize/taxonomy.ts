@@ -85,7 +85,7 @@ ${scope}
 
 # Existing categories
 ${existingTreeText}
-If the section above lists real categories, KEEP them and extend the tree around them; do not rename or delete existing nodes. If it says there are none, design the whole tree from scratch.
+${EXISTING_RULE}
 
 # Design goals
 - Look across ALL bookmarks before choosing any label. Do not anchor on the first few you read.
@@ -107,6 +107,17 @@ export interface TaxonomyBatch {
   index: number;
   count: number;
 }
+
+/**
+ * How pass 1 treats the tree it is shown. On a first sync that is the owner's
+ * hand-made categories; on a recategorize it is those plus the ancestors that
+ * hold them in place. Either way every listed node is a FIXED anchor - the
+ * code also enforces it (materializing merges into them, and nothing a pass
+ * does can rename, move or delete an owner category), but a design that
+ * already honours them files posts into them instead of beside them.
+ */
+const EXISTING_RULE =
+  'If the section above lists categories, they already exist and are FIXED ANCHORS. Nodes marked [owner] were created by the person by hand, because they want every bookmark that fits to be filed there. Keep every listed node exactly as it is - the same name, at the same place in the hierarchy - and include each one in your output tree verbatim (without the [owner] marker, which is not part of the name). Never rename, merge, move or drop them, and never create a second category that means the same thing as one of them. Design everything else around them: new categories beside them, and new sub-categories inside them (including inside [owner] nodes) wherever the material supports it. If it says there are none, design the whole tree from scratch.';
 
 const DESCRIPTION_RULE =
   'Give EVERY node a one-sentence "description" saying what belongs under it. Write each description to SEPARATE that node from its siblings - what goes here that does not go in the node next to it. Keep it under 160 characters. This is what later passes use to file a bookmark into the right branch.';
@@ -149,7 +160,7 @@ The collection was too large to design in one request, so it was split into ${pa
 
 # Existing categories
 ${existingTreeText}
-If the section above lists real categories, KEEP them and extend the tree around them; do not rename or delete existing nodes. If it says there are none, design the whole tree from scratch.
+${EXISTING_RULE}
 
 # Merge rules
 - Treat categories that mean the same thing as ONE category even when their names differ (e.g. "AI Agents" and "Agentic AI", or "JS" and "JavaScript"). Judge by the descriptions, not only the names: labels that look different can cover the same material, and labels that look alike can cover different material.

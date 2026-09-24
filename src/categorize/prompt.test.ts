@@ -43,6 +43,16 @@ describe('buildPrompt', () => {
   });
 });
 
+describe('owner categories in the assignment prompts', () => {
+  it('asks both modes to prefer the [owner] categories and never to copy the marker', () => {
+    for (const prompt of [buildPrompt([bm('1')], '- Rust [owner]', 4), buildExtendPrompt([bm('1')], '- Rust [owner]', 4)]) {
+      expect(prompt).toContain('Categories marked [owner] were created by the person by hand');
+      expect(prompt).toContain('never write it in a path');
+    }
+    expect(buildExtendPrompt([bm('1')], '- Rust [owner]', 4)).toContain('Never create a category that means the same thing');
+  });
+});
+
 describe('buildExtendPrompt', () => {
   it('includes the linked article title/description for a link-heavy post (issue #25)', () => {
     const articleContext = new Map<string, ArticleContext>([

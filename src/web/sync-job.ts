@@ -30,7 +30,7 @@ import {
   type Log,
 } from '../categorize/build';
 import { createLlmFactory, type LlmFactory } from '../llm/factory';
-import { runIngest as defaultRunIngest, type IngestSummary } from '../ingest';
+import { needsTaxonomyDesign, runIngest as defaultRunIngest, type IngestSummary } from '../ingest';
 import { buildSettingsCatalog } from '../settings/catalog';
 import { createModelBrowser, type ModelBrowser } from '../settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from '../settings/settings';
@@ -125,7 +125,8 @@ export interface SyncSpendDeps {
  * Resolved exactly the way {@link createSyncJob} resolves a run - the stored
  * settings layered on `config`, re-read on every call - so the confirmation
  * describes the run it authorizes. Only passes that will actually run count:
- * pass 1 (taxonomy) runs only while the library has no tree yet, and Jev's
+ * pass 1 (taxonomy) runs only while the library has no generated tree yet
+ * (the owner's own categories do not count - see `needsTaxonomyDesign`), and Jev's
  * LLM fallback only when an existing tree is being extended. A local read
  * throughout: nothing is called and nothing is spent.
  */
@@ -137,7 +138,7 @@ export function createSyncSpend(deps: SyncSpendDeps): () => Promise<PaidPass[]> 
     const { db, store } = deps;
     const config = applySettingsToConfig(deps.config, effectiveSettings(db, catalog));
     const llm = createLlmFactory(config, process.env, store);
-    const firstRun = db.getAllCategories().length === 0;
+    const firstRun = needsTaxonomyDesign(db);
     const passes: (PaidPass | undefined)[] = [];
 
     if (firstRun) {

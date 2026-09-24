@@ -67,6 +67,15 @@ describe('buildTaxonomyPrompt', () => {
     expect(prompt).toContain('  - Evals');
   });
 
+  it('treats the existing tree, and the owner’s [owner] categories, as fixed anchors', () => {
+    const prompt = buildTaxonomyPrompt([bm('1')], '- Rust [owner]', 3, 4);
+    expect(prompt).toContain('- Rust [owner]');
+    expect(prompt).toContain('FIXED ANCHORS');
+    expect(prompt).toContain('Nodes marked [owner] were created by the person by hand');
+    expect(prompt).toContain('new sub-categories inside them (including inside [owner] nodes)');
+    expect(buildReconcilePrompt([{ tree: [], bookmarkCount: 1 }], '- Rust [owner]', 3, 4)).toContain('FIXED ANCHORS');
+  });
+
   it('surfaces a linked domain as a hint', () => {
     const prompt = buildTaxonomyPrompt(
       [bm('1', 'paper https://arxiv.org/abs/1')],

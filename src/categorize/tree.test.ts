@@ -4,6 +4,7 @@ import {
   buildCategoryTree,
   materializeTaxonomy,
   readRootOrder,
+  pruneToProtected,
   renderTreeForPrompt,
   writeRootOrder,
 } from './tree';
@@ -205,7 +206,7 @@ describe('root order (issue #82)', () => {
       for (const n of ['AI', 'Game Dev', 'Zebra']) db.getOrCreateCategory(n, null, now);
       writeRootOrder(db, ['Zebra', 'AI', 'Game Dev']);
       expect(buildCategoryTree(db).map((r) => r.name)).toEqual(['Zebra', 'AI', 'Game Dev']);
-      db.clearCategories();
+      db.clearGeneratedCategories();
       for (const n of ['Game Dev', 'AI', 'Zebra', 'New']) db.getOrCreateCategory(n, null, now);
       expect(buildCategoryTree(db).map((r) => r.name)).toEqual(['Zebra', 'AI', 'Game Dev', 'New']);
     } finally {
@@ -218,6 +219,36 @@ describe('root order (issue #82)', () => {
     try {
       db.setState('root_order', '{nope');
       expect(readRootOrder(db)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('owner categories in the prompt tree', () => {
+  it('marks the owner’s categories with [owner], and only them', () => {
+    const db = new Database(':memory:');
+    try {
+      const when = new Date().toISOString();
+      const ai = db.getOrCreateCategory('AI', null, when, 'Machine learning.');
+      db.createCategory('My evals', ai.id, when);
+      const text = renderTreeForPrompt(buildCategoryTree(db));
+      expect(text).toBe('- AI - Machine learning.\n  - My evals [owner]');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('prunes a tree down to the protected ids', () => {
+    const db = new Database(':memory:');
+    try {
+      const when = new Date().toISOString();
+      const ai = db.getOrCreateCategory('AI', null, when);
+      db.getOrCreateCategory('Evals', ai.id, when);
+      db.createCategory('Mine', ai.id, when);
+      db.getOrCreateCategory('Game Dev', null, when);
+      const pruned = pruneToProtected(buildCategoryTree(db), db.getProtectedCategoryIds());
+      expect(renderTreeForPrompt(pruned)).toBe('- AI\n  - Mine [owner]');
     } finally {
       db.close();
     }

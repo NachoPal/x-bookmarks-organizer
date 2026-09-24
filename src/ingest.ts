@@ -2,7 +2,14 @@ import type { Database } from './db/database';
 import type { XClient } from './x/client';
 import type { AssignMode, BatchCategorizer } from './categorize/llm';
 import type { TaxonomyDesigner } from './categorize/taxonomy';
-import { buildCategoryTree, materializeTaxonomy, renderTreeForPrompt } from './categorize/tree';
+import {
+  buildCategoryTree,
+  findMergeTarget,
+  materializeTaxonomy,
+  pruneToProtected,
+  renderTreeForPrompt,
+} from './categorize/tree';
+import { findOwnerAnchor, stripOwnerMarker } from './categorize/owner-categories';
 import { buildArticleContext } from './articles/link-metadata';
 import { HttpArticleFetcher, type ArticleFetcher } from './articles/fetch-article';
 import type { Assignment, RawBookmark } from './types';
@@ -10,8 +17,15 @@ import type { Assignment, RawBookmark } from './types';
 /** Root node used when the LLM finds no fitting category, so everything is filed. */
 const FALLBACK_CATEGORY = 'Uncategorized';
 
-/** Text used for the "existing tree" section when no categories exist yet. */
-const EMPTY_TREE_TEXT = '(no categories yet)';
+/**
+ * Whether the next sync designs a taxonomy (pass 1) before filing: true until
+ * the passes have built one. Only GENERATED categories count - the owner's own
+ * (added in the category editor before the first sync) are anchors the first
+ * design is built around, not a tree that makes the design unnecessary.
+ */
+export function needsTaxonomyDesign(db: Database): boolean {
+  return !db.hasGeneratedCategories();
+}
 
 export interface IngestDeps {
   db: Database;
@@ -110,11 +124,48 @@ export type PathResolver = (
   when: string,
 ) => number | undefined;
 
+/** A model-written path, minus copied `[owner]` markers and empty segments. */
+function cleanPath(path: string[]): string[] {
+  return path.map(stripOwnerMarker).filter((name) => name.length > 0);
+}
+
+/** Walk `names` down from `parentId` through EXISTING nodes only. */
+function walkExisting(db: Database, names: string[], parentId: number | null): number | undefined {
+  let leafId: number | undefined;
+  for (const name of names) {
+    const node = db.findCategory(name, parentId);
+    if (!node) return undefined;
+    parentId = node.id;
+    leafId = node.id;
+  }
+  return leafId;
+}
+
+/**
+ * A path that does not resolve as written, rescued when it names one of the
+ * owner's categories: the deepest segment that is the (unambiguous) name of
+ * an owner category anchors it, and whatever follows is walked from there.
+ * The model placed the bookmark INSIDE the owner's category, just under a
+ * wrong prefix ("Programming > Rust" for the owner's root "Rust") or a
+ * sub-node that does not exist - filing it in the owner's category honours
+ * what the model decided, where `Uncategorized` would throw it away.
+ */
+function resolveViaOwnerAnchor(db: Database, names: string[]): number | undefined {
+  for (let i = names.length - 1; i >= 0; i--) {
+    const anchor = findOwnerAnchor(db, names[i]!);
+    if (!anchor) continue;
+    return walkExisting(db, names.slice(i + 1), anchor.id) ?? anchor.id;
+  }
+  return undefined;
+}
+
 /**
  * Resolve a single category path (root -> leaf) to the leaf node id WITHOUT
  * creating anything: every segment must already exist in the (designed) tree.
  * Off-tree paths resolve to undefined so they fall back to `Uncategorized`
- * rather than minting ad-hoc nodes that would defeat the holistic taxonomy.
+ * rather than minting ad-hoc nodes that would defeat the holistic taxonomy -
+ * unless the path names one of the owner's categories, which is always a
+ * valid target (see `resolveViaOwnerAnchor`).
  * Used by the first run and by `recategorize`, where the tree is fixed.
  *
  * Exported for the categorizer comparison (`src/eval/`), which must decide
@@ -123,32 +174,49 @@ export type PathResolver = (
  * would be measuring its own resolver rather than the two filing methods.
  */
 export const resolveExistingPathToLeafId: PathResolver = (db, path, maxDepth) => {
-  const capped = path.slice(0, maxDepth);
-  let parentId: number | null = null;
-  let leafId: number | undefined;
-  for (const name of capped) {
-    const node = db.findCategory(name, parentId);
-    if (!node) return undefined;
-    parentId = node.id;
-    leafId = node.id;
-  }
-  return leafId;
+  const names = cleanPath(path).slice(0, maxDepth);
+  if (names.length === 0) return undefined;
+  return walkExisting(db, names, null) ?? resolveViaOwnerAnchor(db, names);
 };
+
+/** How deep `id` sits (a root is 0), for a path re-anchored mid-tree. */
+function depthOf(db: Database, id: number): number {
+  let depth = 0;
+  for (let node = db.getCategoryById(id); node?.parentId != null; node = db.getCategoryById(node.parentId)) depth++;
+  return depth;
+}
 
 /**
  * Resolve a single category path (root -> leaf) to the leaf node id, CREATING
- * any missing segments (capped at `maxDepth`). Used by incremental runs that
- * extend an existing tree: the model may reuse existing nodes or introduce a new
- * one when nothing fits (reuse-or-create).
+ * any missing segments. Used by incremental runs that extend an existing
+ * tree: the model may reuse existing nodes or introduce a new one when nothing
+ * fits (reuse-or-create).
+ *
+ * Reuse comes first, and it includes the owner's categories under a name that
+ * only NEARLY matches (`findMergeTarget`): "LLM" next to the owner's "LLMs"
+ * files into theirs rather than minting a twin, and a path that starts at an
+ * owner category the model re-rooted continues from where it really is. A new
+ * node is never created at or below `maxDepth`; the deepest reachable node
+ * takes the bookmark instead.
  */
 const resolveOrCreatePathToLeafId: PathResolver = (db, path, maxDepth, when) => {
-  const capped = path.slice(0, maxDepth);
+  const names = cleanPath(path);
   let parentId: number | null = null;
+  let depth = 0; // depth the NEXT segment would sit at
   let leafId: number | undefined;
-  for (const name of capped) {
+  for (const [i, name] of names.entries()) {
+    const existing = findMergeTarget(db, name, parentId, i === 0);
+    if (existing) {
+      depth = existing.parentId === parentId ? depth + 1 : depthOf(db, existing.id) + 1;
+      parentId = existing.id;
+      leafId = existing.id;
+      continue;
+    }
+    if (depth >= maxDepth) break;
     const node = db.getOrCreateCategory(name, parentId, when);
     parentId = node.id;
     leafId = node.id;
+    depth++;
   }
   return leafId;
 };
@@ -156,7 +224,10 @@ const resolveOrCreatePathToLeafId: PathResolver = (db, path, maxDepth, when) => 
 /**
  * Build the resolver passed to `storeCategorizedBatch`: map a bookmark to the
  * leaf ids it was assigned to (via `resolvePath`), falling back to
- * `Uncategorized` when the model returned nothing that resolves.
+ * `Uncategorized` when the model returned nothing that resolves - unless
+ * `alreadyFiled` says the bookmark is still filed somewhere (a recategorize
+ * keeps its links into the owner's categories), where that would only add a
+ * misleading second home.
  */
 function makeResolver(
   db: Database,
@@ -164,6 +235,7 @@ function makeResolver(
   maxDepth: number,
   when: string,
   resolvePath: PathResolver,
+  alreadyFiled: (bm: RawBookmark) => boolean = () => false,
 ) {
   return (bm: RawBookmark): number[] => {
     const paths = byPostId.get(bm.postId) ?? [];
@@ -172,7 +244,7 @@ function makeResolver(
       const id = resolvePath(db, path, maxDepth, when);
       if (id !== undefined) ids.add(id);
     }
-    if (ids.size === 0) {
+    if (ids.size === 0 && !alreadyFiled(bm)) {
       ids.add(db.getOrCreateCategory(FALLBACK_CATEGORY, null, when).id);
     }
     return [...ids];
@@ -188,17 +260,23 @@ function indexAssignments(assignments: Assignment[]): Map<string, string[][]> {
 
 /**
  * Full incremental run. The expensive holistic taxonomy-design pass runs ONLY on
- * the first run (empty tree); once a tree exists, incremental runs skip it to
- * conserve subscription quota:
+ * the first run (no generated tree yet); once one exists, incremental runs skip
+ * it to conserve subscription quota:
  *
- *   - First run (no categories yet): pass 1 designs a genuinely nested tree over
- *     ALL newly-collected bookmarks at once, then the assignment pass files each
- *     bookmark strictly into that fixed tree (off-tree paths -> `Uncategorized`).
+ *   - First run (no GENERATED categories yet - see {@link needsTaxonomyDesign}):
+ *     pass 1 designs a genuinely nested tree over ALL newly-collected bookmarks
+ *     at once, then the assignment pass files each bookmark strictly into that
+ *     fixed tree (off-tree paths -> `Uncategorized`). Categories the owner
+ *     added by hand before it are fixed anchors: the design is shown them and
+ *     builds around and inside them, and materializing merges into them.
  *   - Incremental run (tree already exists): SKIP the taxonomy designer entirely
  *     and never re-touch already-stored bookmarks. The assignment pass files the
  *     NEW bookmarks into the existing tree, reusing nodes and creating a new one
  *     only when a bookmark fits nothing (reuse-or-create). A full holistic
  *     redesign is available on demand via `recategorize`.
+ *
+ * The owner's categories are never renamed, moved, re-described or deleted by
+ * either path - they are filed into, and may gain generated sub-categories.
  *
  * Either way a bookmark may be filed under several branches; anything that fits
  * nothing lands in `Uncategorized`. Each assignment batch is stored atomically
@@ -221,6 +299,7 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
   db.setLastSyncedAt(new Date().toISOString());
 
   const nodesBefore = db.getAllCategories().length;
+  const firstRun = needsTaxonomyDesign(db);
 
   if (newBookmarks.length === 0) {
     if (newestPostId) db.setNewestSeenPostId(newestPostId);
@@ -240,11 +319,17 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
   let mode: AssignMode;
   let resolvePath: PathResolver;
 
-  if (nodesBefore === 0) {
+  if (firstRun) {
     // First run: design the taxonomy holistically over all new bookmarks, then
-    // file strictly into the fixed tree.
-    log('Designing taxonomy (pass 1)...');
-    const taxonomy = await taxonomer.designTaxonomy(ordered, EMPTY_TREE_TEXT, articleContext);
+    // file strictly into the fixed tree. The owner's own categories (if they
+    // added any before this sync) are the design's fixed anchors.
+    const anchors = buildCategoryTree(db);
+    log(
+      anchors.length > 0
+        ? 'Designing taxonomy (pass 1) around the categories you added...'
+        : 'Designing taxonomy (pass 1)...',
+    );
+    const taxonomy = await taxonomer.designTaxonomy(ordered, renderTreeForPrompt(anchors), articleContext);
     materializeTaxonomy(db, taxonomy, maxDepth, when);
     mode = 'strict';
     resolvePath = resolveExistingPathToLeafId;
@@ -278,10 +363,16 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
 
 /**
  * Re-categorize every already-stored bookmark from scratch: drop the current
- * (possibly shallow) taxonomy and rebuild it holistically over ALL stored
- * bookmarks, then reassign them. Bookmarks themselves - including read state and
- * read dates - are never touched. Lets the owner redo a shallow first run
- * without re-fetching from X.
+ * (possibly shallow) generated taxonomy and rebuild it holistically over ALL
+ * stored bookmarks, then reassign them. Bookmarks themselves - including read
+ * state and read dates - are never touched. Lets the owner redo a shallow first
+ * run without re-fetching from X.
+ *
+ * The owner's own categories survive exactly as they are, with the ancestors
+ * that hold them in place and the posts already in them
+ * (`Database.clearGeneratedCategories`): the new design is built around them
+ * as fixed anchors, just like a first sync's, and every bookmark is re-filed
+ * into the merged tree.
  */
 export async function recategorizeAll(deps: RecategorizeDeps): Promise<RecategorizeSummary> {
   const { db, taxonomer, categorizer, batchSize, maxDepth } = deps;
@@ -299,16 +390,27 @@ export async function recategorizeAll(deps: RecategorizeDeps): Promise<Recategor
   log('Fetching linked article titles for categorization...');
   const articleContext = await buildArticleContext(bookmarks, articleFetcher, db);
 
-  // Pass 1: design the taxonomy from scratch over all stored bookmarks BEFORE
-  // touching the DB. designTaxonomy throws on a malformed LLM response, so
-  // clearing first would risk wiping the existing taxonomy with nothing to
-  // replace it; only clear once the new taxonomy is in hand.
-  log('Designing taxonomy (pass 1)...');
-  const taxonomy = await taxonomer.designTaxonomy(bookmarks, EMPTY_TREE_TEXT, articleContext);
+  // Pass 1: design the taxonomy over all stored bookmarks BEFORE touching the
+  // DB. designTaxonomy throws on a malformed LLM response, so clearing first
+  // would risk wiping the existing taxonomy with nothing to replace it; only
+  // clear once the new taxonomy is in hand. What survives the clear - the
+  // owner's categories and their ancestors - is what the design is anchored on.
+  const anchors = pruneToProtected(buildCategoryTree(db), db.getProtectedCategoryIds());
+  log(
+    anchors.length > 0
+      ? 'Designing taxonomy (pass 1), keeping your own categories as they are...'
+      : 'Designing taxonomy (pass 1)...',
+  );
+  const taxonomy = await taxonomer.designTaxonomy(bookmarks, renderTreeForPrompt(anchors), articleContext);
   const when = new Date().toISOString();
-  db.clearCategories();
+  db.clearGeneratedCategories();
   materializeTaxonomy(db, taxonomy, maxDepth, when);
   const treeText = renderTreeForPrompt(buildCategoryTree(db));
+  // A post still in one of the owner's categories is filed; it only falls
+  // back to `Uncategorized` when it has nowhere else at all.
+  const keptLinks = db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id));
+  const filedPostIds = new Set(bookmarks.filter((b) => keptLinks.has(b.id)).map((b) => b.postId));
+  const alreadyFiled = (bm: RawBookmark) => filedPostIds.has(bm.postId);
 
   // Pass 2: reassign every bookmark into the finished tree, in batches. Reusing
   // storeCategorizedBatch is safe: the bookmark rows already exist (insert is a
@@ -321,7 +423,7 @@ export async function recategorizeAll(deps: RecategorizeDeps): Promise<Recategor
     const byPostId = indexAssignments(assignments);
     db.storeCategorizedBatch(
       batch,
-      makeResolver(db, byPostId, maxDepth, when, resolveExistingPathToLeafId),
+      makeResolver(db, byPostId, maxDepth, when, resolveExistingPathToLeafId, alreadyFiled),
       when,
     );
     log(`Reassigned batch ${i + 1}/${batches.length} (${batch.length} bookmark(s)).`);

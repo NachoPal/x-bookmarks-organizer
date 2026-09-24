@@ -18,6 +18,7 @@ import { createModelBrowser } from './settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from './settings/settings';
 import { createSyncJob, createSyncSpend } from './web/sync-job';
 import { describeRoleSpend } from './web/paid-spend';
+import { createFindWiring } from './web/find-job';
 import { createRankWiring } from './web/rank-job';
 import { backfillArticlePreviews } from './articles/backfill';
 import { HttpArticleFetcher } from './articles/fetch-article';
@@ -472,6 +473,9 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // are deliberately NOT settings-panel choices: turning ranking on stays an
     // explicit server-side act, which is the first of its paid gates.
     ranking: createRankWiring({ db, store, config: baseConfig }),
+    // "Find bookmarks for this category" in the category editor: the filing
+    // model over the stored library, confirmed first when it is per-token.
+    findBookmarks: createFindWiring({ db, store, config: baseConfig, browser: modelBrowser }),
     // The built-in preset's relevance question (issue #102 / `rubric.ts`), so
     // the viewer resolves the ACTIVE preset to the SAME version tag the runs it
     // starts will write under - otherwise a viewer started with interests set

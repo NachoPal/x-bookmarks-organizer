@@ -147,6 +147,95 @@
     return !(removedCategoryIds || []).includes(selectedId);
   }
 
+  // --- the owner's own categories ------------------------------------------
+
+  /** True for a category the owner made (or claimed) - one no sync may change. */
+  function isOwner(node) {
+    return !!node && node.origin === "user";
+  }
+
+  /**
+   * The row's "this one is mine" toggle: pressed on the owner's categories.
+   * The accessible name is the ACTION the press performs in the owner's words;
+   * the tooltip adds what that means for the next sync.
+   */
+  function originToggle(node) {
+    const name = node ? node.name : "";
+    if (isOwner(node)) {
+      return {
+        pressed: true,
+        label: `“${name}” is your category`,
+        title: "Your category: syncs file posts into it but never rename, move or delete it. Press to hand it back to the automatic organizer.",
+        next: "generated",
+      };
+    }
+    return {
+      pressed: false,
+      label: `Keep “${name}” as your category`,
+      title: "Made by the automatic organizer. Press to make it yours, so syncs and re-organizing never change it.",
+      next: "user",
+    };
+  }
+
+  /** What the live region says once a toggle went through. */
+  function originAnnouncement(name, origin) {
+    return origin === "user"
+      ? `“${name}” is now your category. Syncs will keep it as it is.`
+      : `“${name}” is back with the automatic organizer.`;
+  }
+
+  // --- "Find bookmarks for this category" ------------------------------------
+
+  /**
+   * Everything the find confirmation states, from the server's preview
+   * (`GET /api/categories/:id/find-bookmarks`): the scope sentence, whether
+   * the run can start, and the primary button's label - which says "paid"
+   * when the filing model is billed per token, exactly like a paid sync.
+   */
+  function findConfirm(name, preview) {
+    const p = preview || {};
+    const n = typeof p.candidates === "number" ? p.candidates : 0;
+    const paid = !!p.spend && p.spend.billing === "per-token";
+    if (p.available === false) {
+      return { sentence: p.reason || "Finding bookmarks is unavailable right now.", canStart: false, paid, label: "Find bookmarks" };
+    }
+    if (n === 0) {
+      return { sentence: `Every bookmark is already in “${name}”.`, canStart: false, paid, label: "Find bookmarks" };
+    }
+    return {
+      sentence: `Checks the ${plural(n, "bookmark", "bookmarks")} not already in “${name}” and adds the ones that fit. Nothing is removed from any other category.`,
+      canStart: true,
+      paid,
+      label: paid ? "Start paid search" : "Find bookmarks",
+    };
+  }
+
+  /** The progress strip's line for a find run. */
+  function findProgressLine(status) {
+    if (!status) return "";
+    if (status.state === "running") {
+      const messages = status.messages || [];
+      return messages.length > 0 ? messages[messages.length - 1] : "Finding bookmarks…";
+    }
+    if (status.state === "error") return status.error || "Finding bookmarks failed.";
+    if (status.state === "done") return findDoneMessage(status.summary);
+    return "";
+  }
+
+  /** The outcome, stated once the run is done (strip and toast alike). */
+  function findDoneMessage(summary) {
+    if (!summary) return "Finished finding bookmarks.";
+    const name = summary.categoryName || "the category";
+    if (!summary.checked) return `Every bookmark is already in “${name}”.`;
+    if (!summary.added) return `No other bookmarks fit “${name}”.`;
+    return `Added ${plural(summary.added, "bookmark", "bookmarks")} to “${name}”.`;
+  }
+
+  /** The toast after an undo went through. */
+  function findUndoneMessage(name, removed) {
+    return `Removed ${plural(removed || 0, "bookmark", "bookmarks")} from “${name}” again.`;
+  }
+
   const api = {
     SKIP_CONFIRM_KEY,
     readSkipConfirm,
@@ -159,6 +248,13 @@
     confirmLabel,
     deletedSummary,
     selectionSurvives,
+    isOwner,
+    originToggle,
+    originAnnouncement,
+    findConfirm,
+    findProgressLine,
+    findDoneMessage,
+    findUndoneMessage,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

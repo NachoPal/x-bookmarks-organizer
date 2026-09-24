@@ -684,3 +684,216 @@ describe('recategorizeAll', () => {
     expect(db.getBookmarksForCategory(transformers.id).map((b) => b.postId)).toEqual(['1']);
   });
 });
+
+describe('owner categories (made by hand in the category editor)', () => {
+  let db: Database;
+  const when = '2026-09-24T00:00:00.000Z';
+  beforeEach(() => {
+    db = new Database(':memory:');
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /** Snapshot of the owner's categories as they must stay: id, name, place, description. */
+  function ownerSnapshot() {
+    return db
+      .getUserCategories()
+      .map((c) => ({ id: c.id, name: c.name, parentId: c.parentId, description: c.description ?? null }));
+  }
+
+  it('a first sync with only owner categories still designs a taxonomy, anchored on them', async () => {
+    const rust = db.createCategory('Rust', null, when)!;
+    const reading = db.createCategory('Reading', null, when)!;
+    db.createCategory('Papers', reading.id, when);
+    const before = ownerSnapshot();
+
+    const client = new FakeXClient([bm('3'), bm('2'), bm('1')]);
+    const designed: TaxonomyNode[] = [
+      // Kept verbatim, but the designer tries to describe it and adds a child.
+      { name: 'Rust', description: 'Rewritten by the model.', children: [{ name: 'Async', children: [] }] },
+      // Re-rooted: the owner's root minted again one level down.
+      { name: 'Programming', children: [{ name: 'reading', children: [{ name: 'Novels', children: [] }] }] },
+      { name: 'AI', children: [{ name: 'Evals', children: [] }] },
+    ];
+    const taxonomer = new FakeTaxonomyDesigner(designed);
+    const categorizer = new FakeCategorizer({
+      '1': [['Rust', 'Async']],
+      '2': [['Reading [owner]', 'Papers']],
+      '3': [['AI', 'Evals']],
+    });
+    await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+
+    // Pass 1 ran (the owner's categories are anchors, not a finished tree)...
+    expect(taxonomer.seenBookmarkCounts).toEqual([3]);
+    expect(taxonomer.seenExistingTrees[0]).toContain('- Rust [owner]');
+    expect(taxonomer.seenExistingTrees[0]).toContain('  - Papers [owner]');
+    // ...and filing was strict against the merged tree.
+    expect(categorizer.seenModes).toEqual(['strict']);
+
+    // The owner's categories are exactly as they were.
+    expect(ownerSnapshot()).toEqual(before);
+    // Generated nodes sit around and inside them, never duplicating them.
+    const byName = (n: string) => db.getAllCategories().filter((c) => c.name.toLowerCase() === n.toLowerCase());
+    expect(byName('Rust')).toHaveLength(1);
+    expect(byName('Reading')).toHaveLength(1);
+    const asyncNode = byName('Async')[0]!;
+    expect(asyncNode.parentId).toBe(rust.id);
+    expect(asyncNode.origin).toBe('generated');
+    expect(byName('Novels')[0]!.parentId).toBe(reading.id);
+    expect(byName('AI')[0]!.origin).toBe('generated');
+
+    const papers = byName('Papers')[0]!;
+    expect(db.getBookmarksForCategory(papers.id).map((b) => b.postId)).toEqual(['2']);
+    expect(db.getBookmarksForCategory(asyncNode.id).map((b) => b.postId)).toEqual(['1']);
+  });
+
+  it('files a strict path that names an owner category under a wrong prefix into the owner category', async () => {
+    const rust = db.createCategory('Rust', null, when)!;
+    const client = new FakeXClient([bm('2'), bm('1')]);
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['Rust'], ['AI']]));
+    const categorizer = new FakeCategorizer({
+      '1': [['Programming', 'Rust']],
+      '2': [['Rust', 'Macros']], // a child that does not exist
+    });
+    await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+    expect(db.getBookmarksForCategory(rust.id).map((b) => b.postId).sort()).toEqual(['1', '2']);
+    expect(db.getAllCategories().some((c) => c.name === 'Uncategorized')).toBe(false);
+    expect(db.getAllCategories().some((c) => c.name === 'Programming' || c.name === 'Macros')).toBe(false);
+  });
+
+  it('a later sync extends instead of redesigning, and can file new posts into a category added between syncs', async () => {
+    await runIngest({
+      db,
+      client: new FakeXClient([bm('1')]),
+      taxonomer: new FakeTaxonomyDesigner(treeFromPaths([['AI']])),
+      categorizer: new FakeCategorizer({ '1': [['AI']] }),
+      batchSize: 10,
+      maxDepth: 4,
+    });
+    const cooking = db.createCategory('Cooking', null, when)!;
+    const llms = db.createCategory('LLMs', db.findCategory('AI', null)!.id, when)!;
+    const before = ownerSnapshot();
+
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['Never']]));
+    const categorizer = new FakeCategorizer({
+      '2': [['Cooking [owner]']],
+      '3': [['AI', 'LLM']], // near-duplicate of the owner's "LLMs"
+      '4': [['Food', 'Cooking']], // the owner's root minted again deeper
+      '5': [['Cooking', 'Bread']], // a new generated node INSIDE the owner's
+    });
+    await runIngest({
+      db,
+      client: new FakeXClient([bm('5'), bm('4'), bm('3'), bm('2'), bm('1')]),
+      taxonomer,
+      categorizer,
+      batchSize: 10,
+      maxDepth: 4,
+    });
+
+    expect(taxonomer.seenBookmarkCounts).toEqual([]);
+    expect(categorizer.seenModes).toEqual(['extend']);
+    expect(categorizer.seenTrees[0]).toContain('- Cooking [owner]');
+    expect(ownerSnapshot()).toEqual(before);
+    expect(db.getBookmarksForCategory(cooking.id).map((b) => b.postId).sort()).toEqual(['2', '4', '5']);
+    expect(db.getBookmarksForCategory(llms.id).map((b) => b.postId)).toEqual(['3']);
+    const names = db.getAllCategories().map((c) => c.name);
+    expect(names.filter((n) => n.toLowerCase().startsWith('llm'))).toEqual(['LLMs']);
+    expect(names.filter((n) => n === 'Cooking')).toHaveLength(1);
+    const bread = db.getAllCategories().find((c) => c.name === 'Bread')!;
+    expect(bread.parentId).toBe(cooking.id);
+    expect(bread.origin).toBe('generated');
+  });
+
+  it('never creates past maxDepth when a path is re-anchored on a deep owner category', async () => {
+    await runIngest({
+      db,
+      client: new FakeXClient([bm('1')]),
+      taxonomer: new FakeTaxonomyDesigner(treeFromPaths([['A', 'B']])),
+      categorizer: new FakeCategorizer({ '1': [['A', 'B']] }),
+      batchSize: 10,
+      maxDepth: 3,
+    });
+    const deep = db.createCategory('Deep', db.findCategory('B', db.findCategory('A', null)!.id)!.id, when)!;
+    await runIngest({
+      db,
+      client: new FakeXClient([bm('2'), bm('1')]),
+      taxonomer: new FakeTaxonomyDesigner([]),
+      categorizer: new FakeCategorizer({ '2': [['Deep', 'Deeper', 'Deepest']] }),
+      batchSize: 10,
+      maxDepth: 3,
+    });
+    expect(db.getAllCategories().some((c) => c.name === 'Deeper')).toBe(false);
+    expect(db.getBookmarksForCategory(deep.id).map((b) => b.postId)).toEqual(['2']);
+  });
+
+  it('recategorize keeps owner categories, their ancestors and their posts, and rebuilds the rest around them', async () => {
+    await runIngest({
+      db,
+      client: new FakeXClient([bm('3'), bm('2'), bm('1')]),
+      taxonomer: new FakeTaxonomyDesigner(treeFromPaths([['AI', 'Evals'], ['Everything']])),
+      categorizer: new FakeCategorizer({ '1': [['AI', 'Evals']], '2': [['Everything']], '3': [['Everything']] }),
+      batchSize: 10,
+      maxDepth: 4,
+    });
+    const ai = db.findCategory('AI', null)!;
+    const mine = db.createCategory('My evals', ai.id, when)!;
+    const rust = db.createCategory('Rust', null, when)!;
+    // A migrated category the owner has since claimed as theirs.
+    const everything = db.findCategory('Everything', null)!;
+    db.setCategoryOrigin(everything.id, 'user');
+    db.addBookmarksToCategory(rust.id, [db.getBookmarkByPostId('3')!.id]);
+    const before = ownerSnapshot();
+
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['AI', 'LLMs'], ['Rust', 'Async'], ['Game Dev']]));
+    const categorizer = new FakeCategorizer({
+      '1': [['AI', 'LLMs']],
+      '2': [['Rust', 'Async']],
+      // '3' is placed nowhere: it keeps its owner link and gets no Uncategorized.
+    });
+    await recategorizeAll({ db, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+
+    expect(ownerSnapshot()).toEqual(before);
+    const tree = taxonomer.seenExistingTrees[0]!;
+    expect(tree).toContain('- AI');
+    expect(tree).toContain('  - My evals [owner]');
+    expect(tree).toContain('- Rust [owner]');
+    expect(tree).toContain('- Everything [owner]');
+    expect(tree).not.toContain('Evals -'); // generated leaves are not anchors
+    expect(tree).not.toMatch(/^\s*- Evals$/m);
+
+    const names = db.getAllCategories().map((c) => c.name).sort();
+    expect(names).toEqual(['AI', 'Async', 'Everything', 'Game Dev', 'LLMs', 'My evals', 'Rust']);
+    // The ancestor that holds an owner category in place kept its id.
+    expect(db.findCategory('AI', null)!.id).toBe(ai.id);
+    expect(db.findCategory('Async', rust.id)).toBeDefined();
+    expect(db.getBookmarksForCategory(rust.id).map((b) => b.postId).sort()).toEqual(['2', '3']);
+    // "Everything" (now the owner's) keeps the posts it held.
+    expect(db.getBookmarksForCategory(everything.id).map((b) => b.postId).sort()).toEqual(['2', '3']);
+    expect(db.getAllCategories().some((c) => c.name === 'Uncategorized')).toBe(false);
+    void mine;
+  });
+
+  it('recategorize never clears anything when the anchored design fails', async () => {
+    const rust = db.createCategory('Rust', null, when)!;
+    await runIngest({
+      db,
+      client: new FakeXClient([bm('1')]),
+      taxonomer: new FakeTaxonomyDesigner(treeFromPaths([['AI']])),
+      categorizer: new FakeCategorizer({ '1': [['AI']] }),
+      batchSize: 10,
+      maxDepth: 4,
+    });
+    const before = db.getAllCategories();
+    const failing: TaxonomyDesigner = {
+      designTaxonomy: async () => {
+        throw new Error('model down');
+      },
+    };
+    await expect(
+      recategorizeAll({ db, taxonomer: failing, categorizer: new FakeCategorizer({}), batchSize: 10, maxDepth: 4 }),
+    ).rejects.toThrow('model down');
+    expect(db.getAllCategories()).toEqual(before);
+    expect(db.getCategoryById(rust.id)!.origin).toBe('user');
+  });
+});
