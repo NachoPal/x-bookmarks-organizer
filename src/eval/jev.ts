@@ -8,12 +8,10 @@
  * exact same pieces the categorizer composes - `buildBookmarkState`,
  * `toWalkTree` and the pure `walkTree` - and keeps the richer `WalkResult`.
  *
- * In `strict` mode (which is all the eval ever uses, because the tree is fixed
- * by pass 1) that composition is behaviourally identical to
- * `TypeSafeCategorizer.categorizeBatch`: its only other behaviour is the
- * `extend`-mode LLM fallback for unplaceable bookmarks, which `strict` mode
- * already turns into a no-op. Nothing in the live categorization path is
- * touched, read or re-implemented.
+ * That composition is behaviourally identical to
+ * `TypeSafeCategorizer.categorizeBatch`, which files strictly into the tree
+ * pass 1 fixed and has no other behaviour. Nothing in the live categorization
+ * path is touched, read or re-implemented.
  */
 import type { EntryType, Fetch } from '@typesafe-ai/sdk';
 import type { ArticleContext } from '../articles/link-metadata';

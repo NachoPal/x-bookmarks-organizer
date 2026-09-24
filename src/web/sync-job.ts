@@ -24,16 +24,14 @@ import type { XClient } from '../x/client';
 import { getAuthenticatedClient } from '../x/auth';
 import {
   buildCategorizers as defaultBuildCategorizers,
-  filingSetting,
   reportCategorizerBilling,
   requirePassSettings,
-  TAXONOMY_SETTING,
+  syncPassSettings,
   type BuiltCategorizers,
   type Log,
-  type PassSetting,
 } from '../categorize/build';
 import { createLlmFactory, type LlmFactory } from '../llm/factory';
-import { needsTaxonomyDesign, runIngest as defaultRunIngest, type IngestSummary } from '../ingest';
+import { runIngest as defaultRunIngest, type IngestSummary } from '../ingest';
 import { buildSettingsCatalog } from '../settings/catalog';
 import { createModelBrowser, type ModelBrowser } from '../settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from '../settings/settings';
@@ -108,10 +106,8 @@ export function createSyncJob(deps: SyncJobDeps): SyncJob {
  * the reason instead of being authorized and then failing.
  *
  * Only the language models this run will actually call are required: pass 1
- * and a language-model filer always, but Jev's fallback only when an existing
- * tree is being extended - on a first run Jev files strictly into the new
- * tree and never calls it. A failure names the Settings field that chose the
- * model (`requirePassSettings`).
+ * always, and the filing model unless Jev files (Jev calls none). A failure
+ * names the Settings field that chose the model (`requirePassSettings`).
  */
 export function createSyncPreflight(
   deps: Pick<SyncJobDeps, 'db' | 'store' | 'config'>,
@@ -128,9 +124,7 @@ export function createSyncPreflight(
     if (!db.getRefreshToken()) throw new Error(NOT_CONNECTED_MESSAGE);
 
     const llm = createLlmFactory(config, process.env, store);
-    const passes: PassSetting[] = [TAXONOMY_SETTING];
-    if (config.categorizer !== 'typesafe' || !needsTaxonomyDesign(db)) passes.push(filingSetting(config));
-    await requirePassSettings(llm, passes);
+    await requirePassSettings(llm, syncPassSettings(config));
     return { config, llm };
   };
 }
@@ -151,11 +145,11 @@ export interface SyncSpendDeps {
  *
  * Resolved exactly the way {@link createSyncJob} resolves a run - the stored
  * settings layered on `config`, re-read on every call - so the confirmation
- * describes the run it authorizes. Only passes that will actually run count:
- * pass 1 (taxonomy) runs only while the library has no generated tree yet
- * (the owner's own categories do not count - see `needsTaxonomyDesign`), and Jev's
- * LLM fallback only when an existing tree is being extended. A local read
- * throughout: nothing is called and nothing is spent.
+ * describes the run it authorizes. Both passes run on every sync that finds
+ * new bookmarks - pass 1 grows the tree for them before pass 2 files them - so
+ * each is listed whenever its model is billed per token: the taxonomy model,
+ * and the filing model or Jev. A local read throughout: nothing is called and
+ * nothing is spent.
  */
 export function createSyncSpend(deps: SyncSpendDeps): () => Promise<PaidPass[]> {
   const catalog = buildSettingsCatalog();
@@ -165,13 +159,9 @@ export function createSyncSpend(deps: SyncSpendDeps): () => Promise<PaidPass[]> 
     const { db, store } = deps;
     const config = applySettingsToConfig(deps.config, effectiveSettings(db, catalog));
     const llm = createLlmFactory(config, process.env, store);
-    const firstRun = needsTaxonomyDesign(db);
-    const passes: (PaidPass | undefined)[] = [];
-
-    if (firstRun) {
-      passes.push(asPaidPass(await describeRoleSpend(llm, 'taxonomy', catalog, browser), 'taxonomy', 'Taxonomy pass'));
-    }
-    const filing = await describeRoleSpend(llm, 'assignment', catalog, browser);
+    const passes: (PaidPass | undefined)[] = [
+      asPaidPass(await describeRoleSpend(llm, 'taxonomy', catalog, browser), 'taxonomy', 'Taxonomy pass'),
+    ];
     if (config.categorizer === 'typesafe') {
       const model = config.typesafe.model ?? DEFAULT_TYPESAFE_MODEL;
       passes.push({
@@ -182,9 +172,8 @@ export function createSyncSpend(deps: SyncSpendDeps): () => Promise<PaidPass[]> 
         model,
         modelLabel: `Jev (${model})`,
       });
-      if (!firstRun) passes.push(asPaidPass(filing, 'filing-fallback', 'New-category fallback'));
     } else {
-      passes.push(asPaidPass(filing, 'filing', 'Filing pass'));
+      passes.push(asPaidPass(await describeRoleSpend(llm, 'assignment', catalog, browser), 'filing', 'Filing pass'));
     }
     return passes.filter((p): p is PaidPass => p !== undefined);
   };

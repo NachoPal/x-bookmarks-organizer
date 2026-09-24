@@ -287,10 +287,9 @@ export async function runCategorizerEval(
     const batches = chunk(bookmarks, options.batchSize);
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i]!;
-      // `strict`, and the tree text is rendered ONCE outside the loop: unlike a
-      // real extend run, no batch may add a node, so every batch must see the
-      // identical tree Jev sees.
-      const assignments = await claude.categorizeBatch(batch, treeText, 'strict', articleContext);
+      // The tree text is rendered ONCE outside the loop: filing never adds a
+      // node, so every batch sees the identical tree Jev sees.
+      const assignments = await claude.categorizeBatch(batch, treeText, articleContext);
       for (const a of assignments) claudeByPostId.set(a.postId, a.categories);
       log(`Claude: filed batch ${i + 1}/${batches.length} (${batch.length} bookmark(s)).`);
     }

@@ -88,10 +88,7 @@ export function createModelBrowser(
  * catalog, so any name there stands.
  */
 export async function verifyCatalogModels(
-  settings: Pick<
-    AppSettings,
-    'taxonomyProvider' | 'taxonomyModel' | 'assignmentProvider' | 'assignmentModel' | 'fallbackProvider' | 'fallbackModel'
-  >,
+  settings: Pick<AppSettings, 'taxonomyProvider' | 'taxonomyModel' | 'assignmentProvider' | 'assignmentModel'>,
   catalog: SettingsCatalog,
   browser: ModelBrowser,
 ): Promise<string[]> {
@@ -99,7 +96,6 @@ export async function verifyCatalogModels(
   const passes = [
     { label: 'Taxonomy model', providerId: settings.taxonomyProvider, model: settings.taxonomyModel },
     { label: 'Filing model', providerId: settings.assignmentProvider, model: settings.assignmentModel },
-    { label: "Jev's fallback model", providerId: settings.fallbackProvider ?? '', model: settings.fallbackModel },
   ];
   for (const { label, providerId, model } of passes) {
     if (!model) continue;

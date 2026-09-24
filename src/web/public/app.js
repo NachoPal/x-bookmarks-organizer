@@ -6372,10 +6372,7 @@
       effort: false,
       assignmentProvider: false,
       assignmentModel: false,
-      fallbackProvider: false,
-      fallbackModel: false,
     }),
-    roleOf: (pass) => pass,
     passProvider: () => "",
     findProvider: () => null,
     findMethod: () => null,
@@ -7563,17 +7560,13 @@
     // `filingOptions`/`applyFilingSelection`). `assignmentProvider` is kept as
     // an internal (never rendered) field: it drives the filing model/source
     // picker below, and the owner sets it by picking an LLM provider here. It
-    // is never saved or used while Jev files - Jev's own language model is the
-    // separate, VISIBLE fallback group (`fallbackProvider`), because a hidden
-    // provider that a run still depended on is what blocked the owner's syncs.
+    // is never saved or used while Jev files - Jev calls no language model.
     const method = buildField(idPrefix, "categorizer", "Filing method");
     const taxonomyProvider = buildField(idPrefix, "taxonomyProvider", "Taxonomy provider");
     const taxonomy = buildField(idPrefix, "taxonomyModel", "Taxonomy model");
     const effort = buildField(idPrefix, "effort", "Reasoning effort");
     const assignmentProvider = buildField(idPrefix, "assignmentProvider", "Filing provider");
     const assignment = buildField(idPrefix, "assignmentModel", "Filing model");
-    const fallbackProvider = buildField(idPrefix, "fallbackProvider", "Jev's fallback provider");
-    const fallback = buildField(idPrefix, "fallbackModel", "Jev's fallback model");
 
     /**
      * The fields a provider with a full catalog (pi) swaps in for the model
@@ -7604,30 +7597,6 @@
     }
     const taxonomyCatalog = catalogFields("taxonomy", "Taxonomy");
     const assignmentCatalog = catalogFields("assignment", "Filing");
-    const fallbackCatalog = catalogFields("fallback", "Jev's fallback");
-
-    // Jev's fallback, shown only while Jev files: which language model files
-    // a bookmark Jev fits nowhere, and runs "Find bookmarks for a category".
-    const fallbackGroup = el("div", "phase-subgroup");
-    fallbackGroup.setAttribute("role", "group");
-    const fallbackTitle = el("h5", "phase-subtitle", "Jev's fallback language model");
-    fallbackTitle.id = `${idPrefix}-fallback-title`;
-    fallbackGroup.setAttribute("aria-labelledby", fallbackTitle.id);
-    fallbackGroup.append(
-      fallbackTitle,
-      el(
-        "p",
-        "phase-helper",
-        "Jev only files into categories that already exist. When a later sync meets a bookmark that fits " +
-          "none of them, this model files it. It also runs \u201cFind bookmarks\u201d for a category. " +
-          "Defaults to your Phase 1 provider.",
-      ),
-      fallbackProvider.field,
-      fallbackCatalog.source.field,
-      fallback.field,
-      fallbackCatalog.picker.field,
-      fallbackCatalog.local.field,
-    );
 
     // Two phases, in the order the app runs them: design the tree, then file
     // each bookmark into it.
@@ -7635,7 +7604,8 @@
       idPrefix,
       "phase1",
       "Phase 1 - Taxonomy",
-      "Designs the category tree from all your bookmarks at once. This pass always runs on a language model.",
+      "Runs first on every sync: the first one designs the category tree from all your bookmarks, and " +
+        "each later one adds the categories your new bookmarks need. Always runs on a language model.",
       [
         taxonomyProvider.field,
         taxonomyCatalog.source.field,
@@ -7649,15 +7619,14 @@
       idPrefix,
       "phase2",
       "Phase 2 - Filing",
-      "Files each bookmark into a category of that tree - pick who does it below: a language " +
-        "model on the provider you choose, or Jev.",
+      "Files each new bookmark into a category of that tree, never creating one - pick who does it " +
+        "below: a language model on the provider you choose, or Jev.",
       [
         method.field,
         assignmentCatalog.source.field,
         assignment.field,
         assignmentCatalog.picker.field,
         assignmentCatalog.local.field,
-        fallbackGroup,
       ],
     );
     container.replaceChildren(phase1, phase2);
@@ -7668,11 +7637,8 @@
     const passes = {
       taxonomy: { provider: taxonomyProvider, model: taxonomy, ...taxonomyCatalog },
       assignment: { provider: assignmentProvider, model: assignment, ...assignmentCatalog },
-      fallback: { provider: fallbackProvider, model: fallback, ...fallbackCatalog },
     };
     const PASSES = Object.keys(passes);
-    /** The provider role a pass takes its suggestions from (the fallback files, so: assignment). */
-    const roleOf = (pass) => categorization().roleOf(pass);
 
     function providerOf(pass) {
       return categorization().findProvider(catalog, passes[pass].provider.select.value);
@@ -7697,7 +7663,7 @@
       if (src.freeform) {
         P.local.input.value = belongs ? modelValue.slice(src.id.length + 1) : "";
       } else {
-        P.picker.setSource(p, src.id, roleOf(pass), belongs ? modelValue : "");
+        P.picker.setSource(p, src.id, pass, belongs ? modelValue : "");
       }
     }
 
@@ -7719,11 +7685,11 @@
       const modelValue = (values && values[pass + "Model"]) || "";
       const sources = categorization().sourcesOf(p);
       if (sources.length > 0) {
-        const sourceId = (values && values[pass + "Source"]) || categorization().passSource(p, roleOf(pass), modelValue);
+        const sourceId = (values && values[pass + "Source"]) || categorization().passSource(p, pass, modelValue);
         fillSourceOptions(P.source.select, sources, sourceId);
         applySource(pass, modelValue);
       } else {
-        fillOptions(P.model.select, categorization().modelOptions(p, roleOf(pass)), modelValue);
+        fillOptions(P.model.select, categorization().modelOptions(p, pass), modelValue);
       }
       if (pass === "taxonomy") {
         const effortOptions = categorization().effortOptions(p, catalog && catalog.defaultEffort);
@@ -7771,7 +7737,7 @@
         const notice = categorization().providerNotice(p);
         provider.hint.textContent = notice.text;
         provider.hint.classList.toggle("field-billing", notice.emphasis);
-        model.hint.textContent = hintFor(categorization().modelOptions(p, roleOf(pass)), model.select.value);
+        model.hint.textContent = hintFor(categorization().modelOptions(p, pass), model.select.value);
         model.hint.classList.toggle("field-billing", paid && model.select.value !== "");
         const keyNotice = categorization().sourceNotice(usesCatalog(pass) ? chosenSource(pass) : null, providerKeys);
         source.hint.textContent = keyNotice.text;
@@ -7786,8 +7752,6 @@
       const fields = categorization().fieldsFor(method.select.value);
       showPassFields("taxonomy", true);
       showPassFields("assignment", fields.assignmentModel);
-      showPassFields("fallback", fields.fallbackModel);
-      fallbackGroup.hidden = !fields.fallbackModel;
     }
 
     const notify = () => {
@@ -7810,7 +7774,7 @@
       if (assignmentProvider.select.value !== previousProvider) renderPass("assignment", null);
       notify();
     });
-    for (const pass of ["taxonomy", "fallback"]) {
+    for (const pass of ["taxonomy"]) {
       passes[pass].provider.select.addEventListener("change", () => {
         // A model id only means something to the provider it came from.
         renderPass(pass, null);
@@ -7828,7 +7792,7 @@
       });
       passes[pass].local.input.addEventListener("input", notify);
     }
-    for (const f of [taxonomy, assignment, fallback, effort]) f.select.addEventListener("change", notify);
+    for (const f of [taxonomy, assignment, effort]) f.select.addEventListener("change", notify);
 
     const api = {
       setCatalog(next) {
@@ -7870,9 +7834,7 @@
           const fallback = [...method.select.options].find((o) => o.value !== "typesafe") || method.select.options[0];
           if (fallback) method.select.value = fallback.value;
         }
-        // A fallback model belongs to an explicitly chosen fallback provider;
-        // an unset one shows the phase-1 provider at its own Recommended pick.
-        renderModelFields(values.fallbackProvider ? values : { ...values, fallbackModel: "" });
+        renderModelFields(values);
       },
       getValues() {
         const filing = categorization().applyFilingSelection(method.select.value, assignmentProvider.select.value);
@@ -7882,8 +7844,6 @@
           taxonomyModel: modelValueOf("taxonomy"),
           assignmentProvider: filing.assignmentProvider,
           assignmentModel: modelValueOf("assignment"),
-          fallbackProvider: fallbackProvider.select.value,
-          fallbackModel: modelValueOf("fallback"),
           effort: effort.select.value,
         };
         for (const pass of PASSES) {
@@ -8234,9 +8194,7 @@
     const passLine = (pass) => {
       const provider = categorization().findProvider(catalog, categorization().passProvider(settings, pass));
       if (!provider) return "-";
-      // An unset fallback runs its provider's own filing pick, whatever model was stored.
-      const own = pass !== "fallback" || settings.fallbackProvider ? settings[pass + "Model"] : "";
-      const id = own || (provider.suggested || {})[categorization().roleOf(pass)];
+      const id = settings[pass + "Model"] || (provider.suggested || {})[pass];
       const match = (provider.models || []).find((m) => m.id === id);
       return `${provider.label} - ${match ? match.label : id || "-"}`;
     };
@@ -8249,7 +8207,6 @@
       ["Effort", settings.effort || catalog.defaultEffort || "Default"],
       ["Filing", settings.categorizer === "typesafe" ? (jev ? jev.label : "Jev (TypeSafe)") : passLine("assignment")],
     ];
-    if (settings.categorizer === "typesafe") rows.push(["Jev's fallback", passLine("fallback")]);
     setupSummaryEl.replaceChildren(
       ...rows.flatMap(([term, value]) => [el("dt", "", term), el("dd", "", String(value))]),
     );

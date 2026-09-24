@@ -12,7 +12,7 @@ import type { Database } from '../db/database';
 import { Categorizer, type BatchCategorizer } from './llm';
 import { LlmTaxonomyDesigner, type TaxonomyDesigner } from './taxonomy';
 import { TypeSafeCategorizer } from './typesafe/categorizer';
-import { TypeSafeLevelAsker } from './typesafe/client';
+import { DEFAULT_TYPESAFE_MODEL, TypeSafeLevelAsker } from './typesafe/client';
 import { billingLabel, type LlmFactory, type RoleDescription } from '../llm/factory';
 import { toRunner } from '../llm/runner';
 import type { LlmRole } from '../llm/types';
@@ -32,20 +32,7 @@ export type Log = (message: string) => void;
  * that role, so the Opus-pass-1 / Haiku-pass-2 economics stay expressible
  * without the class knowing what is behind it.
  *
- * Pass 2 (assignment) is whichever implementation `config.categorizer`
- * selects, behind the shared `BatchCategorizer` interface, so `runIngest` and
- * `recategorizeAll` are identical either way:
- *
- * - `claude-cli` (the DEFAULT): the prompt-and-parse `Categorizer`, on whichever
- *   provider the assignment role resolves to - the flat-rate Claude
- *   subscription by default (zero marginal cost), or a paid pi-ai model when
- *   the owner picked one for that pass (issue #70).
- * - `typesafe`: the opt-in beam-search walk (issue #61). PAID per token, so it
- *   is reached only via an explicit opt-in AND a resolved `TYPESAFE_API_KEY`,
- *   and `db` is required because the walk reads the real tree rather than a
- *   rendered copy of it. The LLM categorizer is still built and injected as
- *   its `extend` fallback: only the LLM can propose a NEW node for a bookmark
- *   that fits nothing.
+ * Pass 2 (assignment) is {@link buildFilingCategorizer}.
  */
 export function buildCategorizers(
   config: Config,
@@ -54,21 +41,47 @@ export function buildCategorizers(
   store: CredentialStore,
   log: Log = () => {},
 ): BuiltCategorizers {
-  const assignment = llm.forRole('assignment');
-  const taxonomer = buildTaxonomyDesigner(config, llm, log);
-  const llmCategorizer = new Categorizer(toRunner(assignment, { json: true }), {
-    model: assignment.model,
-    maxDepth: config.maxCategoryDepth,
-  });
+  return {
+    taxonomer: buildTaxonomyDesigner(config, llm, log),
+    categorizer: buildFilingCategorizer(config, llm, db, store, log),
+  };
+}
 
+/**
+ * Pass 2 - filing into the tree pass 1 fixed - as whichever implementation
+ * `config.categorizer` selects, behind the shared `BatchCategorizer`
+ * interface, so `runIngest`, `recategorizeAll` and "Find bookmarks for this
+ * category" are identical either way. Neither ever creates a category:
+ *
+ * - `claude-cli` (the DEFAULT): the prompt-and-parse `Categorizer`, on whichever
+ *   provider the assignment role resolves to - the flat-rate Claude
+ *   subscription by default (zero marginal cost), or a paid pi-ai model when
+ *   the owner picked one for that pass (issue #70).
+ * - `typesafe`: the opt-in beam-search walk (issue #61). PAID per token, so it
+ *   is reached only via an explicit opt-in AND a resolved `TYPESAFE_API_KEY`,
+ *   and `db` is required because the walk reads the real tree rather than a
+ *   rendered copy of it. It calls no language model, so the assignment role
+ *   is never built for it.
+ */
+export function buildFilingCategorizer(
+  config: Config,
+  llm: LlmFactory,
+  db: Database,
+  store: CredentialStore,
+  log: Log = () => {},
+): BatchCategorizer {
   if (config.categorizer !== 'typesafe') {
-    return { taxonomer, categorizer: llmCategorizer as BatchCategorizer };
+    const assignment = llm.forRole('assignment');
+    return new Categorizer(toRunner(assignment, { json: true }), {
+      model: assignment.model,
+      maxDepth: config.maxCategoryDepth,
+    });
   }
 
   // Refuses before anything can spend money; the key's VALUE is never printed.
   const apiKey = requireTypeSafeCredentials(store);
   const ts = config.typesafe;
-  const categorizer: BatchCategorizer = new TypeSafeCategorizer(
+  return new TypeSafeCategorizer(
     {
       db,
       asker: new TypeSafeLevelAsker({
@@ -77,7 +90,6 @@ export function buildCategorizers(
         baseURL: ts.baseUrl,
         logger: log,
       }),
-      extendFallback: llmCategorizer,
       logger: log,
     },
     {
@@ -89,7 +101,16 @@ export function buildCategorizers(
       concurrency: ts.concurrency,
     },
   );
-  return { taxonomer, categorizer };
+}
+
+/**
+ * The language-model roles a sync (or `recategorize`) under `config` calls:
+ * the taxonomy pass always, and the assignment role only when a language
+ * model files - Jev calls none. What a preflight must check, and nothing
+ * more, so a filing provider no screen shows under Jev can never block it.
+ */
+export function syncLlmRoles(config: Config): LlmRole[] {
+  return config.categorizer === 'typesafe' ? ['taxonomy'] : ['taxonomy', 'assignment'];
 }
 
 /**
@@ -131,17 +152,24 @@ export function taxonomyContextWindow(llm: LlmFactory): () => Promise<number | u
  */
 export function reportCategorizerBilling(config: Config, llm: LlmFactory, log: Log): void {
   if (config.categorizer === 'typesafe') {
-    const model = config.typesafe.model ?? 'jev-latest';
-    log(
-      `Assignment pass: TypeSafe Jev (${model}) - ${billingLabel('per-token')}. ` +
-        'Switch the categorization method back to the language model to stop paying TypeSafe per call.',
-    );
-    log(`Jev's fallback (files a bookmark Jev fits nowhere, only when extending an existing tree): ${passLine(llm.describe('assignment'))}`);
+    log(`Assignment pass: ${jevBillingLine(config)}`);
   } else {
     const assignment = llm.describe('assignment');
     log(`Assignment pass: ${passLine(assignment)}`);
   }
   log(`Taxonomy pass: ${passLine(llm.describe('taxonomy'))}`);
+}
+
+/**
+ * Jev's billing, as the assignment pass and "Find bookmarks for this
+ * category" both announce it.
+ */
+export function jevBillingLine(config: Config): string {
+  const model = config.typesafe.model ?? DEFAULT_TYPESAFE_MODEL;
+  return (
+    `TypeSafe Jev (${model}) - ${billingLabel('per-token')}. ` +
+    'Switch the categorization method back to the language model to stop paying TypeSafe per call.'
+  );
 }
 
 /**
@@ -157,7 +185,7 @@ function passLine(pass: RoleDescription): string {
 /** The in-app control that chose the model a pass runs on, for a preflight message. */
 export interface PassSetting {
   role: LlmRole;
-  /** What the owner calls it, e.g. "Jev's fallback language model". */
+  /** What the owner calls it, e.g. "The phase 2 (filing) language model". */
   label: string;
   /** The Settings field that picks it, and the phase it sits under. */
   field: string;
@@ -171,15 +199,24 @@ export const TAXONOMY_SETTING: PassSetting = {
   phase: 'Phase 1 - Taxonomy',
 };
 
-/**
- * Who files with a language model under `config`: the filer the owner chose,
- * or - while Jev is the method - Jev's own fallback. Both run on the
- * assignment role, so the setting is what differs.
- */
-export function filingSetting(config: Config): PassSetting {
-  return config.categorizer === 'typesafe'
-    ? { role: 'assignment', label: "Jev's fallback language model", field: "Jev's fallback provider", phase: 'Phase 2 - Filing' }
-    : { role: 'assignment', label: 'The phase 2 (filing) language model', field: 'Filing method', phase: 'Phase 2 - Filing' };
+/** The language model that files, when one does (never while Jev is the method). */
+export const FILING_SETTING: PassSetting = {
+  role: 'assignment',
+  label: 'The phase 2 (filing) language model',
+  field: 'Filing method',
+  phase: 'Phase 2 - Filing',
+};
+
+/** Jev as a Settings choice, for a message about why it cannot run. */
+export const JEV_SETTING: Pick<PassSetting, 'label' | 'field' | 'phase'> = {
+  label: 'Jev (the phase 2 filing method)',
+  field: 'Filing method',
+  phase: 'Phase 2 - Filing',
+};
+
+/** The Settings fields behind {@link syncLlmRoles}, for an app preflight. */
+export function syncPassSettings(config: Config): PassSetting[] {
+  return config.categorizer === 'typesafe' ? [TAXONOMY_SETTING] : [TAXONOMY_SETTING, FILING_SETTING];
 }
 
 /**
@@ -197,7 +234,7 @@ export async function requirePassSettings(llm: LlmFactory, settings: PassSetting
 }
 
 /** The sentence {@link requirePassSettings} throws, for a caller that reports rather than throws. */
-export function passSettingProblem(setting: PassSetting, detail: string): string {
+export function passSettingProblem(setting: Pick<PassSetting, 'label' | 'field' | 'phase'>, detail: string): string {
   const reason = /[.!?]$/.test(detail.trim()) ? detail.trim() : `${detail.trim()}.`;
   return (
     `${setting.label} cannot run: ${reason} ` +

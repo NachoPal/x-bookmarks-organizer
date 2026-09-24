@@ -44,31 +44,36 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   `ProviderDefinition.warning` - shown under the selector and printed with the pass's billing line
   every run. Keep it a separate id (selecting it IS the opt-in), never a default, never a mode of
   `pi-ai`, and never drop the warning; do not "unify" `claude-cli` into it.
-- **Categorization is two passes** (`src/ingest.ts`): pass 1 designs a taxonomy holistically over
-  ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus 5.5 at medium effort by default - `DEFAULT_TAXONOMY_EFFORT` in `config.ts`, the settings catalog's `defaultEffort` - configurable) so
-  the tree is genuinely deep; pass 2 files each bookmark into that fixed tree in batches
-  (`src/categorize/prompt.ts`, Haiku-class to conserve quota). Pass 1 (the expensive Opus pass)
-  runs ONLY on the first run (no GENERATED category yet - `needsTaxonomyDesign`; the owner's own
-  categories do not count, see "Owner categories" below) and on `recategorize`. An incremental `run` against an
-  existing tree SKIPS pass 1 entirely and never re-touches stored bookmarks: it runs only the cheap
-  assignment pass over the NEW bookmarks in `extend` mode (`buildExtendPrompt`), reusing existing
-  nodes and creating one only when nothing fits (resolver `resolveOrCreatePathToLeafId`, capped at
-  maxDepth). First run and `recategorize` use `strict` mode (`buildPrompt`): pass 2 must not invent
-  nodes - off-tree paths fall back to `Uncategorized`. `recategorize` rebuilds both passes over all
-  stored bookmarks without re-fetching, preserving read state/dates (it designs the new taxonomy
-  BEFORE clearing the old one, so a failed LLM call never wipes the DB).
+- **Categorization is two passes, and BOTH run on every sync that finds new bookmarks**
+  (`src/ingest.ts`). Pass 1 (`src/categorize/taxonomy.ts`, Opus 5.5 at medium effort by default -
+  `DEFAULT_TAXONOMY_EFFORT` in `config.ts`, the settings catalog's `defaultEffort` - configurable)
+  owns EVERY category: on the first sync (no GENERATED category yet - `needsTaxonomyDesign`; the
+  owner's own categories do not count, see "Owner categories" below) it `design`s a deep tree over
+  all bookmarks at once; on every later sync it runs `incremental`ly
+  (`buildIncrementalTaxonomyPrompt`) over only the NEW bookmarks against the WHOLE current tree
+  (descriptions + `[owner]` markers) and answers with only the additions, each under its existing
+  path (`{"tree":[]}` = nothing needed). `materializeTaxonomy` is ADD-ONLY, so an incremental pass
+  can never rename, move, re-describe or delete an existing category, and it merges a
+  near-duplicate sibling of any origin (`findMergeTarget`). Pass 2 (`src/categorize/prompt.ts`,
+  Haiku-class, or Jev) then files each new bookmark STRICTLY into that fixed tree
+  (`resolveExistingPathToLeafId`): filing NEVER creates a category, whatever the method; an
+  off-tree path or a bookmark that fits nothing lands in `Uncategorized`. There is no
+  reuse-or-create `extend` filing mode any more - do not bring one back. `recategorize` redesigns
+  both passes over all stored bookmarks without re-fetching, preserving read state/dates (it
+  designs the new taxonomy BEFORE clearing the old one, so a failed LLM call never wipes the DB).
 - **Owner categories are never changed by any automated pass.** `categories.origin` is `user`
   (made in the category editor via `createCategory`, or claimed with the row's person toggle,
   `PUT /api/categories/:id/origin`) or `generated` (everything the passes make; every pre-existing
   row migrated as generated). The guarantee lives in code, not only prompts: `getOrCreateCategory`
-  never re-describes a user row, `materializeTaxonomy`/the extend resolver merge into user
+  never re-describes a user row, `materializeTaxonomy` merges into user
   categories via `findMergeTarget` (exact sibling, near-duplicate `nameKey` sibling, a re-rooted
   unique owner name at the TOP of a path, or an owner ROOT minted deeper - never a deeper owner
   node from a deeper segment), the strict resolver rescues a wrong-prefix path that names an owner
   category (`resolveViaOwnerAnchor`), and `recategorize` uses `clearGeneratedCategories`, which
   keeps user rows, their ancestors (`parent_id` cascades, so an ancestor must survive) and their
-  links. Pass 1 on a first run or `recategorize` is ANCHORED: it is shown the owner tree (pruned
-  to protected ids for `recategorize`) instead of the empty tree. Every prompt tree marks user
+  links. Pass 1 is always shown the owner's categories: on a first sync or `recategorize` as the
+  ANCHORS of the design (pruned to protected ids for `recategorize`), on a later sync as part of the
+  whole fixed tree it grows. Every prompt tree marks user
   rows `[owner]` (`renderTreeForPrompt`); `stripOwnerMarker` removes it wherever a model echoes it.
   Reset library still wipes them (it says "every category").
 - **Pass 1 is sized against the taxonomy model's context window** (issue #109,
@@ -249,16 +254,13 @@ and can never disagree. In `app.js`'s `createCategorizationForm`, the old `assig
 still exists as an internal (never-appended) `<select>` that drives the Filing model/source picker;
 the owner moves it only by picking a provider in the combined selector.
 
-**Jev's fallback is its OWN visible field, never the hidden `assignmentProvider`** (bug: a pi-ai
-filing pick kept as Jev's hidden fallback blocked every sync with "needs ANTHROPIC_API_KEY").
-`fallbackProvider`/`fallbackModel` (`src/settings/settings.ts`) are shown under Phase 2 only while
-Jev files (the form's third pass, `fallback`, which takes its suggestions from the assignment role -
-`XBOCategorization.roleOf`), checked by `passProblems`, and read by `applySettingsToConfig` as the
-assignment ROLE while `categorizer === 'typesafe'`. Unset means the PHASE-1 provider at its own
-filing suggestion - how a document from before the field resolves. `writeSettings`/`toPayload` save
-only the fields the chosen method reads, so no stored field is ever one the owner cannot see. The
-sync preflight (`createSyncPreflight`, also run by `POST /api/sync` BEFORE the paid confirmation)
-requires the fallback only when extending an existing tree, and a failed check names the Settings
+**Jev calls no language model, so while it files there is NO language-model field in Phase 2**
+(PR #135 added a visible "Jev's fallback language model"; it is gone with the fallback itself). Its
+old `fallbackProvider`/`fallbackModel` settings are ignored by `validateSettings` and so dropped on
+the next save; `writeSettings`/`toPayload` save only the fields the chosen method reads, so no
+stored field is ever one the owner cannot see. The sync preflight (`createSyncPreflight`, also run
+by `POST /api/sync` BEFORE the paid confirmation) checks exactly `syncPassSettings(config)` - pass 1
+always, the filing model only when a language model files - and a failed check names the Settings
 field (`requirePassSettings`). Any save adopts the stored document into every form
 (`adoptSavedSettings`), and closing Settings drops its unsaved edits, so the landing and the panel
 always show the same thing.
@@ -271,13 +273,13 @@ Pass 2 (filing a bookmark into the existing tree) has TWO implementations behind
 prompt and returns no text, so it cannot implement `LlmClient`, and it must never become selectable
 for the `summary`/`chat` roles. `src/ingest.ts` is untouched by the choice - it already injects the
 seam, which is the whole reason this fit. **Pass 1 (taxonomy design) is always the LLM**; Jev
-invents no labels, so it structurally cannot do that pass.
+invents no labels, so it structurally cannot do that pass - and never has to, since pass 1 adds
+every category the new bookmarks need before pass 2 runs.
 
-**`buildCategorizers` (`src/categorize/build.ts`) decides the METHOD first, and the
-`assignmentProvider`/`assignmentModel` settings matter ONLY when that method is the LLM one** - once
-`config.categorizer === 'typesafe'`, the assignment role is Jev's `extend`-mode fallback, resolved
-from the separate `fallbackProvider` setting (see the settings-form paragraph), never what files a
-bookmark. A bug (fixed alongside the phase-2 UI below) let the owner pick an
+**`buildFilingCategorizer` (`src/categorize/build.ts`, used by `buildCategorizers` and Find)
+decides the METHOD first, and the `assignmentProvider`/`assignmentModel` settings matter ONLY when
+that method is the LLM one** - once `config.categorizer === 'typesafe'` nothing runs on the
+assignment role at all (`syncLlmRoles`), so it is never checked, billed or called. A bug (fixed alongside the phase-2 UI below) let the owner pick an
 LLM provider for phase 2 while the method was still Jev, so the chosen provider silently never ran.
 The fix is UI-only - `buildCategorizers` itself was already correct for a self-consistent settings
 document - but any new phase-2 UI must keep it impossible to leave the method and the provider
@@ -295,8 +297,9 @@ node `description` as `criteria`) and batching the whole beam frontier into ONE 
 Multi-label falls out of the beam: every path clearing `multiLabelThreshold` is kept (a path that is
 only a PREFIX of a deeper keeper is dropped). Low confidence stops the descent at the last confident
 ancestor instead of the flat `Uncategorized` dump; a bookmark that fits nothing anywhere is
-`unresolved` and, in `extend` mode ONLY, routed alone to the LLM `Categorizer` to invent a node.
-In `strict` mode it is correctly left unassigned so `makeResolver` files it `Uncategorized`.
+`unresolved`, left unassigned, and `makeResolver` files it `Uncategorized`. Jev has no LLM
+fallback: a Jev sync makes no filing call to any language model (`sync-job.test.ts`'s end-to-end
+test with a recording stub `claude` pins that).
 
 Tests are entirely offline and must stay that way: `walk.test.ts` drives the algorithm with a fake
 `askFn`, `client.test.ts` drives the REAL SDK through its injectable `Fetch`, and
@@ -308,9 +311,9 @@ validate a change here.
 one-line gloss per node - no extra LLM call, it already writes the tree - parsed by
 `normalizeNodes` and stored via the `PRAGMA table_info`-guarded `CATEGORIES_ADDED_COLUMNS`
 migration. `getOrCreateCategory` only ever FILLS IN a missing description, never overwrites or
-clears one, so an ad-hoc `extend` node gains a description on the next `recategorize` while a real
-one survives. It feeds Jev's `Choice.criteria` AND `renderTreeForPrompt`, so it improves the
-existing `extend` prompt too; every consumer must tolerate `null` (any node predating the column).
+clears one, so a node without one gains it on a later design while a real one survives. It feeds
+Jev's `Choice.criteria` AND `renderTreeForPrompt` (every prompt's tree); every consumer must
+tolerate `null` (any node predating the column).
 
 ## In-app sync + durable categorization settings (issue #71)
 
@@ -778,15 +781,18 @@ underneath, went `inert`, and the pencil the editor hands focus back to could no
 
 ## Find bookmarks for a category
 
-The editor row's magnifier asks the FILING (assignment-role) model which already-stored bookmarks
-outside the category's subtree belong in it (`src/categorize/find.ts`, a narrow one-category
-prompt, not the full filing prompt) and ADDS links only (`addBookmarksToCategory`; undo is
+The editor row's magnifier asks the configured phase-2 FILING METHOD which already-stored
+bookmarks outside the category's subtree belong in it (`src/categorize/find.ts`, a `FindMatcher`:
+`llmFindMatcher` is a narrow one-category prompt on the assignment-role model, not the full filing
+prompt; `filingFindMatcher` walks each bookmark down the whole tree with Jev and matches a path at
+or below the category) and ADDS links to that category only (`addBookmarksToCategory`; undo is
 `removeBookmarksFromCategory`, which never strands a post). It runs as a `FindRunner` job
 (`src/web/find-job.ts`; `JobRunner.start(job)` takes a per-run job) that shares the one progress
 strip (`XBORanking.progressSource`'s third job) and holds sync, reset and category writes back
-while it runs. A per-token filing model makes `POST /api/categories/:id/find-bookmarks` demand
-`{ confirm: true }`, re-checked at the POST; the preview GET is free. Jev is never used here -
-with `categorizer: typesafe` it runs on the assignment role's LLM (Jev's fallback provider).
+while it runs. A per-token method (a paid filing model, or Jev - always per token, described
+without a call by `find-job.ts`'s `jevSpend`) makes `POST /api/categories/:id/find-bookmarks`
+demand `{ confirm: true }`, re-checked at the POST; the preview GET is free. With Jev no language
+model is touched at all.
 
 ## Manual move to another category (issues #92, #99)
 
@@ -971,7 +977,7 @@ to go on and falls back to `Uncategorized`. `src/articles/link-metadata.ts`'s `b
 fixes this: for each bookmark whose text contains a link (`extractArticleLink`), it fetches the
 linked article's title/excerpt by reusing the same `ArticleFetcher` interface as the #4 reader view
 (`src/articles/fetch-article.ts`), then feeds a `Map<postId, ArticleContext>` into BOTH
-`taxonomy.ts`'s `buildTaxonomyPrompt` and `prompt.ts`'s `buildPrompt`/`buildExtendPrompt` (an
+`taxonomy.ts`'s pass-1 prompts and `prompt.ts`'s `buildPrompt` (an
 optional trailing arg on each, and on `TaxonomyDesigner.designTaxonomy` /
 `BatchCategorizer.categorizeBatch`). Cached in a dedicated `article_link_metadata` table
 (`src/db/schema.ts`), keyed by **URL, not bookmark id** - unlike the #4 `articles` cache, this must
@@ -1416,8 +1422,7 @@ test asserts a full before/after snapshot, and both halves of that guarantee are
 Two reuse decisions worth keeping: the Jev side composes `buildBookmarkState` + `toWalkTree` +
 `walkTree` directly rather than wrapping `TypeSafeCategorizer`, because `Assignment[]` throws away
 the per-bookmark confidence and the "stopped at a confident ancestor" flag the report is built on
-(in `strict` mode the composition is behaviourally identical - the categorizer's only other
-behaviour is the `extend`-mode fallback, already a no-op there). And token spend is metered by
+(the composition is behaviourally identical - the categorizer has no other behaviour). And token spend is metered by
 `meteringFetch` riding on the SDK's own injectable transport, so the live client grows no counter
 and the cost reporting is exercised offline.
 
@@ -1523,7 +1528,8 @@ see the credential-chain constraint above.
 - **Point-of-spend notices come from the server**, never inferred client-side:
   `/api/summary-status` carries the summary role's `spend` (the "Paid" tag on Summarize), and
   `createSyncSpend` (`sync-job.ts`) derives the NEXT sync's per-token passes from the settings
-  the run will use (pass 1 only while the tree is empty; Jev's LLM fallback only when extending).
+  the run will use: pass 1 on every sync (it runs whenever there is anything new), and the filing
+  model or Jev.
   A non-empty answer makes `POST /api/sync` refuse without `{ confirm: true }`; the client
   POSTs unconfirmed and opens `#sync-confirm-modal` from the 400's `paidPasses`, so a
   just-saved setting can never be started unconfirmed. Wording is `paid-spend.js` (`XBOPaidSpend`).

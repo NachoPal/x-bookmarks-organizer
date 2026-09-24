@@ -43,23 +43,12 @@ export interface AppSettings {
   taxonomyModel?: string;
   /**
    * LLM provider id for pass 2 (assignment) when a language model files
-   * (`categorizer` is not Jev). Never read while Jev is the method - Jev's
-   * own language model is {@link fallbackProvider}, a separate, visible field.
+   * (`categorizer` is not Jev). Never read while Jev is the method: Jev files
+   * on its own and calls no language model at all.
    */
   assignmentProvider: string;
   /** Pass 2 model; undefined = the assignment provider's suggestion. Never read while Jev files. */
   assignmentModel?: string;
-  /**
-   * Jev's fallback language model: what files a bookmark Jev fits nowhere
-   * while a sync EXTENDS an existing tree, and what "Find bookmarks for this
-   * category" runs on. Read ONLY while Jev is the method. Undefined means
-   * "the phase-1 provider" ({@link applySettingsToConfig}) - which is how a
-   * document saved before this field existed resolves, so a filing provider
-   * the owner could never see under Jev is never what runs.
-   */
-  fallbackProvider?: string;
-  /** Jev's fallback model; undefined = that provider's own filing suggestion. */
-  fallbackModel?: string;
   /** Reasoning effort for the taxonomy pass; undefined = the app default. */
   effort?: string;
   /** When first-run setup was completed. Absent means the owner never finished it. */
@@ -91,12 +80,11 @@ export function defaultSettings(catalog: SettingsCatalog): AppSettings {
   };
 }
 
-type Pass = 'taxonomy' | 'assignment' | 'fallback';
+type Pass = 'taxonomy' | 'assignment';
 
 const PASS_LABEL: Record<Pass, { provider: string; model: string }> = {
   taxonomy: { provider: 'Taxonomy provider', model: 'Taxonomy model' },
   assignment: { provider: 'Filing provider', model: 'Filing model' },
-  fallback: { provider: "Jev's fallback provider", model: "Jev's fallback model" },
 };
 
 /**
@@ -109,7 +97,9 @@ const PASS_LABEL: Record<Pass, { provider: string; model: string }> = {
  *
  * A document from before issue #70 carries one `provider` for both passes; it
  * is read as each pass's provider when that pass names none of its own, so an
- * existing install keeps exactly the choice it made.
+ * existing install keeps exactly the choice it made. Fields this version no
+ * longer has (Jev's old `fallbackProvider`/`fallbackModel`) are ignored, so
+ * they vanish from the document on its next save.
  */
 export function validateSettings(raw: unknown, catalog: SettingsCatalog): SettingsValidation {
   const errors: string[] = [];
@@ -130,21 +120,16 @@ export function validateSettings(raw: unknown, catalog: SettingsCatalog): Settin
   }
 
   const legacyProvider = str(input.provider);
-  const providerFor = (pass: 'taxonomy' | 'assignment'): string => {
+  const providerFor = (pass: Pass): string => {
     const value = str(input[`${pass}Provider`]) ?? legacyProvider;
     if (!value) return fallback[`${pass}Provider`];
-    return knownProvider(pass, value) ?? fallback[`${pass}Provider`];
-  };
-  /** The catalog id for `value`, or undefined with the problem reported. */
-  const knownProvider = (pass: Pass, value: string): string | undefined => {
     const match = catalogProvider(catalog, value);
     if (match) return match.id;
     errors.push(
-      // "Jev" is a name, so the fallback's label keeps its capital.
-      `Unknown ${pass === 'fallback' ? PASS_LABEL[pass].provider : PASS_LABEL[pass].provider.toLowerCase()} "${value}" ` +
+      `Unknown ${PASS_LABEL[pass].provider.toLowerCase()} "${value}" ` +
         `(available: ${catalog.providers.map((p) => p.id).join(', ')}).`,
     );
-    return undefined;
+    return fallback[`${pass}Provider`];
   };
 
   const modelFor = (pass: Pass, providerId: string): string | undefined => {
@@ -196,14 +181,6 @@ export function validateSettings(raw: unknown, catalog: SettingsCatalog): Settin
   const assignmentProvider = providerFor('assignment');
   const assignmentModel = modelFor('assignment', assignmentProvider);
 
-  // Jev's fallback has no default of its own: absent (or unknown) means "the
-  // phase-1 provider", resolved where it is used, so it follows a later
-  // phase-1 change instead of pinning today's answer. A model only means
-  // something to the provider the owner picked it on.
-  const rawFallback = str(input.fallbackProvider);
-  const fallbackProvider = rawFallback ? knownProvider('fallback', rawFallback) : undefined;
-  const fallbackModel = fallbackProvider ? modelFor('fallback', fallbackProvider) : undefined;
-
   return {
     settings: {
       categorizer,
@@ -211,8 +188,6 @@ export function validateSettings(raw: unknown, catalog: SettingsCatalog): Settin
       taxonomyModel,
       assignmentProvider,
       assignmentModel,
-      ...(fallbackProvider ? { fallbackProvider } : {}),
-      ...(fallbackModel ? { fallbackModel } : {}),
       effort,
       configuredAt: str(input.configuredAt),
     },
@@ -237,10 +212,9 @@ export function readSettings(db: Database, catalog: SettingsCatalog): AppSetting
 
 /**
  * Persist settings. Callers validate first. Only the fields the chosen method
- * actually reads are stored - Jev's fallback under Jev, the filing provider
- * and model otherwise - so the document never carries a choice that no
- * screen shows for the method in force (the stale, hidden filing provider a
- * Jev sync used to be blocked by).
+ * actually reads are stored - no filing provider or model under Jev, which
+ * calls no language model - so the document never carries a choice that no
+ * screen shows for the method in force.
  */
 export function writeSettings(db: Database, settings: AppSettings): void {
   db.setState(SETTINGS_KEY, JSON.stringify(storedShape(settings)));
@@ -248,9 +222,9 @@ export function writeSettings(db: Database, settings: AppSettings): void {
 
 /** {@link writeSettings}'s document: the method's own fields, nothing it ignores. */
 export function storedShape(settings: AppSettings): Partial<AppSettings> {
-  const { assignmentProvider, assignmentModel, fallbackProvider, fallbackModel, ...rest } = settings;
+  const { assignmentProvider, assignmentModel, ...rest } = settings;
   return settings.categorizer === 'typesafe'
-    ? { ...rest, ...(fallbackProvider ? { fallbackProvider } : {}), ...(fallbackModel ? { fallbackModel } : {}) }
+    ? rest
     : { ...rest, assignmentProvider, ...(assignmentModel ? { assignmentModel } : {}) };
 }
 
@@ -268,24 +242,14 @@ export function effectiveSettings(db: Database, catalog: SettingsCatalog): AppSe
  * overrides this field" in one place next to the mapping it governs.
  */
 const ENV_OWNERS: Record<
-  | 'categorizer'
-  | 'taxonomyProvider'
-  | 'assignmentProvider'
-  | 'fallbackProvider'
-  | 'taxonomyModel'
-  | 'assignmentModel'
-  | 'fallbackModel'
-  | 'effort',
+  'categorizer' | 'taxonomyProvider' | 'assignmentProvider' | 'taxonomyModel' | 'assignmentModel' | 'effort',
   readonly string[]
 > = {
   categorizer: ['XBOOKMARKS_CATEGORIZER'],
   taxonomyProvider: ['XBOOKMARKS_TAXONOMY_PROVIDER', 'XBOOKMARKS_LLM_PROVIDER'],
-  // Jev's fallback runs on the assignment ROLE, so the same variables own it.
   assignmentProvider: ['XBOOKMARKS_ASSIGNMENT_PROVIDER', 'XBOOKMARKS_LLM_PROVIDER'],
-  fallbackProvider: ['XBOOKMARKS_ASSIGNMENT_PROVIDER', 'XBOOKMARKS_LLM_PROVIDER'],
   taxonomyModel: ['XBOOKMARKS_TAXONOMY_MODEL'],
   assignmentModel: ['XBOOKMARKS_MODEL'],
-  fallbackModel: ['XBOOKMARKS_MODEL'],
   effort: ['XBOOKMARKS_TAXONOMY_EFFORT'],
 };
 
@@ -334,27 +298,11 @@ export function applySettingsToConfig(
    * a pass to another provider, that model id means nothing there, so the
    * pass falls back to its env model or the new provider's suggestion.
    */
-  const pickModel = (pass: 'taxonomy' | 'assignment' | 'fallback'): string | undefined =>
+  const pickModel = (pass: Pass): string | undefined =>
     claimed(`${pass}Provider`) ? undefined : pick(`${pass}Model`);
 
   const categorizer = pick('categorizer') ?? config.categorizer;
   const effort = pick('effort');
-  const taxonomyProvider = pick('taxonomyProvider') || roles.taxonomy.provider;
-  // The assignment ROLE is whatever files with a language model: the chosen
-  // filer, or - while Jev is the method - Jev's own fallback, which defaults
-  // to the phase-1 provider (never the hidden `assignmentProvider`).
-  const jev = categorizer === 'typesafe';
-  const assignment = jev
-    ? {
-        provider: claimed('fallbackProvider')
-          ? roles.assignment.provider
-          : settings.fallbackProvider || taxonomyProvider || roles.assignment.provider,
-        model: (settings.fallbackProvider ? pickModel('fallback') : undefined) ?? roles.assignment.model,
-      }
-    : {
-        provider: pick('assignmentProvider') || roles.assignment.provider,
-        model: pickModel('assignment') ?? roles.assignment.model,
-      };
   return {
     ...config,
     categorizer,
@@ -364,14 +312,21 @@ export function applySettingsToConfig(
         ...roles,
         taxonomy: {
           ...roles.taxonomy,
-          provider: taxonomyProvider,
+          provider: pick('taxonomyProvider') || roles.taxonomy.provider,
           model: pickModel('taxonomy') ?? roles.taxonomy.model,
           params: {
             ...roles.taxonomy.params,
             effort: effort ?? roles.taxonomy.params?.effort,
           },
         },
-        assignment: { ...roles.assignment, ...assignment },
+        // While Jev files, nothing runs on the assignment role - Jev calls no
+        // language model - so whatever it maps to here is never checked,
+        // billed or called.
+        assignment: {
+          ...roles.assignment,
+          provider: pick('assignmentProvider') || roles.assignment.provider,
+          model: pickModel('assignment') ?? roles.assignment.model,
+        },
       },
     },
   };

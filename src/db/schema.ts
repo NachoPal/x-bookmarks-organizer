@@ -11,7 +11,7 @@
  *   `description` is a nullable one-line gloss emitted by the taxonomy-design
  *   pass (issue #61). It costs no extra LLM call - pass 1 already writes the
  *   tree - and is what separates ambiguous siblings from each other for both
- *   the `extend` prompt and the TypeSafe categorizer's `Choice.criteria`.
+ *   every prompt's tree and the TypeSafe categorizer's `Choice.criteria`.
  *   NULL for any node designed before this column existed, which every
  *   consumer must tolerate. `origin` is who made the node: `user` rows are
  *   the owner's and are PROTECTED - no sync, filing pass or recategorize may

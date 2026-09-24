@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from './db/database';
 import { collectNewBookmarks, recategorizeAll, runIngest } from './ingest';
 import type { XClient, BookmarkPage } from './x/client';
-import type { AssignMode, BatchCategorizer } from './categorize/llm';
-import type { TaxonomyDesigner } from './categorize/taxonomy';
+import type { BatchCategorizer } from './categorize/llm';
+import type { TaxonomyDesigner, TaxonomyMode } from './categorize/taxonomy';
 import type { ArticleContext } from './articles/link-metadata';
 import type { ArticleFetcher, ArticleExtractionResult } from './articles/fetch-article';
 import type { Assignment, RawBookmark, TaxonomyNode } from './types';
@@ -59,38 +59,43 @@ class FakeXClient implements XClient {
   }
 }
 
-/** Fake taxonomy designer returning a fixed tree; records what it was shown. */
+/**
+ * Fake taxonomy designer returning a fixed tree (or, given a function, the
+ * tree for that call's mode); records what it was shown.
+ */
 class FakeTaxonomyDesigner implements TaxonomyDesigner {
   seenBookmarkCounts: number[] = [];
+  seenBookmarkIds: string[][] = [];
   seenExistingTrees: string[] = [];
+  seenModes: (TaxonomyMode | undefined)[] = [];
   seenArticleContexts: (Map<string, ArticleContext> | undefined)[] = [];
-  constructor(private readonly tree: TaxonomyNode[]) {}
+  constructor(private readonly tree: TaxonomyNode[] | ((mode?: TaxonomyMode) => TaxonomyNode[])) {}
   async designTaxonomy(
     bookmarks: RawBookmark[],
     existingTreeText: string,
     articleContext?: Map<string, ArticleContext>,
+    mode?: TaxonomyMode,
   ): Promise<TaxonomyNode[]> {
     this.seenBookmarkCounts.push(bookmarks.length);
+    this.seenBookmarkIds.push(bookmarks.map((b) => b.postId));
     this.seenExistingTrees.push(existingTreeText);
+    this.seenModes.push(mode);
     this.seenArticleContexts.push(articleContext);
-    return this.tree;
+    return typeof this.tree === 'function' ? this.tree(mode) : this.tree;
   }
 }
 
 /** Fake categorizer driven by a fixed postId -> paths map. */
 class FakeCategorizer implements BatchCategorizer {
   seenTrees: string[] = [];
-  seenModes: AssignMode[] = [];
   seenArticleContexts: (Map<string, ArticleContext> | undefined)[] = [];
   constructor(private readonly map: Record<string, string[][]>) {}
   async categorizeBatch(
     bookmarks: RawBookmark[],
     treeText: string,
-    mode: AssignMode = 'strict',
     articleContext?: Map<string, ArticleContext>,
   ): Promise<Assignment[]> {
     this.seenTrees.push(treeText);
-    this.seenModes.push(mode);
     this.seenArticleContexts.push(articleContext);
     return bookmarks
       .filter((b) => this.map[b.postId])
@@ -171,135 +176,156 @@ describe('runIngest (two-pass)', () => {
     expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['1']);
   });
 
-  it('incremental run against an existing tree skips the taxonomy designer and files into it', async () => {
+  it('a later sync runs pass 1 over only the new bookmarks, against the whole tree, then files strictly', async () => {
     const when = new Date().toISOString();
-    const ai = db.getOrCreateCategory('AI', null, when);
+    const ai = db.getOrCreateCategory('AI', null, when, 'Artificial intelligence.');
     db.getOrCreateCategory('Evals', ai.id, when);
+    db.storeCategorizedBatch([bm('1')], () => [ai.id], when);
     const before = db.getAllCategories().length;
 
-    const client = new FakeXClient([bm('1')]);
-    // If the designer were called it would blow the tree up - it must NOT be.
-    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
-    const categorizer = new FakeCategorizer({ '1': [['AI', 'Evals']] });
-    const summary = await runIngest({
-      db,
-      client,
-      taxonomer,
-      categorizer,
-      batchSize: 10,
-      maxDepth: 4,
-    });
+    const client = new FakeXClient([bm('2'), bm('1')]);
+    // Nothing new is needed: the new bookmark fits the existing tree.
+    const taxonomer = new FakeTaxonomyDesigner([]);
+    const categorizer = new FakeCategorizer({ '2': [['AI', 'Evals']] });
+    const summary = await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
 
-    // The expensive taxonomy-design pass was skipped entirely.
-    expect(taxonomer.seenBookmarkCounts).toEqual([]);
-    // The assignment pass ran in extend mode against the existing tree.
-    expect(categorizer.seenModes).toEqual(['extend']);
+    expect(taxonomer.seenModes).toEqual(['incremental']);
+    // Only the NEW bookmark, but the WHOLE tree with its descriptions.
+    expect(taxonomer.seenBookmarkIds).toEqual([['2']]);
+    expect(taxonomer.seenExistingTrees[0]).toContain('- AI - Artificial intelligence.');
+    expect(taxonomer.seenExistingTrees[0]).toContain('  - Evals');
     expect(categorizer.seenTrees[0]).toContain('- AI');
-    // No nodes duplicated; the new bookmark filed into the existing leaf.
     expect(summary.nodesCreated).toBe(0);
     expect(db.getAllCategories().length).toBe(before);
     const evals = db.getAllCategories().find((c) => c.name === 'Evals')!;
-    expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['1']);
+    expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['2']);
   });
 
-  it('incremental extend reuses existing nodes and creates a node only when nothing fits', async () => {
-    const when = new Date().toISOString();
-    const ai = db.getOrCreateCategory('AI', null, when);
-    db.getOrCreateCategory('Evals', ai.id, when);
+  it('a second sync with a new topic creates its category in pass 1, then files strictly into it', async () => {
+    const taxonomer = new FakeTaxonomyDesigner((mode) =>
+      mode === 'incremental'
+        ? [
+            { name: 'AI', children: [{ name: 'Agents', description: 'Autonomous agents.', children: [] }] },
+            { name: 'Robotics', description: 'Robots.', children: [{ name: 'Actuators', children: [] }] },
+          ]
+        : treeFromPaths([['AI', 'Evals']]),
+    );
+    await runIngest({
+      db,
+      client: new FakeXClient([bm('1')]),
+      taxonomer,
+      categorizer: new FakeCategorizer({ '1': [['AI', 'Evals']] }),
+      batchSize: 10,
+      maxDepth: 4,
+    });
+    const ai = db.findCategory('AI', null)!;
 
-    // Two new bookmarks: one reuses the existing leaf, one needs a brand-new node.
-    const client = new FakeXClient([bm('3'), bm('2')]);
-    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
     const categorizer = new FakeCategorizer({
-      '2': [['AI', 'Evals']], // reuse
-      '3': [['Robotics', 'Actuators']], // create
+      '2': [['AI', 'Agents']],
+      '3': [['Robotics', 'Actuators']],
+      '4': [['Cooking']], // off-tree: filing never creates it
     });
     const summary = await runIngest({
       db,
-      client,
+      client: new FakeXClient([bm('4'), bm('3'), bm('2'), bm('1')]),
       taxonomer,
       categorizer,
       batchSize: 10,
       maxDepth: 4,
     });
 
-    expect(taxonomer.seenBookmarkCounts).toEqual([]);
-    // Robotics + Actuators created; AI/Evals not duplicated.
+    expect(taxonomer.seenModes).toEqual(['design', 'incremental']);
+    expect(taxonomer.seenBookmarkIds[1]).toEqual(['2', '3', '4']);
+    // Pass 2 was shown the tree WITH pass 1's additions.
+    expect(categorizer.seenTrees[0]).toContain('  - Agents - Autonomous agents.');
+    expect(categorizer.seenTrees[0]).toContain('- Robotics - Robots.');
     const names = db.getAllCategories().map((c) => c.name).sort();
-    expect(names).toEqual(['AI', 'Actuators', 'Evals', 'Robotics']);
-    expect(summary.nodesCreated).toBe(2);
-
-    const evals = db.getAllCategories().find((c) => c.name === 'Evals')!;
+    expect(names).toEqual(['AI', 'Actuators', 'Agents', 'Evals', 'Robotics', 'Uncategorized']);
+    expect(summary.nodesCreated).toBe(4);
+    expect(db.findCategory('AI', null)!.id).toBe(ai.id);
+    const agents = db.findCategory('Agents', ai.id)!;
     const actuators = db.getAllCategories().find((c) => c.name === 'Actuators')!;
-    expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId)).toEqual(['2']);
+    const uncategorized = db.findCategory('Uncategorized', null)!;
+    expect(db.getBookmarksForCategory(agents.id).map((b) => b.postId)).toEqual(['2']);
     expect(db.getBookmarksForCategory(actuators.id).map((b) => b.postId)).toEqual(['3']);
+    expect(db.getBookmarksForCategory(uncategorized.id).map((b) => b.postId)).toEqual(['4']);
   });
 
-  it('incremental extend files an unplaced bookmark under Uncategorized', async () => {
+  it('an incremental pass 1 never renames, moves, re-describes or deletes an existing category', async () => {
     const when = new Date().toISOString();
-    db.getOrCreateCategory('AI', null, when);
+    const ai = db.getOrCreateCategory('AI', null, when, 'Artificial intelligence.');
+    const llms = db.getOrCreateCategory('LLMs', ai.id, when, 'Large language models.');
+    db.getOrCreateCategory('Evals', llms.id, when, 'Benchmarks.');
+    const rust = db.createCategory('Rust', null, when)!;
+    db.storeCategorizedBatch([bm('1')], () => [llms.id], when);
+    const snapshot = () =>
+      db
+        .getAllCategories()
+        .map((c) => ({ id: c.id, name: c.name, parentId: c.parentId, description: c.description ?? null, origin: c.origin }));
+    const before = snapshot();
 
-    const client = new FakeXClient([bm('2')]);
-    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
-    const categorizer = new FakeCategorizer({}); // no assignment for '2'
-    await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 4 });
+    // The model misbehaves: re-describes, renames by near-duplicate, re-roots
+    // a generated node and leaves most of the tree out of its answer.
+    const taxonomer = new FakeTaxonomyDesigner([
+      { name: 'AI', description: 'Rewritten.', children: [{ name: 'LLM', description: 'A twin.', children: [] }] },
+      { name: 'Evals', description: 'Moved to the top.', children: [] },
+      { name: 'rust [owner]', description: 'Rewritten.', children: [{ name: 'Async', children: [] }] },
+    ]);
+    await runIngest({
+      db,
+      client: new FakeXClient([bm('2'), bm('1')]),
+      taxonomer,
+      categorizer: new FakeCategorizer({ '2': [['Rust', 'Async']] }),
+      batchSize: 10,
+      maxDepth: 4,
+    });
 
-    expect(taxonomer.seenBookmarkCounts).toEqual([]);
-    const uncategorized = db.getAllCategories().find((c) => c.name === 'Uncategorized')!;
-    expect(uncategorized).toBeDefined();
-    expect(db.getBookmarksForCategory(uncategorized.id).map((b) => b.postId)).toEqual(['2']);
+    const after = snapshot();
+    // Every existing category is exactly as it was...
+    for (const row of before) expect(after).toContainEqual(row);
+    // ...the only additions are genuinely new: no "LLM" twin, no second "Rust".
+    const added = after.filter((row) => !before.some((b) => b.id === row.id));
+    expect(added.map((r) => [r.name, r.parentId])).toEqual(
+      expect.arrayContaining([
+        ['Evals', null],
+        ['Async', rust.id],
+      ]),
+    );
+    expect(added).toHaveLength(2);
+    expect(added.every((r) => r.origin === 'generated')).toBe(true);
   });
 
-  it('incremental extend caps created paths at maxDepth', async () => {
+  it('caps the categories an incremental pass 1 adds at maxDepth', async () => {
     const when = new Date().toISOString();
     db.getOrCreateCategory('A', null, when);
 
     const client = new FakeXClient([bm('2')]);
-    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
+    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['A', 'B', 'C', 'D', 'E']]));
     const categorizer = new FakeCategorizer({ '2': [['A', 'B', 'C', 'D', 'E']] });
     await runIngest({ db, client, taxonomer, categorizer, batchSize: 10, maxDepth: 3 });
 
-    expect(taxonomer.seenBookmarkCounts).toEqual([]);
+    expect(taxonomer.seenModes).toEqual(['incremental']);
     const names = db.getAllCategories().map((c) => c.name).sort();
     expect(names).toEqual(['A', 'B', 'C']); // D, E dropped by the depth cap
+    const c = db.getAllCategories().find((n) => n.name === 'C')!;
+    expect(db.getBookmarksForCategory(c.id).map((b) => b.postId)).toEqual(['2']);
   });
 
-  it('re-renders the tree between extend batches so a later batch reuses an earlier-created node', async () => {
+  it('files a later sync\'s off-tree path under Uncategorized, never creating it, in every batch', async () => {
     const when = new Date().toISOString();
-    db.getOrCreateCategory('AI', null, when); // existing tree -> extend mode
+    db.getOrCreateCategory('AI', null, when);
 
-    // Two new robotics bookmarks; batchSize 1 forces two separate extend batches.
     const client = new FakeXClient([bm('3'), bm('2')]);
+    const taxonomer = new FakeTaxonomyDesigner([]);
+    const categorizer = new FakeCategorizer({ '2': [['Robotics', 'Actuators']] }); // '3': nothing
+    await runIngest({ db, client, taxonomer, categorizer, batchSize: 1, maxDepth: 4 });
 
-    // A reuse-or-create categorizer that mimics a real model: it reuses the
-    // 'Robotics' node when the tree it is shown already contains it; otherwise it
-    // mints a fresh label, diverging on repeat. If a later batch is shown a stale
-    // tree missing the node the earlier batch created, it produces 'Robots'.
-    const freshLabels = ['Robotics', 'Robots'];
-    class ReuseOrCreateCategorizer implements BatchCategorizer {
-      created = 0;
-      async categorizeBatch(bookmarks: RawBookmark[], treeText: string): Promise<Assignment[]> {
-        const label = treeText.includes('Robotics') ? 'Robotics' : freshLabels[this.created++]!;
-        return bookmarks.map((b) => ({ postId: b.postId, categories: [[label, 'Actuators']] }));
-      }
-    }
-    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['SHOULD-NOT-BE-USED']]));
-    await runIngest({
-      db,
-      client,
-      taxonomer,
-      categorizer: new ReuseOrCreateCategorizer(),
-      batchSize: 1,
-      maxDepth: 4,
-    });
-
-    expect(taxonomer.seenBookmarkCounts).toEqual([]);
     const names = db.getAllCategories().map((c) => c.name).sort();
-    expect(names).toContain('Robotics');
-    expect(names).not.toContain('Robots'); // no near-duplicate sibling minted
-    // Both bookmarks landed in the single reused Robotics subtree.
-    const actuators = db.getAllCategories().find((c) => c.name === 'Actuators')!;
-    expect(db.getBookmarksForCategory(actuators.id).map((b) => b.postId).sort()).toEqual(['2', '3']);
+    expect(names).toEqual(['AI', 'Uncategorized']);
+    const uncategorized = db.findCategory('Uncategorized', null)!;
+    expect(db.getBookmarksForCategory(uncategorized.id).map((b) => b.postId).sort()).toEqual(['2', '3']);
+    // Both batches filed against the one tree pass 1 left.
+    expect(categorizer.seenTrees).toEqual([categorizer.seenTrees[0], categorizer.seenTrees[0]]);
   });
 
   it('supports multi-category placement (a bookmark in several branches)', async () => {
@@ -728,8 +754,7 @@ describe('owner categories (made by hand in the category editor)', () => {
     expect(taxonomer.seenBookmarkCounts).toEqual([3]);
     expect(taxonomer.seenExistingTrees[0]).toContain('- Rust [owner]');
     expect(taxonomer.seenExistingTrees[0]).toContain('  - Papers [owner]');
-    // ...and filing was strict against the merged tree.
-    expect(categorizer.seenModes).toEqual(['strict']);
+    expect(taxonomer.seenModes).toEqual(['design']);
 
     // The owner's categories are exactly as they were.
     expect(ownerSnapshot()).toEqual(before);
@@ -762,7 +787,7 @@ describe('owner categories (made by hand in the category editor)', () => {
     expect(db.getAllCategories().some((c) => c.name === 'Programming' || c.name === 'Macros')).toBe(false);
   });
 
-  it('a later sync extends instead of redesigning, and can file new posts into a category added between syncs', async () => {
+  it('a later sync grows the tree around owner categories and files new posts into one added between syncs', async () => {
     await runIngest({
       db,
       client: new FakeXClient([bm('1')]),
@@ -775,12 +800,13 @@ describe('owner categories (made by hand in the category editor)', () => {
     const llms = db.createCategory('LLMs', db.findCategory('AI', null)!.id, when)!;
     const before = ownerSnapshot();
 
-    const taxonomer = new FakeTaxonomyDesigner(treeFromPaths([['Never']]));
+    // Pass 1 adds a generated node INSIDE the owner's category.
+    const taxonomer = new FakeTaxonomyDesigner([{ name: 'Cooking [owner]', children: [{ name: 'Bread', children: [] }] }]);
     const categorizer = new FakeCategorizer({
       '2': [['Cooking [owner]']],
       '3': [['AI', 'LLM']], // near-duplicate of the owner's "LLMs"
       '4': [['Food', 'Cooking']], // the owner's root minted again deeper
-      '5': [['Cooking', 'Bread']], // a new generated node INSIDE the owner's
+      '5': [['Cooking', 'Bread']], // the node pass 1 added
     });
     await runIngest({
       db,
@@ -791,9 +817,11 @@ describe('owner categories (made by hand in the category editor)', () => {
       maxDepth: 4,
     });
 
-    expect(taxonomer.seenBookmarkCounts).toEqual([]);
-    expect(categorizer.seenModes).toEqual(['extend']);
-    expect(categorizer.seenTrees[0]).toContain('- Cooking [owner]');
+    expect(taxonomer.seenModes).toEqual(['incremental']);
+    expect(taxonomer.seenBookmarkCounts).toEqual([4]);
+    expect(taxonomer.seenExistingTrees[0]).toContain('- Cooking [owner]');
+    expect(taxonomer.seenExistingTrees[0]).toContain('  - LLMs [owner]');
+    expect(categorizer.seenTrees[0]).toContain('  - Bread');
     expect(ownerSnapshot()).toEqual(before);
     expect(db.getBookmarksForCategory(cooking.id).map((b) => b.postId).sort()).toEqual(['2', '4', '5']);
     expect(db.getBookmarksForCategory(llms.id).map((b) => b.postId)).toEqual(['3']);

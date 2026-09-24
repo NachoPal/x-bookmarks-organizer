@@ -15,22 +15,22 @@
  * this reads the real tree from the database, which is also what gives it node
  * ids and descriptions the rendered text does not carry.
  *
- * Pass 1 (taxonomy design) is untouched and stays on Claude - Jev invents no
- * labels. Two behaviours cover what it therefore cannot do on its own:
+ * Jev invents no labels, and it never has to: pass 1 (taxonomy design, always
+ * a language model) runs on EVERY sync and adds whatever categories the new
+ * bookmarks need before anything is filed, so Jev only ever files into a tree
+ * that already has a home for them. It calls no language model itself.
  *
- * - **Confidence-gated fallback.** A descent cut short by low confidence
- *   reports the last confident ANCESTOR ("AI > Harnesses") instead of guessing
- *   a leaf or dumping the bookmark in the flat `Uncategorized` bucket.
- * - **Hybrid `extend`.** A bookmark the walk cannot place anywhere is routed,
- *   alone, to the injected LLM categorizer in `extend` mode to propose a new
- *   node. Jev is the high-precision filter; the LLM handles only the genuinely
- *   novel tail.
+ * **Confidence-gated parent filing.** A descent cut short by low confidence
+ * reports the last confident ANCESTOR ("AI > Harnesses") instead of guessing a
+ * leaf or dumping the bookmark in the flat `Uncategorized` bucket. A bookmark
+ * that fits nothing anywhere is simply left out, which files it
+ * `Uncategorized`.
  */
 import type { EntryType, JsonValue } from '@typesafe-ai/sdk';
 import type { ArticleContext } from '../../articles/link-metadata';
 import type { Database } from '../../db/database';
 import type { Assignment, CategoryTreeNode, RawBookmark } from '../../types';
-import type { AssignMode, BatchCategorizer } from '../llm';
+import type { BatchCategorizer } from '../llm';
 import { buildCategoryTree } from '../tree';
 import type { LevelAsker } from './client';
 import { DEFAULT_WALK_OPTIONS, walkTree, type WalkOptions, type WalkTreeNode } from './walk';
@@ -56,13 +56,6 @@ export interface TypeSafeCategorizerDeps {
   db: Database;
   /** Answers one batched frontier of level questions. The offline test seam. */
   asker: LevelAsker;
-  /**
-   * The existing LLM categorizer, used ONLY for bookmarks the walk could not
-   * place, and only in `extend` mode (where inventing a node is allowed).
-   * Omitted, an unplaceable bookmark simply falls through to `Uncategorized`
-   * exactly as today.
-   */
-  extendFallback?: BatchCategorizer;
   logger?: (message: string) => void;
 }
 
@@ -136,26 +129,19 @@ export class TypeSafeCategorizer implements BatchCategorizer {
    * tell which one ran.
    *
    * A bookmark with no returned assignment is left out entirely, which is
-   * exactly how `makeResolver` in `src/ingest.ts` already routes it to
-   * `Uncategorized` - so the strict path degrades to today's behaviour rather
-   * than inventing anything.
+   * exactly how `makeResolver` in `src/ingest.ts` routes it to
+   * `Uncategorized` - nothing is ever invented.
    */
   async categorizeBatch(
     bookmarks: RawBookmark[],
-    treeText: string,
-    mode: AssignMode = 'strict',
+    _treeText: string,
     articleContext?: Map<string, ArticleContext>,
   ): Promise<Assignment[]> {
     if (bookmarks.length === 0) return [];
 
-    // Read the real tree per batch: an `extend` batch must see nodes that an
-    // earlier batch's LLM fallback created.
     const roots = toWalkTree(buildCategoryTree(this.deps.db));
-    if (roots.length === 0) {
-      // Nothing to file into. Hand the whole batch to the LLM when it is
-      // allowed to build, otherwise let it fall through to `Uncategorized`.
-      return this.runFallback(bookmarks, treeText, mode, articleContext);
-    }
+    // Nothing to file into: every bookmark falls through to `Uncategorized`.
+    if (roots.length === 0) return [];
 
     const walked = await mapWithConcurrency(bookmarks, this.options.concurrency, async (bookmark) => {
       const state = buildBookmarkState(bookmark, articleContext);
@@ -168,12 +154,12 @@ export class TypeSafeCategorizer implements BatchCategorizer {
     });
 
     const assignments: Assignment[] = [];
-    const unplaced: RawBookmark[] = [];
+    let unplaced = 0;
     let parentFallbacks = 0;
 
     for (const { bookmark, result } of walked) {
       if (result.paths.length === 0) {
-        unplaced.push(bookmark);
+        unplaced++;
         continue;
       }
       if (result.paths.some((p) => !p.confident)) parentFallbacks++;
@@ -189,31 +175,10 @@ export class TypeSafeCategorizer implements BatchCategorizer {
       );
     }
 
-    if (unplaced.length > 0) {
-      this.log(`TypeSafe: ${unplaced.length} bookmark(s) fit nothing in the tree.`);
-      assignments.push(...(await this.runFallback(unplaced, treeText, mode, articleContext)));
+    if (unplaced > 0) {
+      this.log(`TypeSafe: ${unplaced} bookmark(s) fit nothing in the tree.`);
     }
 
     return assignments;
-  }
-
-  /**
-   * Route bookmarks the walk could not place to the LLM categorizer.
-   *
-   * Only in `extend` mode: that is the one mode where creating a new node is
-   * permitted, and inventing nodes is the only thing the LLM can do here that
-   * the walk cannot. In `strict` mode the tree is fixed by pass 1, so an
-   * unplaceable bookmark correctly falls through to `Uncategorized`.
-   */
-  private async runFallback(
-    bookmarks: RawBookmark[],
-    treeText: string,
-    mode: AssignMode,
-    articleContext?: Map<string, ArticleContext>,
-  ): Promise<Assignment[]> {
-    const { extendFallback } = this.deps;
-    if (bookmarks.length === 0 || mode !== 'extend' || !extendFallback) return [];
-    this.log(`Routing ${bookmarks.length} bookmark(s) to the LLM to propose a new category.`);
-    return extendFallback.categorizeBatch(bookmarks, treeText, 'extend', articleContext);
   }
 }

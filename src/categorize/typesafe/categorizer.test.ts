@@ -1,8 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { Database } from '../../db/database';
 import { materializeTaxonomy } from '../tree';
-import type { AssignMode, BatchCategorizer } from '../llm';
-import type { Assignment, RawBookmark, TaxonomyNode } from '../../types';
+import type { RawBookmark, TaxonomyNode } from '../../types';
 import { buildBookmarkState, TypeSafeCategorizer } from './categorizer';
 import type { LevelAsker } from './client';
 import type { AskLevel, LevelAnswer } from './walk';
@@ -76,20 +75,6 @@ function confidentlyPick(names: string[]): (level: AskLevel) => LevelAnswer {
   };
 }
 
-/** Records what it was asked to categorize and answers with a fixed assignment. */
-function recordingFallback(assignments: Assignment[] = []): BatchCategorizer & {
-  seen: { bookmarks: RawBookmark[]; mode: AssignMode | undefined }[];
-} {
-  const seen: { bookmarks: RawBookmark[]; mode: AssignMode | undefined }[] = [];
-  return {
-    seen,
-    async categorizeBatch(bookmarks, _treeText, mode) {
-      seen.push({ bookmarks, mode });
-      return assignments;
-    },
-  };
-}
-
 describe('buildBookmarkState', () => {
   it('names each part of the state rather than flattening it into a blob', () => {
     const state = buildBookmarkState(bookmark('1', { text: 'a  post\nabout   agents' })) as Record<
@@ -125,7 +110,7 @@ describe('TypeSafeCategorizer', () => {
     const asker = fakeAsker(confidentlyPick(['AI', 'Harnesses', 'MCP']));
     const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4 });
 
-    const result = await categorizer.categorizeBatch([bookmark('1')], 'ignored tree text', 'strict');
+    const result = await categorizer.categorizeBatch([bookmark('1')], 'ignored tree text');
 
     expect(result).toEqual([{ postId: '1', categories: [['AI', 'Harnesses', 'MCP']] }]);
   });
@@ -134,7 +119,7 @@ describe('TypeSafeCategorizer', () => {
     const asker = fakeAsker(confidentlyPick(['AI', 'Research']));
     const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4 });
 
-    const [assignment] = await categorizer.categorizeBatch([bookmark('1')], '', 'strict');
+    const [assignment] = await categorizer.categorizeBatch([bookmark('1')], '');
 
     // Walk the returned names back down the DB exactly as ingest's resolver does.
     let parentId: number | null = null;
@@ -149,7 +134,7 @@ describe('TypeSafeCategorizer', () => {
     const asker = fakeAsker(confidentlyPick(['AI', 'Harnesses', 'MCP']));
     const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4 });
 
-    await categorizer.categorizeBatch([bookmark('1')], '', 'strict');
+    await categorizer.categorizeBatch([bookmark('1')], '');
 
     const rootLevel = asker.calls.find((l) => l.path.length === 0)!;
     const ai = rootLevel.options.find((o) => o.name === 'AI')!;
@@ -163,7 +148,7 @@ describe('TypeSafeCategorizer', () => {
       { maxDepth: 4, beamWidth: 3, multiLabelThreshold: 0.6 },
     );
 
-    const [assignment] = await categorizer.categorizeBatch([bookmark('1')], '', 'strict');
+    const [assignment] = await categorizer.categorizeBatch([bookmark('1')], '');
 
     const joined = assignment!.categories.map((p) => p.join(' > '));
     expect(joined).toContain('AI > Harnesses > MCP');
@@ -184,100 +169,44 @@ describe('TypeSafeCategorizer', () => {
     });
     const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4 });
 
-    const [assignment] = await categorizer.categorizeBatch([bookmark('1')], '', 'strict');
+    const [assignment] = await categorizer.categorizeBatch([bookmark('1')], '');
 
     expect(assignment!.categories).toEqual([['AI', 'Harnesses']]);
   });
 
-  it('omits a bookmark it cannot place in strict mode, so ingest files it Uncategorized', async () => {
+  it('omits a bookmark it cannot place, so ingest files it Uncategorized', async () => {
     const asker = fakeAsker((level) => ({
       probabilities: new Map(level.options.map((o) => [o.id, 0.1] as const)),
       confidence: 0.05,
     }));
-    const fallback = recordingFallback();
-    const categorizer = new TypeSafeCategorizer({ db, asker, extendFallback: fallback }, { maxDepth: 4 });
+    const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4 });
 
-    const result = await categorizer.categorizeBatch([bookmark('1')], '', 'strict');
+    const result = await categorizer.categorizeBatch([bookmark('1')], '');
 
     expect(result).toEqual([]);
-    // The tree is fixed in strict mode, so the LLM is never asked to invent.
-    expect(fallback.seen).toHaveLength(0);
   });
 
-  it('routes ONLY the unplaceable bookmarks to the LLM in extend mode', async () => {
-    // Bookmark 1 fits the tree; bookmark 2 fits nothing. Only 2 may reach the
-    // LLM - that is the whole point of Jev being the high-precision filter.
+  it('files a placeable bookmark and leaves only the unplaceable one out of a mixed batch', async () => {
     const asker = fakeAsker((level, state) => {
       if (String(state.post_text).includes('novel')) {
         return { probabilities: new Map(level.options.map((o) => [o.id, 0.1] as const)), confidence: 0.05 };
       }
       return confidentlyPick(['AI', 'Harnesses', 'MCP'])(level);
     });
-    const fallback = recordingFallback([{ postId: '2', categories: [['Gardening']] }]);
-    const categorizer = new TypeSafeCategorizer(
-      { db, asker, extendFallback: fallback },
-      { maxDepth: 4 },
-    );
+    const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4 });
 
-    const result = await categorizer.categorizeBatch(
-      [bookmark('1'), bookmark('2', { text: 'a novel topic' })],
-      '',
-      'extend',
-    );
+    const result = await categorizer.categorizeBatch([bookmark('1'), bookmark('2', { text: 'a novel topic' })], '');
 
-    expect(fallback.seen).toHaveLength(1);
-    expect(fallback.seen[0]!.bookmarks.map((b) => b.postId)).toEqual(['2']);
-    expect(result).toContainEqual({ postId: '1', categories: [['AI', 'Harnesses', 'MCP']] });
-    expect(result).toContainEqual({ postId: '2', categories: [['Gardening']] });
+    expect(result).toEqual([{ postId: '1', categories: [['AI', 'Harnesses', 'MCP']] }]);
   });
 
-  it('does not call the LLM at all when every bookmark fits the tree', async () => {
-    const asker = fakeAsker(confidentlyPick(['AI', 'Research']));
-    const fallback = recordingFallback();
-    const categorizer = new TypeSafeCategorizer(
-      { db, asker, extendFallback: fallback },
-      { maxDepth: 4 },
-    );
-
-    const result = await categorizer.categorizeBatch([bookmark('1'), bookmark('2')], '', 'extend');
-
-    expect(fallback.seen).toHaveLength(0);
-    expect(result.map((a) => a.postId).sort()).toEqual(['1', '2']);
-  });
-
-  it('asks the LLM to invent a node for a bookmark that fits nothing (hybrid extend)', async () => {
-    const asker = fakeAsker((level) => ({
-      probabilities: new Map(level.options.map((o) => [o.id, 0.1] as const)),
-      confidence: 0.05,
-    }));
-    const fallback = recordingFallback([{ postId: '1', categories: [['Gardening', 'Tomatoes']] }]);
-    const categorizer = new TypeSafeCategorizer(
-      { db, asker, extendFallback: fallback },
-      { maxDepth: 4 },
-    );
-
-    const result = await categorizer.categorizeBatch([bookmark('1')], 'tree text', 'extend');
-
-    expect(fallback.seen).toHaveLength(1);
-    expect(fallback.seen[0]!.bookmarks.map((b) => b.postId)).toEqual(['1']);
-    expect(fallback.seen[0]!.mode).toBe('extend');
-    expect(result).toEqual([{ postId: '1', categories: [['Gardening', 'Tomatoes']] }]);
-  });
-
-  it('hands the whole batch to the LLM when the tree is empty and extending', async () => {
+  it('files nothing, and asks nothing, when the tree is empty', async () => {
     const empty = new Database(':memory:');
     try {
       const asker = fakeAsker(confidentlyPick([]));
-      const fallback = recordingFallback([{ postId: '1', categories: [['New']] }]);
-      const categorizer = new TypeSafeCategorizer(
-        { db: empty, asker, extendFallback: fallback },
-        { maxDepth: 4 },
-      );
+      const categorizer = new TypeSafeCategorizer({ db: empty, asker }, { maxDepth: 4 });
 
-      const result = await categorizer.categorizeBatch([bookmark('1')], '', 'extend');
-
-      expect(fallback.seen[0]!.bookmarks).toHaveLength(1);
-      expect(result).toEqual([{ postId: '1', categories: [['New']] }]);
+      expect(await categorizer.categorizeBatch([bookmark('1')], '')).toEqual([]);
       expect(asker.calls).toHaveLength(0);
     } finally {
       empty.close();
@@ -291,7 +220,7 @@ describe('TypeSafeCategorizer', () => {
     }));
     const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 2, beamWidth: 1 });
 
-    const [assignment] = await categorizer.categorizeBatch([bookmark('1')], '', 'strict');
+    const [assignment] = await categorizer.categorizeBatch([bookmark('1')], '');
 
     for (const path of assignment!.categories) expect(path.length).toBeLessThanOrEqual(2);
   });
@@ -300,7 +229,7 @@ describe('TypeSafeCategorizer', () => {
     const asker = fakeAsker(confidentlyPick(['AI']));
     const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4 });
 
-    expect(await categorizer.categorizeBatch([], '', 'strict')).toEqual([]);
+    expect(await categorizer.categorizeBatch([], '')).toEqual([]);
     expect(asker.calls).toHaveLength(0);
   });
 
@@ -309,7 +238,7 @@ describe('TypeSafeCategorizer', () => {
     const categorizer = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4, concurrency: 3 });
 
     const bookmarks = ['1', '2', '3', '4', '5'].map((id) => bookmark(id));
-    const result = await categorizer.categorizeBatch(bookmarks, '', 'strict');
+    const result = await categorizer.categorizeBatch(bookmarks, '');
 
     expect(result.map((a) => a.postId).sort()).toEqual(['1', '2', '3', '4', '5']);
     for (const assignment of result) expect(assignment.categories).toEqual([['AI', 'Research']]);
@@ -330,7 +259,7 @@ describe('owner categories on the Jev path', () => {
     const rust = db.createCategory('Rust', null, WHEN)!;
     const asker = fakeAsker(confidentlyPick(['Rust']));
     const categorizer = new TypeSafeCategorizer({ db, asker });
-    const out = await categorizer.categorizeBatch([bookmark('1')], '(ignored)', 'strict');
+    const out = await categorizer.categorizeBatch([bookmark('1')], '(ignored)');
     expect(asker.calls[0]!.options.map((o) => o.name)).toContain('Rust');
     expect(out).toEqual([{ postId: '1', categories: [['Rust']] }]);
     expect(db.getCategoryById(rust.id)!.origin).toBe('user');

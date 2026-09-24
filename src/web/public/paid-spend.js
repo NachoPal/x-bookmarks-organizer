@@ -144,8 +144,9 @@
   }
 
   /**
-   * What "Find bookmarks" says about the filing model it runs on: the price
-   * when it is billed per token, otherwise which model and that it is not.
+   * What "Find bookmarks" says about the filing method it runs on (the filing
+   * model, or Jev): the price when it is billed per token, otherwise which
+   * model and that it is not.
    */
   function findCostSentence(spend) {
     if (!spend) return "";

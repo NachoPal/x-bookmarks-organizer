@@ -117,7 +117,7 @@ export interface ServerOptions {
    * What a sync checks before it reads X or calls a model -
    * `createSyncPreflight`. Rejects with an actionable, owner-facing message.
    * `POST /api/sync` runs it BEFORE the paid confirmation, so a sync that
-   * cannot start (e.g. Jev's fallback lacks its key) is refused with the reason
+   * cannot start (e.g. the filing model lacks its key) is refused with the reason
    * rather than authorized and then failing. Undefined skips it (a test-built
    * server); the job itself still runs the same checks.
    */
@@ -207,7 +207,7 @@ export const MODELS_UNAVAILABLE_MESSAGE =
 const FIND_UNAVAILABLE_MESSAGE = 'Finding bookmarks is unavailable in this viewer.';
 const FIND_RUNNING_MESSAGE = 'Bookmarks are being found for a category. Wait for it to finish.';
 const FIND_CONFIRM_MESSAGE =
-  'The filing model is billed per token. Send { "confirm": true } to find bookmarks for this category.';
+  'The filing method is billed per token. Send { "confirm": true } to find bookmarks for this category.';
 
 /** Shown when the Sync button is pressed on a viewer with no ingest wiring. */
 export const SYNC_UNAVAILABLE_MESSAGE =

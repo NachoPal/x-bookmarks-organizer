@@ -759,9 +759,9 @@ export class Database {
    * `description` is the one-line gloss the taxonomy pass emits per node
    * (issue #61). It is only ever FILLED IN, never cleared: an existing node
    * whose description is still null gains one when a later design pass supplies
-   * it, but a node that already has one keeps it, so an ad-hoc `extend` node
-   * created without a description is upgraded on the next `recategorize` while
-   * a real description is never overwritten with nothing. A `user` category's
+   * it, but a node that already has one keeps it, so a node created without a
+   * description is upgraded by a later design pass while a real description
+   * is never overwritten. A `user` category's
    * description is never touched at all: it is the owner's, and a pass merging
    * into it must leave it exactly as it found it.
    *

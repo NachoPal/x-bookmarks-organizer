@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from './server';
@@ -246,53 +243,93 @@ describe('find bookmarks for a category', () => {
   });
 });
 
-describe("find bookmarks while Jev files: it runs on Jev's fallback language model", () => {
+describe('find bookmarks while Jev files: it runs on Jev, never on a language model', () => {
   let db: Database;
-  let dir: string;
+  let app: FastifyInstance | undefined;
+  let rust: number;
+  const JEV_DOC = { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai', fallbackProvider: 'pi-ai' };
 
   beforeEach(() => {
     db = new Database(':memory:');
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbo-find-stub-'));
+    const ai = db.getOrCreateCategory('AI', null, WHEN).id;
+    rust = db.createCategory('Rust', null, WHEN)!.id;
+    db.storeCategorizedBatch([bm('1', 'rust ownership'), bm('2', 'gpt evals'), bm('3', 'rust async')], () => [ai], WHEN);
+    db.setState('app_settings', JSON.stringify(JEV_DOC));
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
     db.close();
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  /** The REAL provider factory, over a credential store with no ANTHROPIC_API_KEY and a stub `claude`. */
-  function realWiring(): FindWiring {
-    const claude = path.join(dir, 'claude');
-    fs.writeFileSync(claude, "#!/usr/bin/env node\nconsole.log('9.9.9 (stub)');\n", { mode: 0o755 });
-    const values: Record<string, string> = { XBOOKMARKS_CLAUDE_BIN: claude, TYPESAFE_API_KEY: 'ts', OPENROUTER_API_KEY: 'or' };
-    const keys: CredentialStore = {
-      get: (key) => (values[key] ? { key, value: values[key], source: 'env' } : { key, source: 'none' }),
-    };
+  const keys = (values: Record<string, string>): CredentialStore => ({
+    get: (key) => (values[key] ? { key, value: values[key], source: 'env' } : { key, source: 'none' }),
+  });
+  /** A provider factory that fails the test if anything asks it for a model. */
+  const noLlm = (): LlmFactory => ({
+    forRole: () => {
+      throw new Error('Find with Jev must not use a language model');
+    },
+    check: async () => {
+      throw new Error('Find with Jev must not check a language model');
+    },
+    describe: () => {
+      throw new Error('Find with Jev must not describe a language model');
+    },
+  });
+  /** A fake Jev that files "rust" posts under Rust, and everything else under AI. */
+  const fakeJev = {
+    walked: [] as string[],
+    async categorizeBatch(batch: RawBookmark[]) {
+      this.walked.push(...batch.map((b) => b.postId));
+      return batch.map((b) => ({ postId: b.postId, categories: [/rust/.test(b.text) ? ['Rust'] : ['AI']] }));
+    },
+  };
+
+  function wiring(store: CredentialStore): FindWiring {
     return createFindWiring({
       db,
-      store: keys,
+      store,
       config: loadConfig({}),
+      createLlm: noLlm,
+      buildFiler: () => fakeJev,
       articleFetcher: noFetch,
       browser: { list: async () => ({ ok: true, models: [] }) as never },
     });
   }
 
-  it("uses the phase-1 provider when no fallback was ever chosen - not a hidden pi-ai filing provider", async () => {
-    db.setState(
-      'app_settings',
-      JSON.stringify({ categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' }),
-    );
-    const model = await realWiring().describe();
-    expect(model).toMatchObject({ available: true, spend: { providerId: 'claude-cli', billing: 'subscription' } });
+  it('describes Jev as the method, billed per token, and ignores any language model setting', async () => {
+    const model = await wiring(keys({ TYPESAFE_API_KEY: 'ts' })).describe();
+    expect(model).toEqual({
+      available: true,
+      spend: { providerId: 'typesafe', providerLabel: 'TypeSafe', model: 'jev-latest', modelLabel: 'Jev (jev-latest)', billing: 'per-token' },
+    });
   });
 
-  it('names the Settings field to change when the chosen fallback cannot run', async () => {
-    db.setState(
-      'app_settings',
-      JSON.stringify({ categorizer: 'typesafe', taxonomyProvider: 'claude-cli', fallbackProvider: 'pi-ai' }),
-    );
-    const model = await realWiring().describe();
+  it('names the Settings field to change when Jev has no key', async () => {
+    const model = await wiring(keys({})).describe();
     expect(model.available).toBe(false);
-    expect(model.reason).toMatch(/^Jev's fallback language model cannot run: .*ANTHROPIC_API_KEY/);
-    expect(model.reason).toContain('open Settings and change "Jev\'s fallback provider" under Phase 2 - Filing.');
+    expect(model.reason).toMatch(/^Jev \(the phase 2 filing method\) cannot run: TYPESAFE_API_KEY is not set\./);
+    expect(model.reason).toContain('open Settings and change "Filing method" under Phase 2 - Filing.');
+  });
+
+  it('demands the paid confirmation, then adds what Jev files into the category', async () => {
+    fakeJev.walked = [];
+    app = buildServer(db, { findBookmarks: wiring(keys({ TYPESAFE_API_KEY: 'ts' })) });
+    await app.ready();
+
+    const unconfirmed = await app.inject({ method: 'POST', url: `/api/categories/${rust}/find-bookmarks` });
+    expect(unconfirmed.statusCode).toBe(400);
+    expect(unconfirmed.json()).toMatchObject({ confirmRequired: true, spend: { providerId: 'typesafe' } });
+    expect(fakeJev.walked).toEqual([]);
+
+    const res = await app.inject({ method: 'POST', url: `/api/categories/${rust}/find-bookmarks`, payload: { confirm: true } });
+    expect(res.statusCode).toBe(202);
+    const status = await waitForFind(app);
+    expect(status.state).toBe('done');
+    expect(status.summary).toMatchObject({ checked: 3, added: 2 });
+    expect(status.messages[0]).toMatch(/^Filing method: TypeSafe Jev \(jev-latest\) - .*per-token/);
+    expect(fakeJev.walked.sort()).toEqual(['1', '2', '3']);
+    expect(db.getBookmarksForCategory(rust).map((b) => b.postId).sort()).toEqual(['1', '3']);
   });
 });
