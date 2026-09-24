@@ -1,8 +1,9 @@
 import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
 import sanitizeHtml from 'sanitize-html';
+import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import { isXArticleUrl } from '../x/article';
-import { createHostPolicy, type HostPolicy } from './host-policy';
+import { createHostPolicy, PRIVATE_ADDRESS_ERROR_CODE, PRIVATE_ADDRESS_REASON, type HostPolicy } from './host-policy';
 import type { ArticleRecord } from '../types';
 
 // linkedom's type declarations only expose `parseHTML(html)`, but its runtime
@@ -579,7 +580,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * a followable redirect. Needed because the fetcher follows redirects itself
  * (`redirect: 'manual'`) so the host policy sees every hop.
  */
-function redirectTarget(res: Response, currentUrl: string): string | null {
+function redirectTarget(res: ArticleFetchResponse, currentUrl: string): string | null {
   if (!REDIRECT_STATUSES.has(res.status)) return null;
   const location = res.headers.get('location');
   if (!location) return null;
@@ -591,6 +592,36 @@ function redirectTarget(res: Response, currentUrl: string): string | null {
   }
 }
 
+/**
+ * The most a page may weigh, AFTER decompression (security review finding 10).
+ * A real article is a few hundred kilobytes; a link that streams without end,
+ * or a small compressed body that inflates to gigabytes, must not be able to
+ * take the whole sync down with it.
+ */
+export const MAX_ARTICLE_BYTES = 5 * 1024 * 1024;
+
+export const TOO_LARGE_REASON = 'This page is too large to read.';
+
+/** The slice of a fetch `Response` the fetcher reads. */
+export interface ArticleFetchResponse {
+  readonly status: number;
+  readonly ok: boolean;
+  readonly url: string;
+  readonly headers: { get(name: string): string | null };
+  readonly body: ReadableStream<Uint8Array> | null;
+}
+
+export interface ArticleFetchInit {
+  signal: AbortSignal;
+  redirect: 'manual';
+  headers: Record<string, string>;
+  /** Carries the host policy's connect-time lookup; see {@link HttpArticleFetcher}. */
+  dispatcher: Dispatcher;
+}
+
+/** The `fetch` the fetcher calls. Defaults to undici's own. */
+export type ArticleFetch = (url: string, init: ArticleFetchInit) => Promise<ArticleFetchResponse>;
+
 export interface HttpArticleFetcherOptions {
   /**
    * The outbound host policy. Defaults to {@link createHostPolicy}, which
@@ -598,12 +629,60 @@ export interface HttpArticleFetcherOptions {
    * inject one so no DNS query leaves the machine.
    */
   hostPolicy?: HostPolicy;
+  /**
+   * The HTTP client. Defaults to undici's `fetch`, which honors the
+   * `dispatcher` (and so the policy's connect-time lookup). Tests inject a
+   * canned one to exercise the response handling with no socket at all.
+   */
+  fetch?: ArticleFetch;
+  /** Defaults to {@link MAX_ARTICLE_BYTES}; lowered in tests. */
+  maxBodyBytes?: number;
 }
 
 /**
- * Real fetcher: downloads the page (bounded timeout, realistic UA, HTTP *and*
- * interstitial redirects followed, every hop checked against the outbound host
- * policy) and extracts both its preview card and its readable body.
+ * Read a response body as UTF-8 (what `Response.text()` does), giving up -
+ * and releasing the socket - once it exceeds `limit` bytes. `null` means too
+ * large. The declared `Content-Length` is only an early exit: it is the size
+ * on the wire, so the decoded bytes are what is actually counted.
+ */
+async function readCappedText(res: ArticleFetchResponse, limit: number): Promise<string | null> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > limit) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!res.body) return '';
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+/** Whether an error (or anything in its `cause` chain) is the policy's connect-time refusal. */
+function isPrivateAddressRefusal(err: unknown): boolean {
+  for (let current = err, depth = 0; current && depth < 8; depth++) {
+    if ((current as { code?: unknown }).code === PRIVATE_ADDRESS_ERROR_CODE) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Real fetcher: downloads the page (bounded timeout, bounded size, realistic
+ * UA, HTTP *and* interstitial redirects followed, every hop checked against the
+ * outbound host policy both before the request and when it connects) and
+ * extracts both its preview card and its readable body.
  *
  * Every failure path (timeout, network error, non-HTML, non-2xx, resolves back
  * to X, unparsable) returns a typed `failed` result rather than throwing, so
@@ -611,19 +690,29 @@ export interface HttpArticleFetcherOptions {
  */
 export class HttpArticleFetcher implements ArticleFetcher {
   private readonly hostPolicy: HostPolicy;
+  private readonly fetchImpl: ArticleFetch;
+  private readonly maxBodyBytes: number;
 
   constructor(
     private readonly timeoutMs: number = FETCH_TIMEOUT_MS,
     options: HttpArticleFetcherOptions = {},
   ) {
     this.hostPolicy = options.hostPolicy ?? createHostPolicy();
+    this.fetchImpl = options.fetch ?? (undiciFetch as unknown as ArticleFetch);
+    this.maxBodyBytes = options.maxBodyBytes ?? MAX_ARTICLE_BYTES;
   }
 
   async fetch(url: string): Promise<ArticleExtractionResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    // Every connection this fetch opens - the first hop and every redirect or
+    // interstitial hop after it - resolves its hostname through the policy's
+    // lookup, so the address connected to is the address that was checked
+    // (security review 2, finding 18). One agent per fetch: nothing is pooled
+    // across links, and destroying it releases every socket on the way out.
+    const dispatcher = new Agent({ connect: { lookup: this.hostPolicy.lookup } });
+    let currentUrl = url;
     try {
-      let currentUrl = url;
       let interstitialHops = 0;
       let redirectHops = 0;
       for (;;) {
@@ -633,12 +722,12 @@ export class HttpArticleFetcher implements ArticleFetcher {
         // Applied to EVERY hop, which is the whole point of walking redirects
         // by hand below: a public page may not bounce the fetcher at an
         // address the owner's browser would never have been asked to reach.
-        const refusal = await this.hostPolicy.check(currentUrl);
+        const refusal = this.hostPolicy.check(currentUrl);
         if (refusal) {
           return { status: 'failed', reason: refusal, preview: null, resolvedUrl: currentUrl };
         }
 
-        const res = await fetch(currentUrl, {
+        const res = await this.fetchImpl(currentUrl, {
           signal: controller.signal,
           // `follow` would hide the intermediate hops from the policy above.
           redirect: 'manual',
@@ -647,6 +736,7 @@ export class HttpArticleFetcher implements ArticleFetcher {
             Accept: 'text/html,application/xhtml+xml',
             'Accept-Language': 'en-US,en;q=0.9',
           },
+          dispatcher,
         });
         const landedUrl = res.url || currentUrl;
 
@@ -689,7 +779,10 @@ export class HttpArticleFetcher implements ArticleFetcher {
           };
         }
 
-        const html = await res.text();
+        const html = await readCappedText(res, this.maxBodyBytes);
+        if (html === null) {
+          return { status: 'failed', reason: TOO_LARGE_REASON, preview: null, resolvedUrl: landedUrl };
+        }
         const bounce =
           interstitialHops < MAX_INTERSTITIAL_HOPS ? extractInterstitialRedirect(html, landedUrl) : null;
         if (bounce) {
@@ -700,6 +793,9 @@ export class HttpArticleFetcher implements ArticleFetcher {
         return extractArticle(html, landedUrl, landedUrl);
       }
     } catch (err) {
+      if (isPrivateAddressRefusal(err)) {
+        return { status: 'failed', reason: PRIVATE_ADDRESS_REASON, preview: null, resolvedUrl: currentUrl };
+      }
       const timedOut = err instanceof Error && err.name === 'AbortError';
       return {
         status: 'failed',
@@ -711,6 +807,7 @@ export class HttpArticleFetcher implements ArticleFetcher {
       };
     } finally {
       clearTimeout(timer);
+      await dispatcher.destroy().catch(() => {});
     }
   }
 }

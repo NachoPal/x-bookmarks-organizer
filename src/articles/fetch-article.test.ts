@@ -1,12 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import zlib from 'node:zlib';
 import type { AddressInfo } from 'node:net';
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { parseHTML } from 'linkedom';
 import { Readability } from '@mozilla/readability';
-import { extractArticle, HttpArticleFetcher, X_ARTICLE_REASON } from './fetch-article';
-import { ALLOW_PRIVATE_FETCH_ENV, createHostPolicy, PRIVATE_ADDRESS_REASON } from './host-policy';
+import {
+  extractArticle,
+  HttpArticleFetcher,
+  MAX_ARTICLE_BYTES,
+  TOO_LARGE_REASON,
+  X_ARTICLE_REASON,
+  type ArticleFetch,
+} from './fetch-article';
+import { ALLOW_PRIVATE_FETCH_ENV, createHostPolicy, PRIVATE_ADDRESS_REASON, type HostPolicy } from './host-policy';
 
 /**
  * The tests below exercise redirect/UA/extraction mechanics against local
@@ -17,6 +25,9 @@ import { ALLOW_PRIVATE_FETCH_ENV, createHostPolicy, PRIVATE_ADDRESS_REASON } fro
  */
 const openPolicy = createHostPolicy({ allowPrivateAddresses: true });
 const fetcher = (timeoutMs?: number) => new HttpArticleFetcher(timeoutMs, { hostPolicy: openPolicy });
+/** A fetcher whose HTTP client is a canned stand-in: no socket, no DNS. */
+const mocked = (fetchImpl: unknown, timeoutMs?: number) =>
+  new HttpArticleFetcher(timeoutMs, { hostPolicy: openPolicy, fetch: fetchImpl as ArticleFetch });
 
 const FIXTURE_PATH = path.join(__dirname, '../web/public/fixtures/sample-article.html');
 const FIXTURE_HTML = fs.readFileSync(FIXTURE_PATH, 'utf-8');
@@ -315,15 +326,10 @@ describe('extractArticle preview card fields (issues #26/#45, pure, no network)'
 });
 
 describe('HttpArticleFetcher (network mocked, never hits the real internet)', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
   it('fetches, extracts, and returns ok for a real article response', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(FIXTURE_HTML, { contentType: 'text/html; charset=utf-8' }));
-    vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetcher().fetch(FIXTURE_URL);
+    const result = await mocked(fetchMock).fetch(FIXTURE_URL);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.status).toBe('ok');
@@ -332,52 +338,45 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
   });
 
   it('fails gracefully with a clear reason on a non-2xx response', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse('Not Found', { status: 404 })));
-    const result = await fetcher().fetch('https://example.com/missing');
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse('Not Found', { status: 404 }));
+    const result = await mocked(fetchImpl).fetch('https://example.com/missing');
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
     expect(result.reason).toMatch(/404/);
   });
 
   it('fails gracefully on a non-HTML response', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(jsonResponse('{"not":"html"}', { contentType: 'application/json' })),
-    );
-    const result = await fetcher().fetch('https://example.com/data.json');
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse('{"not":"html"}', { contentType: 'application/json' }));
+    const result = await mocked(fetchImpl).fetch('https://example.com/data.json');
     expect(result.status).toBe('failed');
   });
 
   it('fails gracefully when the request times out', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockImplementation(
-        (_url: string, init?: { signal?: AbortSignal }) =>
-          new Promise((_resolve, reject) => {
-            init?.signal?.addEventListener('abort', () => {
-              const err = new Error('aborted');
-              err.name = 'AbortError';
-              reject(err);
-            });
-          }),
-      ),
+    const fetchImpl = vi.fn().mockImplementation(
+      (_url: string, init?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }),
     );
-    const result = await fetcher(20).fetch('https://example.com/slow');
+    const result = await mocked(fetchImpl, 20).fetch('https://example.com/slow');
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
     expect(result.reason).toMatch(/too long/i);
   });
 
   it('fails gracefully on a network error (DNS/connection failure)', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
-    const result = await fetcher().fetch('https://nonexistent.invalid/post');
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const result = await mocked(fetchImpl).fetch('https://nonexistent.invalid/post');
     expect(result.status).toBe('failed');
   });
 
   it('treats a link that resolves back to X as "not an article" without fetching for a known non-article host', async () => {
     const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    const result = await fetcher().fetch('https://x.com/someone/status/123');
+    const result = await mocked(fetchMock).fetch('https://x.com/someone/status/123');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
@@ -385,11 +384,8 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
   });
 
   it('treats a t.co link that redirects back to X as "not an article"', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(jsonResponse('<html></html>', { url: 'https://twitter.com/someone/status/123' })),
-    );
-    const result = await fetcher().fetch('https://t.co/abc123');
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse('<html></html>', { url: 'https://twitter.com/someone/status/123' }));
+    const result = await mocked(fetchImpl).fetch('https://t.co/abc123');
     expect(result.status).toBe('failed');
     if (result.status !== 'failed') throw new Error('expected failed');
     expect(result.reason).toMatch(/not an article|post on X/i);
@@ -397,18 +393,14 @@ describe('HttpArticleFetcher (network mocked, never hits the real internet)', ()
 
   it('short-circuits an x.com/i/article link with the X Article reason, without fetching it', async () => {
     const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    const result = await fetcher().fetch('https://x.com/i/article/2094692428037177344');
+    const result = await mocked(fetchMock).fetch('https://x.com/i/article/2094692428037177344');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'failed', reason: X_ARTICLE_REASON });
   });
 
   it('reports the X Article reason when a t.co link lands on an x.com/i/article page', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(jsonResponse('<html></html>', { url: 'https://x.com/i/article/2094692428037177344' })),
-    );
-    const result = await fetcher().fetch('https://t.co/abc123');
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse('<html></html>', { url: 'https://x.com/i/article/2094692428037177344' }));
+    const result = await mocked(fetchImpl).fetch('https://t.co/abc123');
     expect(result).toMatchObject({
       status: 'failed',
       reason: X_ARTICLE_REASON,
@@ -610,28 +602,35 @@ describe('HttpArticleFetcher against a real local server (redirect + UA robustne
 });
 
 /**
- * Security review finding 1 (SSRF). A bookmarked link is attacker-chosen
- * content that the app fetches automatically on every sync, from inside the
- * owner's network. These run the REAL fetcher and the REAL policy against real
- * local sockets - the same shape as the review's `repro-ssrf.ts`.
+ * Security review finding 1 (SSRF), and review 2's findings 18 and 21. A
+ * bookmarked link is attacker-chosen content that the app fetches
+ * automatically on every sync, from inside the owner's network. These run the
+ * REAL fetcher and the REAL policy against real local sockets - the same shape
+ * as the reviews' `repro-ssrf*.ts`.
  *
- * `localhost` stands in for the public page a `t.co` link resolves to: the
- * policy's DNS is stubbed (so nothing leaves the machine) to report it as a
- * public address, while the OS still connects it to the local stub server.
- * Every loopback destination below is therefore refused by the policy on its
- * own merits, not because the test arranged it.
+ * DNS is stubbed through the policy's own `lookup` seam, so no query leaves the
+ * machine - and since that lookup is now what the CONNECTION resolves through,
+ * whatever a stub answers is where the socket really goes. A "public page"
+ * therefore cannot be a name stubbed to a public address (that would really
+ * connect to it); it is a literal loopback URL whose port the test lets
+ * through `check`, standing in for a public hop, while every other
+ * destination is judged by the production policy on its own merits.
  */
-describe('HttpArticleFetcher outbound host policy (SSRF, security review finding 1)', () => {
-  const PUBLIC_IP = '93.184.216.34';
-  const lookup = async (hostname: string): Promise<string[]> => {
-    if (hostname === 'localhost') return [PUBLIC_IP];
-    if (hostname === 'internal.example') return ['192.168.1.10'];
-    throw new Error(`ENOTFOUND ${hostname}`);
-  };
-
+describe('HttpArticleFetcher outbound host policy (SSRF, security review findings 1, 18, 21)', () => {
   /** The production policy, with DNS stubbed so the suite stays offline. */
-  const guarded = () => new HttpArticleFetcher(2_000, { hostPolicy: createHostPolicy({ env: {}, lookup }) });
+  const policyWith = (lookup: (hostname: string) => Promise<string[]>) => createHostPolicy({ env: {}, lookup });
+  const lookup = async (hostname: string): Promise<string[]> => {
+    if (hostname === 'internal.example' || hostname === 'rebind.attacker.test') return ['127.0.0.1'];
+    if (hostname === 'nat64.attacker.test') return ['64:ff9b::7f00:1'];
+    throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' });
+  };
+  const guarded = (policy: HostPolicy = policyWith(lookup)) => new HttpArticleFetcher(2_000, { hostPolicy: policy });
   const portOf = (fixture: { url: (p: string) => string }) => new URL(fixture.url('/')).port;
+  /** `policy`, except that `port` stands in for a public page. */
+  const allowingPort = (port: string, policy: HostPolicy = policyWith(lookup)): HostPolicy => ({
+    lookup: policy.lookup,
+    check: (url) => (new URL(url).port === port ? null : policy.check(url)),
+  });
 
   /** Stands in for an internal-only service: a router admin console. */
   const internalPage = `<html><head><title>Router admin</title>
@@ -651,25 +650,80 @@ describe('HttpArticleFetcher outbound host policy (SSRF, security review finding
     return { ...server, hits };
   };
 
+  const expectRefused = (result: Awaited<ReturnType<HttpArticleFetcher['fetch']>>) => {
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') throw new Error('expected failed');
+    expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
+    expect(result.preview).toBeNull();
+  };
+
   it('refuses a loopback URL found directly in a post, without fetching it', async () => {
     const internal = await startInternal();
     try {
-      const result = await guarded().fetch(internal.url('/admin'));
-      expect(result.status).toBe('failed');
-      if (result.status !== 'failed') throw new Error('expected failed');
-      expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
-      expect(result.preview).toBeNull();
+      expectRefused(await guarded().fetch(internal.url('/admin')));
       expect(internal.hits.count).toBe(0);
     } finally {
       await internal.close();
     }
   });
 
-  it('refuses a host that merely RESOLVES into private space, not just a literal address', async () => {
-    const result = await guarded().fetch('http://internal.example/admin');
-    expect(result.status).toBe('failed');
-    if (result.status !== 'failed') throw new Error('expected failed');
-    expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
+  it('refuses a NAT64 literal that embeds loopback (finding 21)', async () => {
+    const internal = await startInternal();
+    try {
+      expectRefused(await guarded().fetch(`http://[64:ff9b::7f00:1]:${portOf(internal)}/admin`));
+      expect(internal.hits.count).toBe(0);
+    } finally {
+      await internal.close();
+    }
+  });
+
+  it('refuses a host that RESOLVES into private space when it connects, and never reaches it (finding 18)', async () => {
+    const internal = await startInternal();
+    try {
+      const result = await guarded().fetch(`http://rebind.attacker.test:${portOf(internal)}/admin`);
+      expectRefused(result);
+      expect(result.resolvedUrl).toBe(`http://rebind.attacker.test:${portOf(internal)}/admin`);
+      expect(internal.hits.count).toBe(0);
+    } finally {
+      await internal.close();
+    }
+  });
+
+  it('refuses a name whose record is a NAT64 translation of loopback (findings 18 + 21)', async () => {
+    const result = await guarded().fetch('http://nat64.attacker.test/admin');
+    expectRefused(result);
+  });
+
+  it('resolves each connection ONCE: a DNS server answering "fail, then loopback" gets no second question (finding 18)', async () => {
+    const internal = await startInternal();
+    let queries = 0;
+    const flaky = policyWith(async (hostname) => {
+      if (++queries === 1) throw Object.assign(new Error(`getaddrinfo ESERVFAIL ${hostname}`), { code: 'ESERVFAIL' });
+      return ['127.0.0.1'];
+    });
+    try {
+      const result = await guarded(flaky).fetch(`http://rebind.attacker.test:${portOf(internal)}/admin`);
+      expect(result.status).toBe('failed');
+      expect(internal.hits.count).toBe(0);
+      expect(queries).toBe(1);
+    } finally {
+      await internal.close();
+    }
+  });
+
+  it("connects to the address the policy's lookup returned, not to a second, independent resolution", async () => {
+    const internal = await startInternal();
+    // Opted in, so loopback is allowed - the point is WHERE the socket goes.
+    // `article.invalid` can never resolve for real, so reaching the server at
+    // all proves the connection used the policy's answer.
+    const optedIn = createHostPolicy({ allowPrivateAddresses: true, lookup: async () => ['127.0.0.1'] });
+    try {
+      const result = await guarded(optedIn).fetch(`http://article.invalid:${portOf(internal)}/admin`);
+      expect(result.preview?.title).toBe('ACME Router - Admin Console');
+      expect(internal.hits.count).toBe(1);
+    } finally {
+      await internal.close();
+    }
   });
 
   it('refuses an HTTP redirect from a public page into loopback - the hop `follow` would have hidden', async () => {
@@ -680,10 +734,7 @@ describe('HttpArticleFetcher outbound host policy (SSRF, security review finding
     });
 
     try {
-      const result = await guarded().fetch(`http://localhost:${portOf(bouncer)}/t/abc`);
-      expect(result.status).toBe('failed');
-      if (result.status !== 'failed') throw new Error('expected failed');
-      expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
+      expectRefused(await guarded(allowingPort(portOf(bouncer))).fetch(bouncer.url('/t/abc')));
       expect(internal.hits.count).toBe(0);
     } finally {
       await bouncer.close();
@@ -691,20 +742,36 @@ describe('HttpArticleFetcher outbound host policy (SSRF, security review finding
     }
   });
 
-  it('refuses a `<meta refresh>` interstitial bounce from a public page into loopback', async () => {
+  it('refuses an HTTP redirect into a NAME that resolves to loopback, checked when that hop connects', async () => {
+    const internal = await startInternal();
+    const bouncer = await startFixtureServer((_req, res) => {
+      res.writeHead(307, { Location: `http://internal.example:${portOf(internal)}/admin` });
+      res.end();
+    });
+
+    try {
+      expectRefused(await guarded(allowingPort(portOf(bouncer))).fetch(bouncer.url('/t/abc')));
+      expect(internal.hits.count).toBe(0);
+    } finally {
+      await bouncer.close();
+      await internal.close();
+    }
+  });
+
+  it.each([
+    ['a literal loopback URL', (port: string) => `http://127.0.0.1:${port}/admin`],
+    ['a name that resolves to loopback', (port: string) => `http://internal.example:${port}/admin`],
+  ])('refuses a `<meta refresh>` interstitial bounce from a public page into %s', async (_label, target) => {
     const internal = await startInternal();
     const bouncer = await startFixtureServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(
-        `<html><head><meta http-equiv="refresh" content="0; url=${internal.url('/admin')}"></head><body></body></html>`,
+        `<html><head><meta http-equiv="refresh" content="0; url=${target(portOf(internal))}"></head><body></body></html>`,
       );
     });
 
     try {
-      const result = await guarded().fetch(`http://localhost:${portOf(bouncer)}/t/abc`);
-      expect(result.status).toBe('failed');
-      if (result.status !== 'failed') throw new Error('expected failed');
-      expect(result.reason).toBe(PRIVATE_ADDRESS_REASON);
+      expectRefused(await guarded(allowingPort(portOf(bouncer))).fetch(bouncer.url('/t/abc')));
       expect(internal.hits.count).toBe(0);
     } finally {
       await bouncer.close();
@@ -724,11 +791,11 @@ describe('HttpArticleFetcher outbound host policy (SSRF, security review finding
     });
 
     try {
-      const result = await guarded().fetch(`http://localhost:${portOf(article)}/shortlink`);
+      const result = await guarded(allowingPort(portOf(article))).fetch(article.url('/shortlink'));
       expect(result.status).toBe('ok');
       if (result.status !== 'ok') throw new Error('expected ok');
       expect(result.title).toContain('Resolved Article');
-      expect(result.resolvedUrl).toBe(`http://localhost:${portOf(article)}/real-article`);
+      expect(result.resolvedUrl).toBe(article.url('/real-article'));
     } finally {
       await article.close();
     }
@@ -746,6 +813,87 @@ describe('HttpArticleFetcher outbound host policy (SSRF, security review finding
       expect(internal.hits.count).toBe(1);
     } finally {
       await internal.close();
+    }
+  });
+});
+
+/**
+ * Security review finding 10: the page body is read with a byte cap, counted
+ * AFTER decompression, so neither an endless stream nor a compression bomb can
+ * exhaust memory during a sync. Real sockets, a lowered cap to keep them small.
+ */
+describe('HttpArticleFetcher response size cap (security review finding 10)', () => {
+  const CAP = 64 * 1024;
+  const capped = () => new HttpArticleFetcher(5_000, { hostPolicy: openPolicy, maxBodyBytes: CAP });
+  const expectTooLarge = (result: Awaited<ReturnType<HttpArticleFetcher['fetch']>>) => {
+    expect(result).toMatchObject({ status: 'failed', reason: TOO_LARGE_REASON, preview: null });
+  };
+
+  it('defaults to about 5 MB', () => {
+    expect(MAX_ARTICLE_BYTES).toBe(5 * 1024 * 1024);
+  });
+
+  it('still reads a page under the cap', async () => {
+    const fixture = await startFixtureServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(ARTICLE_HTML);
+    });
+    try {
+      expect((await capped().fetch(fixture.url('/a'))).status).toBe('ok');
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('refuses a page whose declared Content-Length is over the cap', async () => {
+    const fixture = await startFixtureServer((_req, res) => {
+      const body = Buffer.alloc(CAP + 1, 'a');
+      res.writeHead(200, { 'content-type': 'text/html', 'content-length': String(body.length) });
+      res.end(body);
+    });
+    try {
+      expectTooLarge(await capped().fetch(fixture.url('/big')));
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('stops reading an endless chunked stream once it passes the cap', async () => {
+    let written = 0;
+    const fixture = await startFixtureServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      const chunk = Buffer.alloc(16 * 1024, 'a');
+      const pump = () => {
+        while (!res.destroyed && written < 100 * CAP && res.write(chunk)) written += chunk.length;
+        if (!res.destroyed && written < 100 * CAP) res.once('drain', pump);
+        else res.end();
+      };
+      res.on('close', () => res.destroy());
+      pump();
+    });
+    try {
+      expectTooLarge(await capped().fetch(fixture.url('/endless')));
+      expect(written).toBeLessThan(100 * CAP);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it('counts DECOMPRESSED bytes, so a small gzip body that inflates past the cap is refused', async () => {
+    const bomb = zlib.gzipSync(Buffer.alloc(CAP * 16, 'a'));
+    expect(bomb.length).toBeLessThan(CAP);
+    const fixture = await startFixtureServer((_req, res) => {
+      res.writeHead(200, {
+        'content-type': 'text/html',
+        'content-encoding': 'gzip',
+        'content-length': String(bomb.length),
+      });
+      res.end(bomb);
+    });
+    try {
+      expectTooLarge(await capped().fetch(fixture.url('/bomb')));
+    } finally {
+      await fixture.close();
     }
   });
 });

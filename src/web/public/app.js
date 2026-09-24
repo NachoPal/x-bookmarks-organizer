@@ -1144,8 +1144,11 @@
     container.appendChild(p);
   }
 
-  async function getJSON(url) {
-    const res = await fetch(url);
+  // `init` is for the rare JSON read that must not be a GET: the summary
+  // generates (and may spend) on a cache miss, so it is a POST, which the
+  // server's Origin guard covers (security review finding 6).
+  async function getJSON(url, init) {
+    const res = await fetch(url, init);
     if (!res.ok) {
       const err = new Error(`Request failed (${res.status})`);
       err.status = res.status;
@@ -5684,7 +5687,7 @@
     const seq = ++summaryRequestSeq;
     renderSummaryLoading();
 
-    getJSON(`/api/bookmarks/${bm.id}/summary`)
+    getJSON(`/api/bookmarks/${bm.id}/summary`, { method: "POST" })
       .then((data) => {
         if (seq !== summaryRequestSeq) return; // superseded by a newer open/retry
         renderSummaryResult(data.summary);

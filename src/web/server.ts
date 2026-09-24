@@ -364,9 +364,21 @@ function allowedHostsFor(port: number): Set<string> {
  *
  * The `Origin` half covers the state-changing routes a plain cross-origin form
  * can reach without a preflight (the body-less `POST /api/sync` and
- * `POST /api/x-login` of findings 5/6). The app's own `app.js` calls are
- * unaffected: their `Host` is the loopback the server is listening on, and
- * their `Origin`, when the browser sends one, is that same loopback.
+ * `POST /api/x-login` of finding 5, and the side-effecting
+ * `POST /api/bookmarks/:id/summary` of finding 6). It is skipped for GET and
+ * HEAD, which is why no route with a side effect may be a GET.
+ *
+ * The `Sec-Fetch-Site` half is the backstop for exactly that rule: a cross-site
+ * `<img>` or `<script>` carries the viewer's own loopback `Host` and no
+ * `Origin`, so the two checks above let it through, but every current browser
+ * labels it `cross-site` (or `same-site`, from another loopback port). No such
+ * request has any business with `/api/`, so it is refused whatever its method.
+ * A header-less client (curl, the tests) and the app's own `same-origin` calls
+ * are unaffected; a typed-in navigation is `none`.
+ *
+ * The app's own `app.js` calls pass all three: their `Host` is the loopback the
+ * server is listening on, and their `Origin`, when the browser sends one, is
+ * that same loopback.
  *
  * The port comes from the socket the server actually bound, so an overridden
  * `XBOOKMARKS_WEB_PORT` and a test's ephemeral port are both correct with no
@@ -376,6 +388,15 @@ function allowedHostsFor(port: number): Set<string> {
  */
 function installLocalOriginGuard(app: FastifyInstance): void {
   app.addHook('onRequest', async (req, reply) => {
+    // Judged on the route matched as well as the raw path, so a
+    // percent-encoded or otherwise disguised path cannot reach an `/api/`
+    // handler around it.
+    const site = req.headers['sec-fetch-site'];
+    const isApi = req.url.startsWith('/api/') || req.routeOptions.url?.startsWith('/api/') === true;
+    if ((site === 'cross-site' || site === 'same-site') && isApi) {
+      return reply.code(403).send({ error: CROSS_ORIGIN_MESSAGE });
+    }
+
     const address = app.server.address();
     if (address === null || typeof address === 'string') return;
     const allowed = allowedHostsFor(address.port);
@@ -1244,7 +1265,12 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // summary. 503 (not 500) signals the graceful no-token degradation the
   // owner sees as a clear message rather than a crash or a hang; 422 signals
   // the bookmark simply holds nothing summarizable (see below).
-  app.get<{ Params: { id: string } }>('/api/bookmarks/:id/summary', async (req, reply) => {
+  //
+  // A POST, not a GET, although it answers with data: a cache miss fetches the
+  // article, calls the model (which may bill per token) and writes a row, and a
+  // cross-site `<img>` can issue a GET but not a POST that survives the Origin
+  // guard (security review finding 6).
+  app.post<{ Params: { id: string } }>('/api/bookmarks/:id/summary', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
 
