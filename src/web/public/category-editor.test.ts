@@ -13,6 +13,13 @@ const {
   confirmLabel,
   deletedSummary,
   selectionSurvives,
+  isOwner,
+  originToggle,
+  originAnnouncement,
+  findConfirm,
+  findProgressLine,
+  findDoneMessage,
+  findUndoneMessage,
 } = require("./category-editor.js");
 
 /** A minimal in-memory Storage stand-in so these tests don't need jsdom. */
@@ -206,5 +213,61 @@ describe("selectionSurvives", () => {
   it("is true when the open category was untouched", () => {
     expect(selectionSurvives(5, [1, 2, 3])).toBe(true);
     expect(selectionSurvives(5, undefined)).toBe(true);
+  });
+});
+
+describe("the owner's own categories", () => {
+  it("presses the toggle on an owner category, and offers to claim a generated one", () => {
+    expect(isOwner({ origin: "user" })).toBe(true);
+    expect(isOwner({ origin: "generated" })).toBe(false);
+    expect(isOwner(null)).toBe(false);
+    const mine = originToggle({ name: "Rust", origin: "user" });
+    expect(mine).toMatchObject({ pressed: true, next: "generated", label: "“Rust” is your category" });
+    expect(mine.title).toMatch(/never rename, move or delete/);
+    const made = originToggle({ name: "AI", origin: "generated" });
+    expect(made).toMatchObject({ pressed: false, next: "user", label: "Keep “AI” as your category" });
+    expect(originAnnouncement("AI", "user")).toMatch(/now your category/);
+    expect(originAnnouncement("AI", "generated")).toMatch(/back with the automatic organizer/);
+  });
+});
+
+describe("find bookmarks for a category", () => {
+  const sub = { billing: "subscription" };
+  const perToken = { billing: "per-token" };
+
+  it("states the scope, and says paid on the button only for a per-token model", () => {
+    const free = findConfirm("Rust", { available: true, candidates: 12, spend: sub });
+    expect(free).toMatchObject({ canStart: true, paid: false, label: "Find bookmarks" });
+    expect(free.sentence).toBe(
+      "Checks the 12 bookmarks not already in “Rust” and adds the ones that fit. Nothing is removed from any other category.",
+    );
+    expect(findConfirm("Rust", { available: true, candidates: 1, spend: perToken })).toMatchObject({
+      canStart: true,
+      paid: true,
+      label: "Start paid search",
+    });
+  });
+
+  it("cannot start with nothing to check, or when the model cannot run", () => {
+    expect(findConfirm("Rust", { available: true, candidates: 0, spend: sub })).toMatchObject({
+      canStart: false,
+      sentence: "Every bookmark is already in “Rust”.",
+    });
+    expect(findConfirm("Rust", { available: false, reason: "The claude CLI was not found." })).toMatchObject({
+      canStart: false,
+      sentence: "The claude CLI was not found.",
+    });
+    expect(findConfirm("Rust", undefined).canStart).toBe(false);
+  });
+
+  it("reports progress and the outcome", () => {
+    expect(findProgressLine({ state: "running", messages: [] })).toBe("Finding bookmarks…");
+    expect(findProgressLine({ state: "running", messages: ["a", "Batch 1/2: 3 match(es)."] })).toBe("Batch 1/2: 3 match(es).");
+    expect(findProgressLine({ state: "error", error: "boom" })).toBe("boom");
+    const summary = { categoryName: "Rust", checked: 10, added: 3 };
+    expect(findProgressLine({ state: "done", summary })).toBe("Added 3 bookmarks to “Rust”.");
+    expect(findDoneMessage({ categoryName: "Rust", checked: 10, added: 0 })).toBe("No other bookmarks fit “Rust”.");
+    expect(findDoneMessage({ categoryName: "Rust", checked: 0, added: 0 })).toBe("Every bookmark is already in “Rust”.");
+    expect(findUndoneMessage("Rust", 1)).toBe("Removed 1 bookmark from “Rust” again.");
   });
 });

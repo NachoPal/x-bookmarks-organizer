@@ -190,25 +190,27 @@
   }
 
   /**
-   * Which job the ONE shared progress strip is showing (issue #98).
-   *
-   * Sync and ranking both write their progress into the same strip now, which
-   * is only safe because the server refuses to run them at once (`/api/sync`
-   * and `/api/rank` each 409 on the other). So: a RUNNING job always wins, and
-   * with neither running the one that started most recently keeps the strip -
-   * the owner is looking at the run they just watched, not at a stale one.
-   * Null means neither has anything to show and the strip stays hidden.
+   * Which job owns the ONE shared progress strip (issue #98): a sync, a
+   * ranking run, or a "find bookmarks" run - all one-at-a-time server jobs
+   * whose progress is their own log. A RUNNING job wins; otherwise the most
+   * recently started one, a tie going to the later job in the argument list.
+   * Returns "sync", "rank", "find", or null when none has anything to show.
    */
-  function progressSource(syncStatus, rankStatus) {
+  function progressSource(syncStatus, rankStatus, findStatus) {
     var live = function (s) { return s && s.state && s.state !== "idle" ? s : null; };
-    var sync = live(syncStatus);
-    var rank = live(rankStatus);
-    if (!sync && !rank) return null;
-    if (!sync) return "rank";
-    if (!rank) return "sync";
-    if (rank.state === "running" && sync.state !== "running") return "rank";
-    if (sync.state === "running" && rank.state !== "running") return "sync";
-    return (rank.startedAt || "") >= (sync.startedAt || "") ? "rank" : "sync";
+    var candidates = [
+      { id: "sync", status: live(syncStatus) },
+      { id: "rank", status: live(rankStatus) },
+      { id: "find", status: live(findStatus) },
+    ].filter(function (c) { return c.status; });
+    if (candidates.length === 0) return null;
+    var running = candidates.filter(function (c) { return c.status.state === "running"; });
+    var pool = running.length > 0 ? running : candidates;
+    var best = pool[0];
+    for (var i = 1; i < pool.length; i++) {
+      if ((pool[i].status.startedAt || "") >= (best.status.startedAt || "")) best = pool[i];
+    }
+    return best.id;
   }
 
   var api = {

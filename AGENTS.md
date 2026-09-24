@@ -48,7 +48,8 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus 5.5 at medium effort by default - `DEFAULT_TAXONOMY_EFFORT` in `config.ts`, the settings catalog's `defaultEffort` - configurable) so
   the tree is genuinely deep; pass 2 files each bookmark into that fixed tree in batches
   (`src/categorize/prompt.ts`, Haiku-class to conserve quota). Pass 1 (the expensive Opus pass)
-  runs ONLY on the first run (empty tree) and on `recategorize`. An incremental `run` against an
+  runs ONLY on the first run (no GENERATED category yet - `needsTaxonomyDesign`; the owner's own
+  categories do not count, see "Owner categories" below) and on `recategorize`. An incremental `run` against an
   existing tree SKIPS pass 1 entirely and never re-touches stored bookmarks: it runs only the cheap
   assignment pass over the NEW bookmarks in `extend` mode (`buildExtendPrompt`), reusing existing
   nodes and creating one only when nothing fits (resolver `resolveOrCreatePathToLeafId`, capped at
@@ -56,6 +57,20 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   nodes - off-tree paths fall back to `Uncategorized`. `recategorize` rebuilds both passes over all
   stored bookmarks without re-fetching, preserving read state/dates (it designs the new taxonomy
   BEFORE clearing the old one, so a failed LLM call never wipes the DB).
+- **Owner categories are never changed by any automated pass.** `categories.origin` is `user`
+  (made in the category editor via `createCategory`, or claimed with the row's person toggle,
+  `PUT /api/categories/:id/origin`) or `generated` (everything the passes make; every pre-existing
+  row migrated as generated). The guarantee lives in code, not only prompts: `getOrCreateCategory`
+  never re-describes a user row, `materializeTaxonomy`/the extend resolver merge into user
+  categories via `findMergeTarget` (exact sibling, near-duplicate `nameKey` sibling, a re-rooted
+  unique owner name at the TOP of a path, or an owner ROOT minted deeper - never a deeper owner
+  node from a deeper segment), the strict resolver rescues a wrong-prefix path that names an owner
+  category (`resolveViaOwnerAnchor`), and `recategorize` uses `clearGeneratedCategories`, which
+  keeps user rows, their ancestors (`parent_id` cascades, so an ancestor must survive) and their
+  links. Pass 1 on a first run or `recategorize` is ANCHORED: it is shown the owner tree (pruned
+  to protected ids for `recategorize`) instead of the empty tree. Every prompt tree marks user
+  rows `[owner]` (`renderTreeForPrompt`); `stripOwnerMarker` removes it wherever a model echoes it.
+  Reset library still wipes them (it says "every category").
 - **Pass 1 is sized against the taxonomy model's context window** (issue #109,
   `src/categorize/taxonomy-budget.ts`). The window comes from the provider catalog that already
   exists (`describe('taxonomy').contextWindow`, else the client's `contextWindow()` catalog read -
@@ -747,6 +762,18 @@ Escape inside any modal over the tree must not also collapse the sidebar: the si
 Escape handler bails on `isCatEditorOpen() || isCatDeleteOpen() || isMovePickerOpen()`, the same
 way it already bailed for the settings popover and the setup dialog. Without it the drawer closed
 underneath, went `inert`, and the pencil the editor hands focus back to could not take it.
+
+## Find bookmarks for a category
+
+The editor row's magnifier asks the FILING (assignment-role) model which already-stored bookmarks
+outside the category's subtree belong in it (`src/categorize/find.ts`, a narrow one-category
+prompt, not the full filing prompt) and ADDS links only (`addBookmarksToCategory`; undo is
+`removeBookmarksFromCategory`, which never strands a post). It runs as a `FindRunner` job
+(`src/web/find-job.ts`; `JobRunner.start(job)` takes a per-run job) that shares the one progress
+strip (`XBORanking.progressSource`'s third job) and holds sync, reset and category writes back
+while it runs. A per-token filing model makes `POST /api/categories/:id/find-bookmarks` demand
+`{ confirm: true }`, re-checked at the POST; the preview GET is free. Jev is never used here -
+with `categorizer: typesafe` it runs on the assignment role's LLM (Jev's fallback provider).
 
 ## Manual move to another category (issues #92, #99)
 

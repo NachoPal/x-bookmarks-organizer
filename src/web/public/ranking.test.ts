@@ -19,7 +19,7 @@ const ranking = require('./ranking.js') as {
   confirmLabel: (r: unknown) => string;
   confirmCostOne: (r?: unknown) => string;
   confirmLabelOne: (r?: unknown) => string;
-  progressSource: (sync: unknown, rank: unknown) => string | null;
+  progressSource: (sync: unknown, rank: unknown, find?: unknown) => string | null;
   blockerHeadline: (m: unknown) => string;
   blockerDetail: (m: unknown) => string;
   progressLine: (s: unknown) => string;
@@ -173,6 +173,22 @@ describe('progressSource - which job owns the ONE shared strip (issue #98)', () 
   it('otherwise keeps the run the owner just watched - the most recent one', () => {
     expect(ranking.progressSource(done('2024-01-01T00:00:00Z'), done('2024-01-02T00:00:00Z'))).toBe('rank');
     expect(ranking.progressSource(done('2024-01-03T00:00:00Z'), done('2024-01-02T00:00:00Z'))).toBe('sync');
+  });
+});
+
+describe('progressSource - a "find bookmarks" run shares the strip too', () => {
+  const running = (startedAt: string) => ({ state: 'running', startedAt, messages: [] });
+  const done = (startedAt: string) => ({ state: 'done', startedAt, messages: [] });
+
+  it('shows a find on its own, and gives a running find the strip over finished jobs', () => {
+    expect(ranking.progressSource(null, null, done('1'))).toBe('find');
+    expect(ranking.progressSource(done('3'), done('3'), running('1'))).toBe('find');
+    expect(ranking.progressSource(running('1'), null, done('2'))).toBe('sync');
+  });
+
+  it('otherwise keeps the most recent of the three', () => {
+    expect(ranking.progressSource(done('2'), done('1'), done('3'))).toBe('find');
+    expect(ranking.progressSource(done('2'), done('3'), done('1'))).toBe('rank');
   });
 });
 

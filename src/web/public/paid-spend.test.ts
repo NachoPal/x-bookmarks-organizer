@@ -20,6 +20,7 @@ const paid = require('./paid-spend.js') as {
   syncConfirmCost: (passes: unknown[]) => string;
   syncPassLine: (pass: unknown) => { label: string; detail: string };
   syncConfirmLabel: (passes?: unknown[]) => string;
+  findCostSentence: (s: unknown) => string;
 };
 
 const SONNET = {
@@ -104,5 +105,22 @@ describe('the paid-sync confirmation', () => {
     });
     expect(paid.syncPassLine(passes[1])).toEqual({ label: 'Filing pass', detail: 'Jev (jev-latest) via typesafe' });
     expect(paid.syncConfirmLabel(passes)).toBe('Start paid sync');
+  });
+});
+
+describe('findCostSentence - what "Find bookmarks" says about its model', () => {
+  it('names the per-token price of a paid filing model', () => {
+    const text = paid.findCostSentence({ ...SONNET, price: { input: 3, output: 15 } });
+    expect(text).toMatch(/^Billed per token to your own account: /);
+    expect(text).toContain('$3 in / $15 out per 1M tokens');
+  });
+
+  it('says a subscription or local model is not billed per call', () => {
+    const sub = { providerId: 'claude-cli', model: 'anthropic/claude-haiku-4-5', modelLabel: 'Claude Haiku 4.5', billing: 'subscription' };
+    expect(paid.findCostSentence(sub)).toBe(
+      'Uses your filing model, Claude Haiku 4.5 via claude-cli - runs on your subscription, no per-call charge.',
+    );
+    expect(paid.findCostSentence({ ...sub, billing: 'local' })).toContain('runs locally');
+    expect(paid.findCostSentence(null)).toBe('');
   });
 });

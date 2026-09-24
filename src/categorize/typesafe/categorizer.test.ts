@@ -315,3 +315,24 @@ describe('TypeSafeCategorizer', () => {
     for (const assignment of result) expect(assignment.categories).toEqual([['AI', 'Research']]);
   });
 });
+
+describe('owner categories on the Jev path', () => {
+  let db: Database;
+  beforeEach(() => {
+    db = new Database(':memory:');
+    materializeTaxonomy(db, TAXONOMY, 4, WHEN);
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it('offers an owner category at its level like any other node, and files into it', async () => {
+    const rust = db.createCategory('Rust', null, WHEN)!;
+    const asker = fakeAsker(confidentlyPick(['Rust']));
+    const categorizer = new TypeSafeCategorizer({ db, asker });
+    const out = await categorizer.categorizeBatch([bookmark('1')], '(ignored)', 'strict');
+    expect(asker.calls[0]!.options.map((o) => o.name)).toContain('Rust');
+    expect(out).toEqual([{ postId: '1', categories: [['Rust']] }]);
+    expect(db.getCategoryById(rust.id)!.origin).toBe('user');
+  });
+});

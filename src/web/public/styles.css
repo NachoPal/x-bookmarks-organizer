@@ -4567,7 +4567,9 @@ body.is-card-dragging .tree-node {
   width: calc(var(--ced-depth, 0) * var(--tree-indent));
 }
 .ced-bin,
-.ced-twisty {
+.ced-twisty,
+.ced-find,
+.ced-owner {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -4600,9 +4602,50 @@ body.is-card-dragging .tree-node {
   color: var(--color-text-disabled);
   background: none;
 }
-.ced-twisty:hover {
+.ced-twisty:hover,
+.ced-find:hover,
+.ced-owner:hover {
   background: var(--color-surface-2);
   color: var(--color-text);
+}
+.ced-find:active,
+.ced-owner:active {
+  border-color: var(--color-border-strong);
+}
+.ced-find:disabled,
+.ced-owner:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+  background: none;
+}
+/* Loading is the busy request behind a press: the control keeps its box and
+   its glyph, and reads as waiting rather than as switched off. */
+.ced-find[aria-busy="true"],
+.ced-owner[aria-busy="true"] {
+  cursor: progress;
+}
+.ced-find .icon-find,
+.ced-owner .icon-owner {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+/* The owner's own category: the glyph FILLS (a shape change, not only a
+   color) and takes the accent - the editor's indicator of "yours, kept as it
+   is by every sync". At rest it is an outline in the muted ink. */
+.ced-owner .icon-owner circle,
+.ced-owner .icon-owner path {
+  fill: none;
+}
+.ced-owner[aria-pressed="true"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.ced-owner[aria-pressed="true"] .icon-owner circle,
+.ced-owner[aria-pressed="true"] .icon-owner path {
+  fill: currentColor;
+}
+.ced-owner[aria-pressed="true"]:hover {
+  border-color: var(--color-accent);
 }
 .ced-twisty .ced-chev {
   transition: transform var(--motion-med) var(--ease);
@@ -4732,6 +4775,8 @@ body.is-card-dragging .tree-node {
 
 @media (prefers-reduced-motion: reduce) {
   .ced-bin,
+  .ced-find,
+  .ced-owner,
   .ced-twisty,
   .ced-twisty .ced-chev,
   .ced-add {

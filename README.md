@@ -58,8 +58,10 @@ It is not a knowledge graph, not multi-user, and not hosted - see the
      the labels and structure, targeting a minimum nesting depth (`XBOOKMARKS_MIN_DEPTH`, default
      3). This is the hard, large-context step, so it runs on an Opus-class model (Claude Opus 5.5) at medium effort
      (`XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT`). It runs **only on the first run**
-     (when no tree exists yet) and whenever you run `recategorize`. Incremental runs against an
-     existing tree **skip** this pass to conserve quota.
+     (when no generated tree exists yet) and whenever you run `recategorize`. Incremental runs
+     against an existing tree **skip** this pass to conserve quota. Categories you added yourself
+     (see [Your own categories](#your-own-categories)) do not count as a tree: a first sync still
+     designs one, keeping yours exactly as they are and building around and inside them.
   2. **Assignment.** Each bookmark is filed into the tree - by default a Haiku-class Claude model
      (`XBOOKMARKS_MODEL`) to conserve subscription quota, or optionally a paid alternative (see
      [Choosing the assignment categorizer](#choosing-the-assignment-categorizer-optional-opt-in-paid)
@@ -84,7 +86,8 @@ It is not a knowledge graph, not multi-user, and not hosted - see the
 - **Category editor** - the pencil beside the sidebar's "Categories" heading adds or deletes
   categories by hand. Deleting a category deletes **only** the bookmarks it would orphan: a post
   also filed under a surviving category is kept, just unlinked from the deleted one. The
-  confirmation dialog always previews the exact count before you commit.
+  confirmation dialog always previews the exact count before you commit. Categories you add here
+  are yours - see [Your own categories](#your-own-categories).
 - **Sync / Reset** - the Sync control in the top bar runs an incremental ingest + categorize from
   the browser, showing the same progress the CLI prints. Reset library (same panel) wipes the
   local library back to never-synced (bookmarks, categories, scores) so the next sync re-pulls
@@ -102,6 +105,30 @@ It is not a knowledge graph, not multi-user, and not hosted - see the
   value against an editable rubric; see
   [Ranking bookmarks by learning value](#ranking-bookmarks-by-learning-value-optional-opt-in-paid)
   below.
+
+### Your own categories
+
+A category you add in the category editor is **yours** (the person icon on its row is filled).
+You can add them before the first sync or between syncs. The automatic organizer never renames,
+moves, re-describes or deletes one of your categories - on a sync, a `recategorize`, or with any
+filing method - it only files posts into them and may create new sub-categories inside them:
+
+- **First sync** with your categories already there: the taxonomy pass still designs a full tree,
+  with yours as fixed anchors, then files every bookmark strictly into the merged tree.
+- **Later syncs** file the new bookmarks into the existing tree and prefer your categories when a
+  post fits; a new category that only restates one of yours ("LLM" next to your "LLMs") is merged
+  into yours instead of created.
+- **`recategorize`** keeps your categories (with the categories that hold them in place, and the
+  posts already in them) and rebuilds only the generated rest around them.
+- **Find bookmarks** (the magnifier on a row) runs the filing model over the bookmarks you have
+  already synced and **adds** the ones that fit to that category - nothing is removed from any other
+  category. It is the way to fill a category you added between syncs, since a sync only files new
+  bookmarks. The dialog says how many bookmarks it checks and how the filing model is billed; a
+  per-token model must be confirmed first, like a paid sync. The result toast offers Undo.
+
+Categories that existed before this feature were all made by the organizer as far as the app can
+tell, so they start as generated. Press the person icon on any row to make it yours (or to hand it
+back). Reset library still deletes every category, yours included.
 
 ## Prerequisites
 
@@ -218,7 +245,8 @@ It prints a summary: how many new bookmarks, how many batches, how many new cate
 
 **Re-categorize** (optional) - rebuild the taxonomy and reassign **all** already-stored bookmarks
 from scratch, without re-fetching from X. Use this to redo a shallow earlier run, or after changing
-the taxonomy model / depth settings. Read state and read dates are preserved:
+the taxonomy model / depth settings. Read state and read dates are preserved, and so are
+[your own categories](#your-own-categories) - only the generated ones are rebuilt, around yours:
 
 ```bash
 node dist/index.js recategorize

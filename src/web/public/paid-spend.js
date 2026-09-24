@@ -143,6 +143,20 @@
     return "Start paid sync";
   }
 
+  /**
+   * What "Find bookmarks" says about the filing model it runs on: the price
+   * when it is billed per token, otherwise which model and that it is not.
+   */
+  function findCostSentence(spend) {
+    if (!spend) return "";
+    if (isPaid(spend)) {
+      var price = priceText(spend.price);
+      return "Billed per token to your own account: " + modelText(spend) + (price ? " (" + price + ")" : "") + ".";
+    }
+    var free = spend.billing === "local" ? "runs locally" : "runs on your subscription, no per-call charge";
+    return "Uses your filing model, " + modelText(spend) + " - " + free + ".";
+  }
+
   var api = {
     isPaid: isPaid,
     priceText: priceText,
@@ -158,6 +172,7 @@
     syncConfirmCost: syncConfirmCost,
     syncPassLine: syncPassLine,
     syncConfirmLabel: syncConfirmLabel,
+    findCostSentence: findCostSentence,
   };
 
   root.XBOPaidSpend = api;

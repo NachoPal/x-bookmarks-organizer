@@ -677,7 +677,7 @@
       // the dialog AND collapsed the drawer behind it - which for the
       // category editor also stranded focus, because the pencil it returns
       // the keyboard to is inside the drawer that just went `inert`.
-      if (isCatEditorOpen() || isCatDeleteOpen() || isMovePickerOpen() || isRubricOpen()) return;
+      if (isCatEditorOpen() || isCatDeleteOpen() || isCatFindOpen() || isMovePickerOpen() || isRubricOpen()) return;
       // And the two paid confirmations, which own Escape the same way.
       if (isRankOpen() || isSyncConfirmOpen()) return;
       setCollapsed(true);
@@ -2501,6 +2501,32 @@
     return svg;
   }
 
+  function findIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-find");
+    svg.innerHTML =
+      '<circle cx="8.5" cy="8.5" r="5" fill="none" stroke="currentColor" stroke-width="1.5" />' +
+      '<path d="M12.2 12.2l4.3 4.3M8.5 6.4v4.2M6.4 8.5h4.2" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.5" stroke-linecap="round" />';
+    return svg;
+  }
+
+  /** The owner's-category glyph: outlined at rest, FILLED when pressed (CSS) - shape, not only color. */
+  function ownerIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-owner");
+    svg.innerHTML =
+      '<circle cx="10" cy="6.6" r="3" stroke="currentColor" stroke-width="1.5" />' +
+      '<path d="M4.3 16.5c.4-3 2.8-5 5.7-5s5.3 2 5.7 5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />';
+    return svg;
+  }
+
   function sparkleIcon() {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 20 20");
@@ -2558,6 +2584,7 @@
     syncConfirmCost: () => "This sync includes a pass billed per token.",
     syncPassLine: (p) => ({ label: (p && p.label) || "Pass", detail: "" }),
     syncConfirmLabel: () => "Start paid sync",
+    findCostSentence: () => "",
   };
 
   function paidSpend() {
@@ -4300,6 +4327,7 @@
   function closeCategoryEditor() {
     if (!isCatEditorOpen()) return;
     if (isCatDeleteOpen()) closeCatDelete({ returnFocus: false });
+    if (isCatFindOpen()) closeCatFind({ returnFocus: false });
     catEditorModalEl.hidden = true;
     catEditorBackdropEl.hidden = true;
     document.removeEventListener("keydown", onCatEditorKeydown);
@@ -4393,6 +4421,30 @@
       const count = el("span", "ced-count", String(node.total));
       count.setAttribute("aria-label", `${node.total} bookmarks`);
       row.appendChild(count);
+
+      // Find stored bookmarks that fit this category - most useful on one the
+      // owner just added, which a sync only ever fills with NEW posts.
+      const find = el("button", "ced-find");
+      find.type = "button";
+      find.dataset.categoryId = String(node.id);
+      find.setAttribute("aria-label", `Find bookmarks for “${node.name}”`);
+      find.title = `Find stored bookmarks that fit “${node.name}”`;
+      find.appendChild(findIcon());
+      find.addEventListener("click", () => void requestFindBookmarks(node, find));
+      row.appendChild(find);
+
+      // "This one is mine": pressed on the owner's categories, which no sync
+      // or re-organizing may change. The filled glyph is the row's indicator.
+      const toggle = editor().originToggle(node);
+      const owner = el("button", "ced-owner");
+      owner.type = "button";
+      owner.dataset.categoryId = String(node.id);
+      owner.setAttribute("aria-pressed", String(toggle.pressed));
+      owner.setAttribute("aria-label", toggle.label);
+      owner.title = toggle.title;
+      owner.appendChild(ownerIcon());
+      owner.addEventListener("click", () => void toggleCategoryOrigin(node, owner));
+      row.appendChild(owner);
       li.appendChild(row);
 
       // The group holds this node's children AND the one "+" that files a
@@ -4715,12 +4767,258 @@
     showToast(summary);
   }
 
+  // --- the owner's own categories -------------------------------------------
+
+  /**
+   * Mark a category as the owner's, or hand it back. The tree is reloaded
+   * from the server's answer (origin rides on every node), and focus is put
+   * back on the same toggle in the re-rendered row.
+   */
+  async function toggleCategoryOrigin(node, btn) {
+    if (!catEditor || catEditor.busy) return;
+    const next = editor().originToggle(node).next;
+    showCatEditorError(null);
+    catEditor.busy = true;
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    try {
+      const res = await fetch(`/api/categories/${node.id}/origin`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ origin: next }),
+      });
+      if (!res.ok) {
+        const failure = await res.json().catch(() => ({}));
+        throw new Error(failure.error || "Could not change that category.");
+      }
+    } catch (err) {
+      catEditor.busy = false;
+      btn.disabled = false;
+      btn.removeAttribute("aria-busy");
+      showCatEditorError(err.message);
+      return;
+    }
+    catEditor.busy = false;
+    await loadTree();
+    if (!isCatEditorOpen()) return;
+    renderCategoryEditor();
+    const again = catEditorTreeEl.querySelector(`.ced-owner[data-category-id="${node.id}"]`);
+    if (again) again.focus();
+    announceCatEditor(editor().originAnnouncement(node.name, next));
+  }
+
+  // --- "Find bookmarks for this category" -----------------------------------
+
+  const catFindModalEl = document.getElementById("cat-find-modal");
+  const catFindBackdropEl = document.getElementById("cat-find-backdrop");
+  const catFindTitleEl = document.getElementById("cat-find-title");
+  const catFindTextEl = document.getElementById("cat-find-text");
+  const catFindCostEl = document.getElementById("cat-find-cost");
+  const catFindCostTextEl = document.getElementById("cat-find-cost-text");
+  const catFindModelEl = document.getElementById("cat-find-model");
+  const catFindWarningEl = document.getElementById("cat-find-warning");
+  const catFindErrorEl = document.getElementById("cat-find-error");
+  const catFindCancelBtn = document.getElementById("cat-find-cancel");
+  const catFindConfirmBtn = document.getElementById("cat-find-confirm");
+
+  /** The open confirmation: its category, its preview, its trigger. */
+  let catFind = null;
+  /** The category the last find ran for - what "Try again" reopens. */
+  let lastFindNode = null;
+  let findPollTimer = null;
+  const FIND_POLL_MS = 1500;
+
+  function isCatFindOpen() {
+    return !!catFindModalEl && !catFindModalEl.hidden;
+  }
+
+  /**
+   * The magnifier. Reads the preview first - how many bookmarks it would
+   * check, on which model, billed how - so the dialog never states a number
+   * or a price it guessed.
+   */
+  async function requestFindBookmarks(node, triggerEl) {
+    if (catEditor && catEditor.busy) return;
+    if (catEditor) showCatEditorError(null);
+    if (triggerEl) {
+      triggerEl.disabled = true;
+      triggerEl.setAttribute("aria-busy", "true");
+    }
+    let preview;
+    try {
+      preview = await getJSON(`/api/categories/${node.id}/find-bookmarks`);
+    } catch (err) {
+      const message = (err.body && err.body.error) || "Could not work out what finding bookmarks would check.";
+      if (catEditor) showCatEditorError(message);
+      else showToast(message);
+      return;
+    } finally {
+      if (triggerEl) {
+        triggerEl.disabled = false;
+        triggerEl.removeAttribute("aria-busy");
+      }
+    }
+    openCatFind(node, preview, triggerEl);
+  }
+
+  function openCatFind(node, preview, triggerEl) {
+    if (!catFindModalEl) return;
+    const view = editor().findConfirm(node.name, preview);
+    catFind = { node, preview, view, trigger: triggerEl };
+    catFindTitleEl.textContent = `Find bookmarks for “${node.name}”?`;
+    catFindTextEl.textContent = view.sentence;
+    const cost = view.canStart && preview.spend ? paidSpend().findCostSentence(preview.spend) : "";
+    catFindCostEl.hidden = !(view.canStart && view.paid);
+    catFindCostTextEl.textContent = view.paid ? cost : "";
+    catFindModelEl.hidden = !(view.canStart && !view.paid && cost);
+    catFindModelEl.textContent = view.paid ? "" : cost;
+    catFindWarningEl.hidden = !(view.canStart && preview.warning);
+    catFindWarningEl.textContent = preview.warning || "";
+    catFindErrorEl.hidden = true;
+    catFindErrorEl.textContent = "";
+    catFindConfirmBtn.textContent = view.label;
+    catFindConfirmBtn.disabled = !view.canStart;
+    catFindConfirmBtn.classList.remove("is-loading");
+    catFindBackdropEl.hidden = false;
+    catFindModalEl.hidden = false;
+    catFindCancelBtn.focus();
+    document.addEventListener("keydown", onCatFindKeydown);
+  }
+
+  function closeCatFind(opts) {
+    if (!isCatFindOpen()) return;
+    catFindModalEl.hidden = true;
+    catFindBackdropEl.hidden = true;
+    document.removeEventListener("keydown", onCatFindKeydown);
+    const trigger = catFind && catFind.trigger;
+    catFind = null;
+    if (opts && opts.returnFocus === false) return;
+    if (trigger && trigger.isConnected) trigger.focus();
+  }
+
+  /**
+   * Start the run. A per-token model sends `{ confirm: true }` - pressing the
+   * button that SAID "paid" is the authorization - and a 400 asking for it
+   * (the model became paid after the dialog opened) re-renders the dialog as
+   * paid instead of starting anything.
+   */
+  async function confirmCatFind() {
+    if (!catFind) return;
+    const { node, view } = catFind;
+    catFindConfirmBtn.disabled = true;
+    catFindConfirmBtn.classList.add("is-loading");
+    catFindErrorEl.hidden = true;
+    let res;
+    try {
+      res = await fetch(`/api/categories/${node.id}/find-bookmarks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(view.paid ? { confirm: true } : {}),
+      });
+    } catch (_) {
+      res = null;
+    }
+    if (!res || !res.ok) {
+      const body = res ? await res.json().catch(() => ({})) : {};
+      if (res && res.status === 400 && body.confirmRequired) {
+        openCatFind(node, Object.assign({}, catFind.preview, { spend: body.spend }), catFind.trigger);
+        return;
+      }
+      catFindErrorEl.textContent = body.error || "Could not start finding bookmarks.";
+      catFindErrorEl.hidden = false;
+      catFindConfirmBtn.disabled = false;
+      catFindConfirmBtn.classList.remove("is-loading");
+      return;
+    }
+    const body = await res.json();
+    lastFindNode = node;
+    // The run owns the shared strip under the tabs; the dialogs step aside so
+    // the owner can watch it (and keep browsing) while it works.
+    closeCatFind({ returnFocus: false });
+    closeCategoryEditor();
+    renderFindProgress(body.status);
+    pollFind();
+  }
+
+  function pollFind() {
+    if (findPollTimer) return;
+    const tick = async () => {
+      let data;
+      try {
+        data = await getJSON("/api/find-bookmarks");
+      } catch (_) {
+        return; // transient; the next tick tries again
+      }
+      const status = data.status;
+      renderFindProgress(status);
+      if (status && (status.state === "done" || status.state === "error")) {
+        stopFindPolling();
+        if (status.state === "done") await refreshAfterFind(status.summary);
+      }
+    };
+    findPollTimer = setInterval(tick, FIND_POLL_MS);
+    void tick();
+  }
+
+  function stopFindPolling() {
+    if (!findPollTimer) return;
+    clearInterval(findPollTimer);
+    findPollTimer = null;
+  }
+
+  /**
+   * A find ADDS posts to one category: its counts and every cached view that
+   * could now be missing a post are stale, so it refreshes like a sync does,
+   * then states the outcome with Undo (the exact links it added) and View.
+   */
+  async function refreshAfterFind(summary) {
+    await refreshAfterSync();
+    if (!summary) return;
+    const actions = [];
+    if (summary.added > 0) {
+      actions.push({ label: "Undo", onClick: () => void undoFind(summary) });
+      actions.push({ label: "View", onClick: () => void selectCategoryById(summary.categoryId) });
+    }
+    showToast(editor().findDoneMessage(summary), { actions, duration: actions.length ? 10000 : undefined });
+  }
+
+  async function undoFind(summary) {
+    let res;
+    try {
+      res = await fetch(`/api/categories/${summary.categoryId}/find-bookmarks/undo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookmarkIds: summary.addedBookmarkIds }),
+      });
+    } catch (_) {
+      res = null;
+    }
+    const body = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok) {
+      showToast(body.error || "Could not undo that.");
+      return;
+    }
+    await refreshAfterSync();
+    showToast(editor().findUndoneMessage(summary.categoryName, body.removed));
+  }
+
+  function onCatFindKeydown(e) {
+    if (!isCatFindOpen()) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeCatFind();
+      return;
+    }
+    trapModalFocus(catFindModalEl, e);
+  }
+
   // --- keyboard -------------------------------------------------------------
 
   function onCatEditorKeydown(e) {
     if (!isCatEditorOpen()) return;
     // The confirmation is on top and owns the keyboard while it is open.
-    if (isCatDeleteOpen()) return;
+    if (isCatDeleteOpen() || isCatFindOpen()) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
@@ -4750,6 +5048,11 @@
     catDeleteCancelBtn.addEventListener("click", () => closeCatDelete());
     catDeleteBackdropEl.addEventListener("click", () => closeCatDelete());
     catDeleteConfirmBtn.addEventListener("click", () => void confirmCatDelete());
+    if (catFindModalEl) {
+      catFindCancelBtn.addEventListener("click", () => closeCatFind());
+      catFindBackdropEl.addEventListener("click", () => closeCatFind());
+      catFindConfirmBtn.addEventListener("click", () => void confirmCatFind());
+    }
   }
 
   // ---- the Jev rules (rubric) editor (issue #102, manage/select split) -----
@@ -6434,20 +6737,28 @@
   // before the request even left the browser has no server status at all.
   let syncStatusView = null;
   let rankStatusView = null;
+  let findStatusView = null;
   /** Which job the strip is currently showing - drives retry and dismiss. */
   let progressOwner = null;
 
   function renderSharedProgress() {
-    progressOwner = ranking().progressSource(syncStatusView, rankStatusView);
+    progressOwner = ranking().progressSource(syncStatusView, rankStatusView, findStatusView);
     const isRank = progressOwner === "rank";
+    const isFind = progressOwner === "find";
     if (syncProgressDismissBtn) {
       syncProgressDismissBtn.setAttribute(
         "aria-label",
-        isRank ? "Dismiss ranking status" : "Dismiss sync status",
+        isRank ? "Dismiss ranking status" : isFind ? "Dismiss find-bookmarks status" : "Dismiss sync status",
       );
     }
     if (isRank) renderProgressStrip(progressEls, rankStatusView, (s) => ranking().progressLine(s));
+    else if (isFind) renderProgressStrip(progressEls, findStatusView, (s) => editor().findProgressLine(s));
     else renderProgressStrip(progressEls, syncStatusView, (s) => categorization().progressLine(s));
+  }
+
+  function renderFindProgress(status) {
+    findStatusView = status;
+    renderSharedProgress();
   }
 
   function renderSyncProgress(status) {
@@ -6467,7 +6778,11 @@
     if (syncProgressRetryBtn) {
       syncProgressRetryBtn.addEventListener("click", () => {
         if (progressOwner === "rank") openRankConfirm();
-        else void startSync();
+        else if (progressOwner === "find") {
+          // A retry is a fresh authorization: the confirmation again, never a silent re-run.
+          if (lastFindNode) void requestFindBookmarks(lastFindNode, null);
+          else openCategoryEditor(catEditorOpenBtn);
+        } else void startSync();
       });
     }
     if (syncProgressDismissBtn) {
@@ -6476,7 +6791,9 @@
         // The job's own top-bar icon, not the button inside its popover: that
         // popover is normally closed by now, and focusing a hidden control
         // silently strands focus on <body>.
-        const toggle = document.getElementById(progressOwner === "rank" ? "rank-toggle" : "sync-toggle");
+        const toggle = document.getElementById(
+          progressOwner === "rank" ? "rank-toggle" : progressOwner === "find" ? "cat-editor-open" : "sync-toggle",
+        );
         if (toggle) toggle.focus();
       });
     }
@@ -8321,5 +8638,8 @@
     // A ranking run started in another tab (or before a reload) owns the strip
     // just as a sync does - it is the same one-at-a-time server job.
     if (ranking().isRunning(rankState())) pollRank();
+    // Likewise a "find bookmarks" run still going from before a reload.
+    const find = setupState && setupState.find && setupState.find.status;
+    if (find && find.state === "running") pollFind();
   });
 })();
