@@ -7,6 +7,10 @@ import {
   unknownCategorizerMessage,
 } from './config';
 import type { CredentialStore } from './creds/resolve';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { PACKAGE_ROOT } from './paths';
 
 /**
  * The selector is the money switch: with nothing set, categorization must stay
@@ -126,5 +130,21 @@ describe('requireTypeSafeCredentials', () => {
 
     // The success path returns it to the caller but nothing is thrown/logged.
     expect(requireTypeSafeCredentials(store)).toBe('sk-secret-value');
+  });
+});
+
+describe('default database path (security finding #3)', () => {
+  it('resolves from the package root, not the directory the app was started from', () => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'xbo-cwd-'));
+    const previous = process.cwd();
+    process.chdir(elsewhere);
+    try {
+      expect(loadConfig({}).dbPath).toBe(path.join(PACKAGE_ROOT, 'data', 'bookmarks.db'));
+      // An explicit path is the owner's own words, so a relative one still means "from here".
+      expect(loadConfig({ XBOOKMARKS_DB_PATH: 'mine.db' }).dbPath).toBe(path.resolve('mine.db'));
+    } finally {
+      process.chdir(previous);
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 });

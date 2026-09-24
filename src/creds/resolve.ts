@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PACKAGE_ROOT } from '../paths';
 
 /**
  * Layered credential provider chain. `process.env` (tier 1) is unchanged - a
@@ -27,6 +28,66 @@ export interface CredentialStore {
 
 const SERVICE = 'x-bookmarks-organizer';
 
+/**
+ * Keys read from the PROCESS ENVIRONMENT ONLY, never from `.env`, the keychain
+ * or the config file. They are not secrets: they decide what program runs as
+ * the owner (`XBOOKMARKS_CLAUDE_BIN`, spawned by every availability probe) and
+ * where prompts full of bookmark text are sent (`XBOOKMARKS_PIAI_BASE_URL`).
+ * A file the owner did not write must never be able to choose either, so they
+ * take an explicit export (or a vault) - the same bar as launching a program.
+ * Named literally rather than imported so this module stays free of the
+ * provider code; `resolve.test.ts` pins them to the providers' own constants.
+ */
+export const ENV_ONLY_KEYS: ReadonlySet<string> = new Set(['XBOOKMARKS_CLAUDE_BIN', 'XBOOKMARKS_PIAI_BASE_URL']);
+
+/** Where the chain's `.env` tier lives: the package root, never `process.cwd()`. */
+export function dotenvPath(projectRoot: string = PACKAGE_ROOT): string {
+  return path.join(projectRoot, '.env');
+}
+
+/** A `.env` readable by users other than the owner: where it is, and its octal mode. */
+export interface DotenvExposure {
+  file: string;
+  /** e.g. `644` - never the file's content. */
+  mode: string;
+}
+
+/**
+ * Whether the chain's `.env` is readable by group or others (security finding
+ * #8), or null when it is owner-only or absent. Unlike `credentials.json` a
+ * readable `.env` is still READ - `cp .env.example .env` leaves it `0644`
+ * under a normal umask, so refusing it would break every existing setup - but
+ * the owner is told, once at startup and on the viewer's setup surface, with
+ * the fix. Windows has no such mode bits, so there is nothing to check there.
+ */
+export function dotenvExposure(
+  file: string = dotenvPath(),
+  platform: NodeJS.Platform = process.platform,
+): DotenvExposure | null {
+  if (platform === 'win32') return null;
+  let mode: number;
+  try {
+    mode = fs.statSync(file).mode;
+  } catch {
+    return null;
+  }
+  if (!(mode & 0o077)) return null;
+  return { file, mode: (mode & 0o777).toString(8).padStart(3, '0') };
+}
+
+/** The one-line form of {@link dotenvExposure}, as the startup log prints it. */
+export function dotenvPermissionWarning(
+  file: string = dotenvPath(),
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const exposed = dotenvExposure(file, platform);
+  if (!exposed) return null;
+  return (
+    `${exposed.file} is readable by other users on this machine (mode ${exposed.mode}), and it can hold ` +
+    `your X client secret and API keys. Fix with: chmod 600 ${exposed.file}`
+  );
+}
+
 /** Simple `KEY=VALUE` parser: ignores blank lines/comments, tolerates quotes and `=` in values. */
 export function parseDotenv(content: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -45,9 +106,9 @@ export function parseDotenv(content: string): Record<string, string> {
   return out;
 }
 
-function readDotenv(projectRoot: string): Record<string, string> {
+function readDotenv(file: string): Record<string, string> {
   try {
-    return parseDotenv(fs.readFileSync(path.join(projectRoot, '.env'), 'utf8'));
+    return parseDotenv(fs.readFileSync(file, 'utf8'));
   } catch {
     return {};
   }
@@ -132,6 +193,7 @@ function keychainClear(platform: NodeJS.Platform, exec: Exec, key: string): void
 
 export interface CredentialStoreOptions {
   env?: NodeJS.ProcessEnv;
+  /** Where `.env` is read from. Defaults to {@link PACKAGE_ROOT}, never `process.cwd()`. */
   projectRoot?: string;
   configDir?: string;
   platform?: NodeJS.Platform;
@@ -148,12 +210,16 @@ export function createCredentialStore(opts: CredentialStoreOptions = {}): Creden
   const env = opts.env ?? process.env;
   const platform = opts.platform ?? process.platform;
   const exec = opts.exec ?? defaultExec;
-  const dotenv = readDotenv(opts.projectRoot ?? process.cwd());
+  const dotenvFile = dotenvPath(opts.projectRoot);
+  const exposed = dotenvPermissionWarning(dotenvFile, platform);
+  if (exposed) console.warn(`Warning: ${exposed}`);
+  const dotenv = readDotenv(dotenvFile);
   const { dir: configDir, file: configFile } = credentialConfigPaths(opts.configDir);
 
   return {
     get(key) {
       if (env[key]) return { value: env[key], source: 'env' };
+      if (ENV_ONLY_KEYS.has(key)) return { value: undefined, source: 'none' };
       if (dotenv[key]) return { value: dotenv[key], source: 'dotenv' };
       const fromKeychain = keychainGet(platform, exec, key);
       if (fromKeychain) return { value: fromKeychain, source: 'keychain' };
@@ -184,7 +250,7 @@ export function missingCredentialMessage(keys: string[]): string {
   return (
     `Missing required secret(s): ${keys.join(', ')}. Provide them any of these ways:\n` +
     '  - the environment (a vault such as `av inject`, a shell export, Docker -e, systemd, CI secrets)\n' +
-    '  - a `.env` file in the project root (see `.env.example`)\n' +
+    `  - ${dotenvPath()} (see \`.env.example\`)\n` +
     '  - your OS keychain (macOS Keychain, GNOME/libsecret, Windows Credential Manager)\n' +
     `  - ${file} (chmod 600)`
   );

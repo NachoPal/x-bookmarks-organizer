@@ -413,6 +413,10 @@
               hidden
             >
               <h2 id="settings-panel-title" class="settings-panel-title">Settings</h2>
+              <!-- Security finding #8: the server's warning that .env is
+                   readable by other users, filled in by app.js from
+                   /api/setup. Hidden (and empty) whenever there is none. -->
+              <div id="settings-dotenv-warning" class="creds-alert dotenv-warning" hidden></div>
 
               <div class="settings-group">
                 <span class="settings-label" id="post-scale-label">Post size</span>

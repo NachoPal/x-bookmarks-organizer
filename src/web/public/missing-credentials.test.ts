@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 // Plain browser JS, required directly (not compiled by tsc).
-const { missingCredentials, missingCredentialsAlert } = require("./missing-credentials.js");
+const { missingCredentials, missingCredentialsAlert, dotenvExposureNotice } = require("./missing-credentials.js");
 
 const PRESENT = { present: true, source: "env" };
 const ABSENT = { present: false };
@@ -74,5 +74,21 @@ describe("missingCredentialsAlert", () => {
       missingCredentialsAlert(1, { xClientId: ABSENT, xClientSecret: ABSENT, typesafeApiKey: ABSENT }),
     ).toBeNull();
     expect(missingCredentialsAlert(42, undefined)).toBeNull();
+  });
+});
+
+describe("dotenvExposureNotice (security finding #8)", () => {
+  it("states the mode and hands over the exact fix command", () => {
+    const notice = dotenvExposureNotice({ dotenvExposure: { file: "/x/.env", mode: "644" } });
+    expect(notice.title).toBe("Your .env file is readable by other users");
+    expect(notice.detail).toContain("mode is 644");
+    expect(notice.fix).toBe("chmod 600 /x/.env");
+  });
+
+  it("is null when the server reports no exposure, or nothing usable at all", () => {
+    expect(dotenvExposureNotice({ dotenvExposure: null })).toBeNull();
+    expect(dotenvExposureNotice({ dotenvExposure: { file: "" } })).toBeNull();
+    expect(dotenvExposureNotice({})).toBeNull();
+    expect(dotenvExposureNotice(undefined)).toBeNull();
   });
 });

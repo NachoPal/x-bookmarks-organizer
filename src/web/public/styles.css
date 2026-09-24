@@ -4171,6 +4171,21 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   color: var(--color-text-muted);
   font-size: var(--text-small);
 }
+/* The `.env` exposure warning's fix (security finding #8): the exact command,
+   on its own line so it can be selected and pasted whole. An absolute path
+   has no break opportunity, so without `anywhere` a deep checkout would run
+   out of the 21rem Settings panel. */
+.dotenv-warning-fix {
+  display: block;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 
 /* ============================================================
    Move a post to another category (issue #92)

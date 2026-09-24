@@ -127,7 +127,9 @@ required mechanism:
    a Docker `-e` flag, a systemd unit, or CI secrets all keep working exactly as before.
 2. **A `.env` file in the project root** - the easy default for running this yourself. Copy
    [`.env.example`](.env.example) to `.env` and fill in what you need; it is gitignored and never
-   committed.
+   committed. Only the `.env` next to `package.json` is read - never one in the directory you
+   start the app from - and the app warns (at startup and in Settings) while it is readable by
+   other users: `chmod 600 .env`.
 3. **Your OS keychain** - macOS Keychain, the Linux Secret Service (`secret-tool`), or Windows
    Credential Manager (`cmdkey`), via the platform CLI.
 4. **`~/.config/x-bookmarks-organizer/credentials.json`** - an owner-only (`chmod 600`) file, for
@@ -135,6 +137,12 @@ required mechanism:
 
 Nothing is ever read from a *committed* file, and nothing is ever written to disk unless a store
 tier is actually used (tiers 3-4).
+
+Two settings are **environment-only** and skip tiers 2-4: `XBOOKMARKS_CLAUDE_BIN` (which program
+runs as the `claude` CLI) and `XBOOKMARKS_PIAI_BASE_URL` (where `local/<model>` prompts are sent).
+They are not secrets, and a file must never be able to choose what runs as you or where your
+bookmark text goes, so export them in your shell (or inject them with a vault). A value for either
+in `.env` is ignored.
 
 | Env var                   | What                                             |
 | ------------------------- | ------------------------------------------------ |
@@ -330,7 +338,7 @@ complete list (it also covers per-role LLM provider overrides and the TypeSafe w
 
 | Env var                 | Default                | Meaning                                  |
 | ----------------------- | ----------------------- | ---------------------------------------- |
-| `XBOOKMARKS_DB_PATH`     | `data/bookmarks.db`    | SQLite file location                     |
+| `XBOOKMARKS_DB_PATH`     | `data/bookmarks.db` in the project root | SQLite file location (the default never depends on the directory you start from) |
 | `XBOOKMARKS_WEB_PORT`    | `5173`                 | Web viewer port                          |
 | `XBOOKMARKS_AUTH_PORT`   | `3000`                 | One-time OAuth callback port             |
 | `XBOOKMARKS_REDIRECT_URI`| `http://127.0.0.1:3000/callback` | OAuth redirect (must match the X app) |
@@ -344,7 +352,7 @@ complete list (it also covers per-role LLM provider overrides and the TypeSafe w
 | `XBOOKMARKS_MIN_DEPTH`   | `3`                    | Target minimum nesting depth (best-effort) |
 | `XBOOKMARKS_MAX_DEPTH`   | `4`                    | Maximum category tree depth              |
 | `XBOOKMARKS_SUMMARY_MODEL` | `claude-sonnet-5`    | Summary model (Sonnet-class, for quality) |
-| `XBOOKMARKS_CLAUDE_BIN`  | `claude`               | Path to the `claude` binary when it is not on `PATH` |
+| `XBOOKMARKS_CLAUDE_BIN`  | `claude`               | Path to the `claude` binary when it is not on `PATH` - **environment only**, never read from `.env` |
 | `XBOOKMARKS_PAGE_SIZE`   | `20`                   | Viewer lazy-load batch size per scroll   |
 | `XBOOKMARKS_CATEGORIZER` | `claude-cli`           | Which implementation runs the **assignment** pass: `claude-cli` or `typesafe` (**paid**, see below) |
 | `XBOOKMARKS_TYPESAFE_MODEL` | `jev-latest`        | TypeSafe model, when that categorizer is selected |
@@ -402,7 +410,7 @@ pinned to an exact version). Either categorization pass can use it, independentl
 | `openrouter` (gateway) | `openrouter/google/gemini-2.5-flash` | `OPENROUTER_API_KEY` | **Pay per token** |
 | `opencode` / `opencode-go` (OpenCode Zen / Go gateways) | `opencode/claude-fable-5` | `OPENCODE_API_KEY` (one key for both) | **Pay per token** |
 | `vercel-ai-gateway`, `together`, `fireworks`, `huggingface` (gateways) | `together/deepseek-ai/DeepSeek-V4-Flash-0731` | `AI_GATEWAY_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `HF_TOKEN` | **Pay per token** |
-| `local` | `local/llama3.1:8b` | `XBOOKMARKS_PIAI_BASE_URL` (e.g. `http://127.0.0.1:11434/v1`), optional `XBOOKMARKS_PIAI_API_KEY` / `XBOOKMARKS_PIAI_CONTEXT_WINDOW` | Local |
+| `local` | `local/llama3.1:8b` | `XBOOKMARKS_PIAI_BASE_URL` (e.g. `http://127.0.0.1:11434/v1`; **environment only**, never read from `.env`), optional `XBOOKMARKS_PIAI_API_KEY` / `XBOOKMARKS_PIAI_CONTEXT_WINDOW` | Local |
 
 In the app, a pi-ai pass gets an **API provider** dropdown (the upstreams above, gateways grouped
 separately) and a **searchable model picker** that loads that upstream's FULL model list from pi's own

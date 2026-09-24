@@ -85,6 +85,24 @@ describe('GET /api/setup', () => {
     expect(res.body).not.toContain('super-secret-id');
   });
 
+  it('reports the .env exposure live, and none on a server built without it (security finding #8)', async () => {
+    app = buildServer(db);
+    await app.ready();
+    expect((await app.inject({ method: 'GET', url: '/api/setup' })).json().credentials.dotenvExposure).toBeNull();
+    await app.close();
+
+    let exposure: { file: string; mode: string } | null = { file: '/home/o/xbo/.env', mode: '644' };
+    app = buildServer(db, { dotenvExposure: () => exposure });
+    await app.ready();
+    expect((await app.inject({ method: 'GET', url: '/api/setup' })).json().credentials.dotenvExposure).toEqual({
+      file: '/home/o/xbo/.env',
+      mode: '644',
+    });
+    // The owner ran `chmod 600`: the next read says so, with no restart.
+    exposure = null;
+    expect((await app.inject({ method: 'GET', url: '/api/setup' })).json().credentials.dotenvExposure).toBeNull();
+  });
+
   it('reports claude-cli availability as true, with no probe, when no check is wired (a test-built server)', async () => {
     app = buildServer(db);
     await app.ready();

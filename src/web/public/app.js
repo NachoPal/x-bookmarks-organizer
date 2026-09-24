@@ -6043,6 +6043,7 @@
 
   /** Push the current setup payload into every control that reflects it. */
   function applySetupState() {
+    renderDotenvWarning(document.getElementById("settings-dotenv-warning"), "settings");
     updateSyncButton();
     updateRankControl();
     renderRankRulesPicker();
@@ -7773,6 +7774,7 @@
   let firstRunBodyEl = null;
   let firstRunScrimmed = false;
   let firstRunCredsEl = null;
+  let firstRunDotenvEl = null;
 
   function renderSelectPrompt() {
     const box = el("div", "state state-empty state-welcome state-prompt");
@@ -7806,6 +7808,8 @@
     const body = el("div", "first-run-body");
     firstRunCredsEl = el("div", "creds-alert");
     firstRunCredsEl.hidden = true;
+    firstRunDotenvEl = el("div", "creds-alert dotenv-warning");
+    firstRunDotenvEl.hidden = true;
     const formHost = el("div", "first-run-steps");
     firstRunForm = createCategorizationForm(formHost, "firstrun", () => {
       firstRunDirty = true;
@@ -7829,7 +7833,7 @@
     // The scrim is a SIBLING of everything it dims, so it is never itself
     // dimmed or made inert. The body below it is what a running sync takes
     // out of reach (#95).
-    body.append(intro, firstRunCredsEl, formHost);
+    body.append(intro, firstRunCredsEl, firstRunDotenvEl, formHost);
     firstRunBodyEl = body;
     const scrim = el("div", "first-run-scrim");
     scrim.setAttribute("aria-hidden", "true");
@@ -7922,10 +7926,51 @@
     firstRunCredsEl.hidden = false;
   }
 
+  /**
+   * Renders the server's "your .env is readable by other users" report
+   * (security finding #8) into `host`, or hides it when there is none. Two
+   * hosts share this: the Settings panel (always reachable) and the
+   * never-synced landing. Icon + badge + text, never the tint alone.
+   */
+  function renderDotenvWarning(host, idPrefix) {
+    if (!host || !setupState || !window.XBOMissingCredentials) return;
+    const notice = window.XBOMissingCredentials.dotenvExposureNotice(setupState.credentials);
+    if (!notice) {
+      host.hidden = true;
+      host.replaceChildren();
+      host.removeAttribute("aria-labelledby");
+      delete host.dataset.fix;
+      return;
+    }
+    // Rebuilt only when it changes: `/api/setup` is polled, and a live region
+    // repainted with the same words would be re-announced.
+    const key = `${notice.detail}\n${notice.fix}`;
+    if (!host.hidden && host.dataset.fix === key) return;
+    const titleId = `${idPrefix}-dotenv-title`;
+    host.dataset.kind = "blocking";
+    host.dataset.fix = key;
+    host.setAttribute("role", "status");
+    host.setAttribute("aria-labelledby", titleId);
+    const icon = el("span", "creds-alert-icon");
+    icon.setAttribute("aria-hidden", "true");
+    const title = el("h3", "creds-alert-title", notice.title);
+    title.id = titleId;
+    const bodyEl = el("div", "creds-alert-body");
+    bodyEl.append(
+      el("p", "creds-alert-badge", "Security"),
+      title,
+      el("p", "creds-alert-hint", notice.detail),
+      el("code", "dotenv-warning-fix", notice.fix),
+    );
+    host.replaceChildren(icon, bodyEl);
+    host.hidden = false;
+  }
+
   function updateFirstRun() {
     if (!firstRunEl || !setupState) return;
     updateFormNote(firstRunForm, firstRunNoteEl);
     renderMissingCredentialsAlert();
+    renderDotenvWarning(firstRunDotenvEl, "firstrun");
     const running = syncIsRunning();
     // A run is not interruptible and takes minutes, so the get-started view
     // goes behind a scrim for its duration: dimmed (CSS, keyed off this

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { loadConfig, requireXCredentials, type Config } from './config';
-import { createCredentialStore, type CredentialStore } from './creds/resolve';
+import { createCredentialStore, dotenvExposure, type CredentialStore } from './creds/resolve';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
 import { buildCategorizers, buildTaxonomyDesigner, reportCategorizerBilling, requireLlm } from './categorize/build';
@@ -27,6 +27,7 @@ import { planRanking, rankBookmarks } from './rank/ranker';
 import { buildEvalJev, reportEvalBilling } from './eval/build';
 import { planCategorizerEval, runCategorizerEval } from './eval/run';
 import { DEFAULT_TYPESAFE_MODEL } from './categorize/typesafe/client';
+import { PACKAGE_ROOT } from './paths';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -404,7 +405,7 @@ async function cmdEvalCategorizers(
     },
   );
 
-  const outDir = path.resolve(process.cwd(), 'data', 'eval');
+  const outDir = path.resolve(PACKAGE_ROOT, 'data', 'eval');
   fs.mkdirSync(outDir, { recursive: true });
   const outPath = path.join(
     outDir,
@@ -469,6 +470,7 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // would read a freshly-ranked library as unranked.
     rankerInterests: baseConfig.ranker.interests,
     credentials: store,
+    dotenvExposure: () => dotenvExposure(),
     modelBrowser: createModelBrowser(),
     xLogin: async () => {
       const current = applySettingsToConfig(
