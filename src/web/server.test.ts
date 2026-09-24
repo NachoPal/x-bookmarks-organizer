@@ -403,7 +403,7 @@ describe('GET /api/summary-status', () => {
   });
 });
 
-describe('GET /api/bookmarks/:id/summary', () => {
+describe('POST /api/bookmarks/:id/summary', () => {
   let db: Database;
   let app: FastifyInstance;
 
@@ -431,10 +431,10 @@ describe('GET /api/bookmarks/:id/summary', () => {
 
   it('returns 404 for an unknown bookmark and 400 for a bad id', async () => {
     await setup({ summaryGenerator: new FakeSummaryGenerator('unused') });
-    expect((await app.inject({ method: 'GET', url: '/api/bookmarks/9999/summary' })).statusCode).toBe(
+    expect((await app.inject({ method: 'POST', url: '/api/bookmarks/9999/summary' })).statusCode).toBe(
       404,
     );
-    expect((await app.inject({ method: 'GET', url: '/api/bookmarks/abc/summary' })).statusCode).toBe(
+    expect((await app.inject({ method: 'POST', url: '/api/bookmarks/abc/summary' })).statusCode).toBe(
       400,
     );
   });
@@ -442,7 +442,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
   it('degrades gracefully (503, clear message) when no LLM provider is available', async () => {
     await setup({});
     const b1 = db.getBookmarkByPostId('1')!;
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/summary` });
     expect(res.statusCode).toBe(503);
     const body = res.json() as { error: string };
     expect(body.error).toMatch(/provider/i);
@@ -460,7 +460,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
     };
     await setup({ summaryGenerator: failing });
     const b1 = db.getBookmarkByPostId('1')!;
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/summary` });
     expect(res.statusCode).toBe(502);
     expect((res.json() as { error: string }).error).toMatch(/Couldn't reach Claude/);
     // A failed call is never cached, so a retry can still succeed.
@@ -472,7 +472,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
     await setup({ summaryGenerator: generator });
     const b1 = db.getBookmarkByPostId('1')!;
 
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/summary` });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { summary: { summary: string; bookmarkId: number } };
     expect(body.summary.summary).toBe('A concise summary of the post.');
@@ -488,8 +488,8 @@ describe('GET /api/bookmarks/:id/summary', () => {
     await setup({ summaryGenerator: generator });
     const b1 = db.getBookmarkByPostId('1')!;
 
-    await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
-    const second = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/summary` });
+    const second = await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/summary` });
 
     expect(second.statusCode).toBe(200);
     expect(generator.calls).toHaveLength(1); // still just the first call - cache hit path
@@ -509,7 +509,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
     await setup({ summaryGenerator: generator, articleFetcher: fetcher });
     const b2 = db.getBookmarkByPostId('2')!;
 
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b2.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b2.id}/summary` });
     expect(res.statusCode).toBe(200);
     expect(fetcher.calls).toEqual(['https://example.com/articles/one']);
     expect(generator.calls[0].articleTitle).toBe('A Great Article');
@@ -533,7 +533,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
     await setup({ summaryGenerator: generator, articleFetcher: fetcher });
     const b3 = db.getBookmarkByPostId('3')!;
 
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b3.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b3.id}/summary` });
 
     expect(res.statusCode).toBe(422);
     const body = res.json() as { error: string };
@@ -562,7 +562,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
     });
     const b3 = db.getBookmarkByPostId('3')!;
 
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b3.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b3.id}/summary` });
 
     expect(res.statusCode).toBe(200);
     expect(generator.calls).toHaveLength(1);
@@ -592,7 +592,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
     });
     const b3 = db.getBookmarkByPostId('3')!;
 
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b3.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b3.id}/summary` });
 
     expect(res.statusCode).toBe(200);
     expect(generator.calls).toHaveLength(1);
@@ -609,7 +609,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
     await setup({ summaryGenerator: generator, articleFetcher: fetcher });
     const b2 = db.getBookmarkByPostId('2')!;
 
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b2.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b2.id}/summary` });
 
     expect(res.statusCode).toBe(200);
     expect(generator.calls).toHaveLength(1);
@@ -623,7 +623,7 @@ describe('GET /api/bookmarks/:id/summary', () => {
     await setup({ summaryGenerator: generator });
     const b1 = db.getBookmarkByPostId('1')!;
 
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/summary` });
     expect(res.statusCode).toBe(502);
     expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
   });
@@ -692,7 +692,7 @@ describe('X-native Articles in the viewer API', () => {
     await setup({ summaryGenerator: generator, articleFetcher: fetcher });
     const b1 = db.getBookmarkByPostId('1')!;
 
-    const res = await app.inject({ method: 'GET', url: `/api/bookmarks/${b1.id}/summary` });
+    const res = await app.inject({ method: 'POST', url: `/api/bookmarks/${b1.id}/summary` });
     expect(res.statusCode).toBe(200);
     expect(generator.calls[0]).toMatchObject({
       articleTitle: 'An X Article',

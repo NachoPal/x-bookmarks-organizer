@@ -848,7 +848,8 @@ for summary quality over the Haiku-class assignment/taxonomy models - see `model
 `src/llm/providers/claude-cli.ts`, overridable via `XBOOKMARKS_SUMMARY_MODEL`) - never the
 paid API. Cached in the `summaries` table (`src/db/schema.ts`, keyed by
 `bookmark_id`) via `Database.getSummaryForBookmark` / `saveSummary`, so a bookmark is
-summarized at most once. Server surface: `GET /api/bookmarks/:id/summary` (cache-or-generate)
+summarized at most once. Server surface: `POST /api/bookmarks/:id/summary` (cache-or-generate;
+POST because a miss has side effects, see "Local-trust hardening")
 and `GET /api/summary-status` (`{ available, reason? }`, used by the client to disable/tooltip
 the button up front - `reason` is the provider's own message). `ServerOptions.summaryGenerator`
 (plus `summaryUnavailableReason`) is the injection seam for offline tests.
@@ -876,7 +877,7 @@ re-enabling the CLI's tools; put the content in the prompt or say there is none.
 
 Unlike ingestion/categorization, the web viewer needs no secrets to browse. `cmdServe`
 (`src/index.ts`) wires a real `LlmSummaryGenerator` only when the summary role's provider reports
-`check() === 'ok'`, leaving it `undefined` otherwise. Then `/api/bookmarks/:id/summary` returns 503
+`check() === 'ok'`, leaving it `undefined` otherwise. Then `POST /api/bookmarks/:id/summary` returns 503
 with the provider's actionable message instead of crashing or hanging, and the client disables the
 button with that message as its tooltip; a *failed call* on an available provider returns 502 with
 the adapter's message and the button stays enabled so a retry is possible. Browsing and
@@ -1409,19 +1410,25 @@ it ingests by design or a page the owner already has open.
 
 - **Every outbound article fetch goes through the host policy** (`src/articles/host-policy.ts`).
   A bookmarked link is attacker-chosen content that `runIngest` fetches automatically, so the
-  fetcher refuses any destination resolving into loopback/private/link-local/unique-local/CGNAT
-  space, in IPv4, IPv6 and the IPv4-mapped forms of both. `HttpArticleFetcher` therefore walks
-  redirects ITSELF (`redirect: 'manual'`) and re-checks at the top of every loop iteration: the
-  initial URL, each HTTP hop and each `<meta refresh>` interstitial hop. `redirect: 'follow'` would
-  hide the intermediate hops from the check and is what made the bounce exploitable - do not go
-  back to it. A hostname is refused when ANY resolved record is disallowed; an UNRESOLVABLE name is
-  allowed through so the fetch reports its own network error. The one escape hatch is
-  `XBOOKMARKS_ALLOW_PRIVATE_FETCH` (off by default), for an owner indexing an intranet.
-  `HttpArticleFetcherOptions.hostPolicy` is the offline test seam - `createHostPolicy` takes an
-  injectable `lookup`, which is how the suite exercises the real policy with zero DNS queries;
-  never let a test resolve a real name. An `undici` `Agent` with a `connect.lookup` would also
-  close the check-vs-connect window, but `undici` is only present transitively via the `jsdom`
-  DEVdependency, so it is not importable from production code.
+  fetcher refuses any destination in loopback/private/link-local/unique-local/CGNAT or
+  special-purpose space (multicast, reserved, documentation, benchmarking), including every IPv6
+  form that carries an IPv4 address (mapped, compatible, SIIT, NAT64 `64:ff9b::/96`, 6to4), which
+  is judged by the embedded IPv4 address. The policy has TWO halves and both run on every hop:
+  `check(url)` before the request (scheme + a literal-address host, which the OS never resolves),
+  and `lookup`, the CONNECT-TIME resolver `HttpArticleFetcher` hands undici through a per-fetch
+  `Agent({ connect: { lookup } })` (`undici` is a direct dependency for this; the fetch is
+  undici's own, never the global one). A hostname is resolved ONCE, by the connection itself: it
+  is refused when ANY record is disallowed, and a failed resolution fails the connection. Never add
+  a separate check-time DNS lookup back - two resolutions let a TTL-0 DNS server answer them
+  differently, which was review 2's finding 18. `HttpArticleFetcher` also walks redirects ITSELF
+  (`redirect: 'manual'`) so each HTTP hop and each `<meta refresh>` interstitial hop gets a fresh
+  `check` and connects through the same lookup; `redirect: 'follow'` would hide the intermediate
+  hops - do not go back to it. The body is read with a cap (`MAX_ARTICLE_BYTES`, 5 MB, counted
+  after decompression). The one escape hatch is `XBOOKMARKS_ALLOW_PRIVATE_FETCH` (off by
+  default), for an owner indexing an intranet. Offline test seams: `createHostPolicy`'s injectable
+  `lookup` (whatever it answers is where the socket really goes, so never stub a name to a PUBLIC
+  address - that would really connect; a test lets a loopback port through `check` to stand in for
+  a public hop) and `HttpArticleFetcherOptions.fetch`. Never let a test resolve a real name.
 - **The viewer refuses a foreign `Host` or `Origin`** (`installLocalOriginGuard` in
   `src/web/server.ts`). Binding to `127.0.0.1` stops a LAN peer but not DNS rebinding, after which
   the attacker's page is SAME-ORIGIN and CORS is irrelevant - with no auth anywhere, that reaches
@@ -1429,8 +1436,13 @@ it ingests by design or a page the owner already has open.
   at the port the server ACTUALLY BOUND (`app.server.address()`), so an overridden
   `XBOOKMARKS_WEB_PORT` and a test's ephemeral port both work with no wiring. A server that never
   listened has no socket to rebind, so the guard stands down - that is what keeps the
-  `buildServer(db)` + `app.inject()` route tests working. The `Origin` half also covers the
-  body-less `POST /api/sync` / `POST /api/x-login` a cross-origin form could otherwise submit.
+  `buildServer(db)` + `app.inject()` route tests working. The `Origin` half covers the body-less
+  `POST /api/sync` / `POST /api/x-login` a cross-origin form could otherwise submit, and is
+  SKIPPED for GET/HEAD - so no route with a side effect may be a GET, which is why the summary is
+  `POST /api/bookmarks/:id/summary` (a cache miss fetches, calls a possibly paid model and writes a
+  row; a cross-site `<img>` could reach it as a GET). The backstop is the `Sec-Fetch-Site` half:
+  any `/api/` request (raw path or matched route) a browser labels `cross-site` or `same-site` is
+  refused whatever its method, and it applies even on a never-listening server.
 - **A reset is a LIBRARY wipe, never a configuration wipe** (`Database.resetLibrary`). `run_state`
   is cleared by naming the keys that ARE library state (`RESET_CLEARED_STATE_KEYS`: the sync cursor
   and last-synced stamp), so every other key - `rubric_presets`, `root_order`, `app_settings`, the
