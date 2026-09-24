@@ -414,7 +414,7 @@ describe('a sync with a per-token pass (security review 2, #20)', () => {
     },
   ];
 
-  const serve = async (paid: PaidPass[]) => {
+  const serve = async (paid: PaidPass[], syncPreflight?: () => Promise<unknown>) => {
     db = new Database(':memory:');
     runs = 0;
     app = buildServer(db, {
@@ -423,6 +423,7 @@ describe('a sync with a per-token pass (security review 2, #20)', () => {
         return summary;
       },
       syncSpend: async () => paid,
+      ...(syncPreflight ? { syncPreflight } : {}),
     });
     await app.ready();
   };
@@ -457,6 +458,20 @@ describe('a sync with a per-token pass (security review 2, #20)', () => {
     expect(res.statusCode).toBe(202);
     await settle();
     expect(runs).toBe(1);
+  });
+
+  it('refuses a sync that cannot start BEFORE asking the owner to authorize paying for it', async () => {
+    const reason = "Jev's fallback language model cannot run: needs ANTHROPIC_API_KEY.";
+    await serve(PAID, async () => {
+      throw new Error(reason);
+    });
+    for (const payload of [undefined, { confirm: true }]) {
+      const res = await app.inject({ method: 'POST', url: '/api/sync', ...(payload ? { payload } : {}) });
+      expect(res.statusCode).toBe(422);
+      expect(res.json()).toEqual({ error: reason });
+    }
+    await settle();
+    expect(runs).toBe(0);
   });
 
   it('reports the paid passes on /api/setup, so the Sync control can say so up front', async () => {

@@ -11,7 +11,7 @@ import type { TaxonomyDesigner, TaxonomyNode } from '../categorize/taxonomy';
 import type { Assignment, RawBookmark } from '../types';
 import { writeSettings } from '../settings/settings';
 import type { ModelBrowser } from '../settings/model-browser';
-import { createSyncJob, createSyncSpend, NOT_CONNECTED_MESSAGE } from './sync-job';
+import { createSyncJob, createSyncPreflight, createSyncSpend, NOT_CONNECTED_MESSAGE } from './sync-job';
 
 /**
  * Entirely offline. The X client and both categorization passes are faked, and
@@ -134,7 +134,8 @@ describe('createSyncJob', () => {
       categorizer: 'typesafe',
       provider: 'claude-cli',
       taxonomyModel: 'anthropic/claude-sonnet-5',
-      assignmentModel: 'anthropic/claude-opus-4-8',
+      fallbackProvider: 'claude-cli',
+      fallbackModel: 'anthropic/claude-opus-4-8',
       effort: 'max',
       configuredAt: '2026-01-01T00:00:00.000Z',
     });
@@ -210,6 +211,89 @@ describe('createSyncJob', () => {
   });
 });
 
+/**
+ * Regression for the owner's report: Claude Code subscription for phase 1, Jev
+ * for phase 2, no ANTHROPIC_API_KEY - and every sync died on
+ * `pi-ai model "anthropic/claude-haiku-4-5" ... needs ANTHROPIC_API_KEY`.
+ *
+ * The landing view let a pi-ai filing choice survive a switch to Jev (the
+ * combined selector keeps the filing provider as Jev's fallback, and hides it),
+ * so the stored document was exactly OWNER_DOC below. The sync preflight then
+ * required the assignment role - that hidden pi-ai - even on a FIRST run, where
+ * Jev files strictly and never calls a language model.
+ */
+describe("Jev's fallback language model (the hidden pi-ai filing provider)", () => {
+  const OWNER_DOC = {
+    categorizer: 'typesafe',
+    taxonomyProvider: 'claude-cli',
+    assignmentProvider: 'pi-ai',
+    configuredAt: '2026-09-21T10:28:55.227Z',
+  };
+  /** Everything the owner's `av inject` resolves - and no ANTHROPIC_API_KEY. */
+  const OWNER_KEYS = {
+    ...X_CREDS,
+    OPENROUTER_API_KEY: 'or',
+    TYPESAFE_API_KEY: 'ts',
+    OPENCODE_API_KEY: 'oc',
+    OPENAI_API_KEY: 'oa',
+    CLAUDE_CODE_OAUTH_TOKEN: 'oauth',
+  };
+  let db: Database;
+  let seen: Config[];
+
+  const run = () =>
+    createSyncJob({
+      db,
+      store: storeWith(OWNER_KEYS),
+      config: loadConfig({ ...X_CREDS }),
+      connect: async () => new FakeXClient([bm(String(Date.now()))]),
+      buildCategorizers: (config) => {
+        seen.push(config);
+        return { taxonomer: new FakeTaxonomer(), categorizer: new FakeCategorizer() };
+      },
+    })(() => {});
+  const preflight = () =>
+    createSyncPreflight({ db, store: storeWith(OWNER_KEYS), config: loadConfig({ ...X_CREDS }) })();
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.setRefreshToken('stored-refresh-token');
+    seen = [];
+  });
+  afterEach(() => db.close());
+
+  it("runs the owner's saved settings: the unseen pi-ai filing provider is never Jev's fallback", async () => {
+    db.setState('app_settings', JSON.stringify(OWNER_DOC));
+    // First run (no tree yet), then an extending run - both must start.
+    await run();
+    db.getOrCreateCategory('AI', null, new Date().toISOString());
+    await run();
+    expect(seen).toHaveLength(2);
+    for (const config of seen) {
+      expect(config.categorizer).toBe('typesafe');
+      // Unset fallback = the phase-1 provider (the subscription), with its own filing suggestion.
+      expect(config.llm.roles.assignment.provider).toBe('claude-cli');
+      expect(config.llm.roles.assignment.model).toBeUndefined();
+    }
+  });
+
+  it("does not require Jev's fallback on a first run, which never calls it", async () => {
+    writeSettings(db, { ...OWNER_DOC, fallbackProvider: 'pi-ai' } as never);
+    await expect(preflight()).resolves.toBeDefined();
+  });
+
+  it("refuses an extending sync whose chosen fallback lacks its key, naming the setting to change", async () => {
+    writeSettings(db, { ...OWNER_DOC, fallbackProvider: 'pi-ai' } as never);
+    db.getOrCreateCategory('AI', null, new Date().toISOString());
+    const failure = preflight();
+    await expect(failure).rejects.toThrow(/^Jev's fallback language model cannot run: .*ANTHROPIC_API_KEY/);
+    await expect(failure).rejects.toThrow(/open Settings and change "Jev's fallback provider" under Phase 2 - Filing\./);
+    // ...and the job itself refuses the same way, before reading X.
+    await expect(run()).rejects.toThrow(/Jev's fallback provider/);
+    expect(seen).toEqual([]);
+  });
+});
+
 describe('createSyncSpend (security review 2, #20)', () => {
   let db: Database;
   const config = loadConfig({ ...X_CREDS });
@@ -270,12 +354,24 @@ describe('createSyncSpend (security review 2, #20)', () => {
   });
 
   it("names Jev filing, and its paid LLM fallback when a tree is being extended", async () => {
-    writeSettings(db, { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' });
+    writeSettings(db, {
+      categorizer: 'typesafe',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'claude-cli',
+      fallbackProvider: 'pi-ai',
+    });
     expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([['filing', 'typesafe']]);
     db.getOrCreateCategory('AI', null, new Date().toISOString());
     expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([
       ['filing', 'typesafe'],
       ['filing-fallback', 'pi-ai'],
     ]);
+  });
+
+  it('never bills a fallback the owner could not see: an unset one follows the phase-1 provider', async () => {
+    // The owner's stored document: a pi-ai filing provider left over from before Jev was picked.
+    db.setState('app_settings', JSON.stringify({ categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' }));
+    db.getOrCreateCategory('AI', null, new Date().toISOString());
+    expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([['filing', 'typesafe']]);
   });
 });

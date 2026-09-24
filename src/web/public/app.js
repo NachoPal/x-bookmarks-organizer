@@ -838,6 +838,7 @@
     const options = opts || {};
     if (open) popovers.forEach((o) => o !== p && isPopoverOpen(o) && setPopoverOpen(o, false, { returnFocus: false }));
     p.panel.hidden = !open;
+    if (!open && p.name === "settings") discardSettingsEdits();
     p.toggle.setAttribute("aria-expanded", String(open));
     p.toggle.setAttribute("aria-label", `${open ? "Close" : "Open"} ${p.name}`);
 
@@ -6371,7 +6372,10 @@
       effort: false,
       assignmentProvider: false,
       assignmentModel: false,
+      fallbackProvider: false,
+      fallbackModel: false,
     }),
+    roleOf: (pass) => pass,
     passProvider: () => "",
     findProvider: () => null,
     findMethod: () => null,
@@ -7318,11 +7322,16 @@
         .some((e) => e.value === "");
     }
 
+    /** "<source> models", unless the source's own label already says so ("Claude models (Anthropic)"). */
+    function sourceModels() {
+      return /\bmodels\b/i.test(state.sourceLabel) ? state.sourceLabel : `${state.sourceLabel} models`;
+    }
+
     function renderStatus() {
       retry.hidden = state.load !== "error";
       statusRow.dataset.state = state.load;
       if (state.load === "loading") {
-        statusText.textContent = `Loading ${state.sourceLabel} models…`;
+        statusText.textContent = `Loading ${sourceModels()}…`;
       } else if (state.load === "error") {
         statusText.textContent = `Couldn't load the ${state.sourceLabel} model list: ${state.error}`;
       } else if (state.load === "ready") {
@@ -7334,7 +7343,8 @@
         } else {
           const source = categorization().findSource(state.provider, state.sourceId);
           const priced = source && source.billing === "per-token" ? ", prices per 1M tokens" : "";
-          statusText.textContent = `${count} ${state.sourceLabel} ${count === 1 ? "model" : "models"}${priced} - type to search.`;
+          const noun = count === 1 ? `${state.sourceLabel} model` : sourceModels();
+          statusText.textContent = `${count} ${noun}${priced} - type to search.`;
         }
       } else {
         statusText.textContent = "";
@@ -7383,7 +7393,7 @@
 
     function syncInput() {
       input.value = selectedLabel();
-      input.placeholder = hasValue() ? "" : `Type to search ${state.sourceLabel} models`;
+      input.placeholder = hasValue() ? "" : `Type to search ${sourceModels()}`;
     }
 
     function openList() {
@@ -7551,15 +7561,19 @@
     // independently-settable "Filing provider" field that `buildCategorizers`
     // ignored entirely whenever the method was Jev - see categorization.js's
     // `filingOptions`/`applyFilingSelection`). `assignmentProvider` is kept as
-    // an internal (never rendered) field: it still drives the filing
-    // model/source picker below and is what Jev's `extend` mode falls back to,
-    // but the owner can only ever set it by picking an LLM provider here.
+    // an internal (never rendered) field: it drives the filing model/source
+    // picker below, and the owner sets it by picking an LLM provider here. It
+    // is never saved or used while Jev files - Jev's own language model is the
+    // separate, VISIBLE fallback group (`fallbackProvider`), because a hidden
+    // provider that a run still depended on is what blocked the owner's syncs.
     const method = buildField(idPrefix, "categorizer", "Filing method");
     const taxonomyProvider = buildField(idPrefix, "taxonomyProvider", "Taxonomy provider");
     const taxonomy = buildField(idPrefix, "taxonomyModel", "Taxonomy model");
     const effort = buildField(idPrefix, "effort", "Reasoning effort");
     const assignmentProvider = buildField(idPrefix, "assignmentProvider", "Filing provider");
     const assignment = buildField(idPrefix, "assignmentModel", "Filing model");
+    const fallbackProvider = buildField(idPrefix, "fallbackProvider", "Jev's fallback provider");
+    const fallback = buildField(idPrefix, "fallbackModel", "Jev's fallback model");
 
     /**
      * The fields a provider with a full catalog (pi) swaps in for the model
@@ -7590,6 +7604,30 @@
     }
     const taxonomyCatalog = catalogFields("taxonomy", "Taxonomy");
     const assignmentCatalog = catalogFields("assignment", "Filing");
+    const fallbackCatalog = catalogFields("fallback", "Jev's fallback");
+
+    // Jev's fallback, shown only while Jev files: which language model files
+    // a bookmark Jev fits nowhere, and runs "Find bookmarks for a category".
+    const fallbackGroup = el("div", "phase-subgroup");
+    fallbackGroup.setAttribute("role", "group");
+    const fallbackTitle = el("h5", "phase-subtitle", "Jev's fallback language model");
+    fallbackTitle.id = `${idPrefix}-fallback-title`;
+    fallbackGroup.setAttribute("aria-labelledby", fallbackTitle.id);
+    fallbackGroup.append(
+      fallbackTitle,
+      el(
+        "p",
+        "phase-helper",
+        "Jev only files into categories that already exist. When a later sync meets a bookmark that fits " +
+          "none of them, this model files it. It also runs \u201cFind bookmarks\u201d for a category. " +
+          "Defaults to your Phase 1 provider.",
+      ),
+      fallbackProvider.field,
+      fallbackCatalog.source.field,
+      fallback.field,
+      fallbackCatalog.picker.field,
+      fallbackCatalog.local.field,
+    );
 
     // Two phases, in the order the app runs them: design the tree, then file
     // each bookmark into it.
@@ -7619,6 +7657,7 @@
         assignment.field,
         assignmentCatalog.picker.field,
         assignmentCatalog.local.field,
+        fallbackGroup,
       ],
     );
     container.replaceChildren(phase1, phase2);
@@ -7629,7 +7668,11 @@
     const passes = {
       taxonomy: { provider: taxonomyProvider, model: taxonomy, ...taxonomyCatalog },
       assignment: { provider: assignmentProvider, model: assignment, ...assignmentCatalog },
+      fallback: { provider: fallbackProvider, model: fallback, ...fallbackCatalog },
     };
+    const PASSES = Object.keys(passes);
+    /** The provider role a pass takes its suggestions from (the fallback files, so: assignment). */
+    const roleOf = (pass) => categorization().roleOf(pass);
 
     function providerOf(pass) {
       return categorization().findProvider(catalog, passes[pass].provider.select.value);
@@ -7654,7 +7697,7 @@
       if (src.freeform) {
         P.local.input.value = belongs ? modelValue.slice(src.id.length + 1) : "";
       } else {
-        P.picker.setSource(p, src.id, pass, belongs ? modelValue : "");
+        P.picker.setSource(p, src.id, roleOf(pass), belongs ? modelValue : "");
       }
     }
 
@@ -7676,11 +7719,11 @@
       const modelValue = (values && values[pass + "Model"]) || "";
       const sources = categorization().sourcesOf(p);
       if (sources.length > 0) {
-        const sourceId = (values && values[pass + "Source"]) || categorization().passSource(p, pass, modelValue);
+        const sourceId = (values && values[pass + "Source"]) || categorization().passSource(p, roleOf(pass), modelValue);
         fillSourceOptions(P.source.select, sources, sourceId);
         applySource(pass, modelValue);
       } else {
-        fillOptions(P.model.select, categorization().modelOptions(p, pass), modelValue);
+        fillOptions(P.model.select, categorization().modelOptions(p, roleOf(pass)), modelValue);
       }
       if (pass === "taxonomy") {
         const effortOptions = categorization().effortOptions(p, catalog && catalog.defaultEffort);
@@ -7690,8 +7733,7 @@
     }
 
     function renderModelFields(values) {
-      renderPass("taxonomy", values);
-      renderPass("assignment", values);
+      for (const pass of PASSES) renderPass(pass, values);
       renderHints();
     }
 
@@ -7722,14 +7764,14 @@
         method.hint.classList.toggle("field-billing", notice.emphasis);
       }
       const providerKeys = (setupState && setupState.credentials && setupState.credentials.providerKeys) || {};
-      for (const pass of ["taxonomy", "assignment"]) {
+      for (const pass of PASSES) {
         const p = providerOf(pass);
         const paid = !!p && p.billing === "per-token";
         const { provider, model, source } = passes[pass];
         const notice = categorization().providerNotice(p);
         provider.hint.textContent = notice.text;
         provider.hint.classList.toggle("field-billing", notice.emphasis);
-        model.hint.textContent = hintFor(categorization().modelOptions(p, pass), model.select.value);
+        model.hint.textContent = hintFor(categorization().modelOptions(p, roleOf(pass)), model.select.value);
         model.hint.classList.toggle("field-billing", paid && model.select.value !== "");
         const keyNotice = categorization().sourceNotice(usesCatalog(pass) ? chosenSource(pass) : null, providerKeys);
         source.hint.textContent = keyNotice.text;
@@ -7744,6 +7786,8 @@
       const fields = categorization().fieldsFor(method.select.value);
       showPassFields("taxonomy", true);
       showPassFields("assignment", fields.assignmentModel);
+      showPassFields("fallback", fields.fallbackModel);
+      fallbackGroup.hidden = !fields.fallbackModel;
     }
 
     const notify = () => {
@@ -7766,7 +7810,7 @@
       if (assignmentProvider.select.value !== previousProvider) renderPass("assignment", null);
       notify();
     });
-    for (const pass of ["taxonomy"]) {
+    for (const pass of ["taxonomy", "fallback"]) {
       passes[pass].provider.select.addEventListener("change", () => {
         // A model id only means something to the provider it came from.
         renderPass(pass, null);
@@ -7774,7 +7818,7 @@
         if (onChange) onChange();
       });
     }
-    for (const pass of ["taxonomy", "assignment"]) {
+    for (const pass of PASSES) {
       passes[pass].source.select.addEventListener("change", () => {
         // ...and to the source it came from: a new source starts on its own
         // Recommended pick if it hosts one, else on no choice at all.
@@ -7784,7 +7828,7 @@
       });
       passes[pass].local.input.addEventListener("input", notify);
     }
-    for (const f of [taxonomy, assignment, effort]) f.select.addEventListener("change", notify);
+    for (const f of [taxonomy, assignment, fallback, effort]) f.select.addEventListener("change", notify);
 
     const api = {
       setCatalog(next) {
@@ -7800,7 +7844,7 @@
           label: p.label,
           hint: categorization().providerNotice(p).text,
         }));
-        for (const pass of ["taxonomy", "assignment"]) {
+        for (const pass of PASSES) {
           const select = passes[pass].provider.select;
           fillOptions(select, providerOptions, select.value);
           // `fillOptions` falls back to "" for an unknown value; a provider
@@ -7811,7 +7855,7 @@
       },
       setValues(values) {
         if (!values) return;
-        for (const pass of ["taxonomy", "assignment"]) {
+        for (const pass of PASSES) {
           const select = passes[pass].provider.select;
           select.value = categorization().passProvider(values, pass);
           if (!select.value && select.options[0]) select.value = select.options[0].value;
@@ -7826,7 +7870,9 @@
           const fallback = [...method.select.options].find((o) => o.value !== "typesafe") || method.select.options[0];
           if (fallback) method.select.value = fallback.value;
         }
-        renderModelFields(values);
+        // A fallback model belongs to an explicitly chosen fallback provider;
+        // an unset one shows the phase-1 provider at its own Recommended pick.
+        renderModelFields(values.fallbackProvider ? values : { ...values, fallbackModel: "" });
       },
       getValues() {
         const filing = categorization().applyFilingSelection(method.select.value, assignmentProvider.select.value);
@@ -7836,9 +7882,11 @@
           taxonomyModel: modelValueOf("taxonomy"),
           assignmentProvider: filing.assignmentProvider,
           assignmentModel: modelValueOf("assignment"),
+          fallbackProvider: fallbackProvider.select.value,
+          fallbackModel: modelValueOf("fallback"),
           effort: effort.select.value,
         };
-        for (const pass of ["taxonomy", "assignment"]) {
+        for (const pass of PASSES) {
           if (usesCatalog(pass)) values[pass + "Source"] = passes[pass].source.select.value;
         }
         return values;
@@ -7912,7 +7960,21 @@
       setupState.settings = body.settings;
       setupState.configured = true;
     }
+    adoptSavedSettings();
     return body.settings;
+  }
+
+  /**
+   * After ANY save - the landing's Sync, the Settings panel, the setup dialog -
+   * every categorization form shows exactly what was stored. Each form's own
+   * unsaved edits are dropped: the owner just chose what the app should use,
+   * and a second form still showing an older pick would be both wrong and a
+   * trap (its next save would quietly revert this one).
+   */
+  function adoptSavedSettings() {
+    settingsDirty = false;
+    firstRunDirty = false;
+    applySetupState();
   }
 
   // ---- Settings panel: the categorization group --------------------------
@@ -7925,6 +7987,20 @@
   // True between an edit and its save: a background poll must not overwrite
   // a choice the owner is still making.
   let settingsDirty = false;
+
+  /**
+   * Closing the Settings popover without saving drops its edits, so it reopens
+   * on what is actually stored - never on a half-made choice that no run uses
+   * and that would stop every later poll from refreshing it.
+   */
+  function discardSettingsEdits() {
+    if (!settingsDirty || !settingsForm || !setupState) return;
+    settingsDirty = false;
+    setSaveStatus("");
+    settingsForm.setCatalog(setupState.catalog);
+    settingsForm.setValues(setupState.settings);
+    updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn, setupState.settings);
+  }
 
   function setSaveStatus(message, state) {
     if (!settingsSaveStatusEl) return;
@@ -7947,7 +8023,6 @@
       setSaveStatus("");
       try {
         await saveCategorization(settingsForm);
-        settingsDirty = false;
         updateSyncButton();
         // A successful save closes the panel and confirms through the app's
         // existing toast system (issue #122) - not a status line the owner
@@ -8159,7 +8234,9 @@
     const passLine = (pass) => {
       const provider = categorization().findProvider(catalog, categorization().passProvider(settings, pass));
       if (!provider) return "-";
-      const id = settings[pass + "Model"] || (provider.suggested || {})[pass];
+      // An unset fallback runs its provider's own filing pick, whatever model was stored.
+      const own = pass !== "fallback" || settings.fallbackProvider ? settings[pass + "Model"] : "";
+      const id = own || (provider.suggested || {})[categorization().roleOf(pass)];
       const match = (provider.models || []).find((m) => m.id === id);
       return `${provider.label} - ${match ? match.label : id || "-"}`;
     };
@@ -8172,6 +8249,7 @@
       ["Effort", settings.effort || catalog.defaultEffort || "Default"],
       ["Filing", settings.categorizer === "typesafe" ? (jev ? jev.label : "Jev (TypeSafe)") : passLine("assignment")],
     ];
+    if (settings.categorizer === "typesafe") rows.push(["Jev's fallback", passLine("fallback")]);
     setupSummaryEl.replaceChildren(
       ...rows.flatMap(([term, value]) => [el("dt", "", term), el("dd", "", String(value))]),
     );
@@ -8337,9 +8415,9 @@
   async function onFirstRunSync() {
     firstRunSyncBtn.disabled = true;
     try {
-      const saved = await saveCategorization(firstRunForm);
-      firstRunDirty = false;
-      if (settingsForm && !settingsDirty) settingsForm.setValues(saved);
+      // Saving is what the sync below runs on; `saveCategorization` also
+      // brings the Settings panel (and this landing) to the stored document.
+      await saveCategorization(firstRunForm);
     } catch (err) {
       firstRunNoteEl.textContent = err.message;
       firstRunNoteEl.hidden = false;

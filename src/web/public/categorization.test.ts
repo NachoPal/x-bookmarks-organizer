@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { buildSettingsCatalog } from '../../settings/catalog';
 
 // Plain browser JS, required directly (not compiled by tsc).
 const XBO = require('./categorization.js');
@@ -115,6 +116,43 @@ describe('effortOptions', () => {
   });
 });
 
+describe("Jev's fallback language model", () => {
+  it('is a visible field only while Jev files', () => {
+    expect(XBO.fieldsFor('typesafe')).toMatchObject({ fallbackProvider: true, fallbackModel: true, assignmentProvider: false });
+    expect(XBO.fieldsFor('claude-cli')).toMatchObject({ fallbackProvider: false, fallbackModel: false, assignmentProvider: true });
+  });
+
+  it('defaults to the phase-1 provider, never the hidden filing provider', () => {
+    expect(XBO.passProvider({ taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' }, 'fallback')).toBe('claude-cli');
+    expect(XBO.passProvider({ provider: 'pi-ai' }, 'fallback')).toBe('pi-ai');
+    expect(XBO.passProvider({ taxonomyProvider: 'claude-cli', fallbackProvider: 'pi-ai' }, 'fallback')).toBe('pi-ai');
+    expect(XBO.roleOf('fallback')).toBe('assignment');
+  });
+
+  it('blocks Save with a sentence naming the fallback when its key is missing', () => {
+    const problems = XBO.passProblems(
+      { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', fallbackProvider: 'pi-ai', fallbackModel: '' },
+      buildSettingsCatalog(),
+      { ANTHROPIC_API_KEY: { present: false } },
+      { 'claude-cli': { available: true } },
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0].blocksSave).toBe(true);
+    expect(problems[0].text).toMatch(/^Jev's fallback runs on Anthropic API, which needs ANTHROPIC_API_KEY\./);
+  });
+
+  it('is not checked while a language model files', () => {
+    expect(
+      XBO.passProblems(
+        { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli', fallbackProvider: 'pi-ai' },
+        buildSettingsCatalog(),
+        { ANTHROPIC_API_KEY: { present: false } },
+        { 'claude-cli': { available: true } },
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe('toPayload', () => {
   it('sends only what the owner actually pinned', () => {
     expect(
@@ -134,23 +172,36 @@ describe('toPayload', () => {
     });
   });
 
-  it('never sends a filing model for Jev, which has none', () => {
+  it("never sends the (hidden) filing provider or model for Jev - only Jev's visible fallback", () => {
     expect(
       XBO.toPayload({
         categorizer: 'typesafe',
         taxonomyProvider: 'claude-cli',
         taxonomyModel: 'claude-opus-4-8',
-        assignmentProvider: 'claude-cli',
+        assignmentProvider: 'pi-ai',
         assignmentModel: 'claude-haiku-4-5',
+        fallbackProvider: 'claude-cli',
+        fallbackModel: 'anthropic/claude-haiku-4-5',
         effort: 'high',
       }),
     ).toEqual({
       categorizer: 'typesafe',
       taxonomyProvider: 'claude-cli',
-      assignmentProvider: 'claude-cli',
+      fallbackProvider: 'claude-cli',
       taxonomyModel: 'claude-opus-4-8',
+      fallbackModel: 'anthropic/claude-haiku-4-5',
       effort: 'high',
     });
+    // ...and never Jev's fallback while a language model files.
+    expect(
+      XBO.toPayload({
+        categorizer: 'claude-cli',
+        taxonomyProvider: 'claude-cli',
+        assignmentProvider: 'pi-ai',
+        fallbackProvider: 'pi-ai',
+        fallbackModel: 'opencode/gpt-5.1',
+      }),
+    ).toEqual({ categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' });
   });
 });
 
@@ -607,7 +658,18 @@ describe('isUnchanged (issue #122, the dirty check)', () => {
     };
     // toPayload drops the filing model for Jev on both sides, so a leftover
     // assignmentModel value in the form must not itself read as a change.
-    expect(XBO.isUnchanged({ ...jevSaved, assignmentModel: 'something-else' }, jevSaved)).toBe(true);
+    expect(
+      XBO.isUnchanged({ ...jevSaved, fallbackProvider: 'claude-cli', assignmentModel: 'something-else' }, jevSaved),
+    ).toBe(true);
+  });
+
+  it("reads an unset fallback as the phase-1 provider it resolves to, and a changed one as a change", () => {
+    // The owner's stored document: a pi-ai filing provider nobody could see under Jev.
+    const owner = { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' };
+    const shown = { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai', fallbackProvider: 'claude-cli' };
+    expect(XBO.isUnchanged(shown, owner)).toBe(true);
+    expect(XBO.isUnchanged({ ...shown, fallbackProvider: 'pi-ai' }, owner)).toBe(false);
+    expect(XBO.isUnchanged({ ...shown, fallbackModel: 'anthropic/claude-sonnet-5' }, owner)).toBe(false);
   });
 
   it('reads the legacy single `provider` document the same as a per-pass one', () => {

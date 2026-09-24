@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from './server';
@@ -240,5 +243,56 @@ describe('find bookmarks for a category', () => {
     expect(setup.find).toMatchObject({ available: true, status: { state: 'running' } });
     answer();
     expect((await waitForFind(app)).state).toBe('done');
+  });
+});
+
+describe("find bookmarks while Jev files: it runs on Jev's fallback language model", () => {
+  let db: Database;
+  let dir: string;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbo-find-stub-'));
+  });
+  afterEach(() => {
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** The REAL provider factory, over a credential store with no ANTHROPIC_API_KEY and a stub `claude`. */
+  function realWiring(): FindWiring {
+    const claude = path.join(dir, 'claude');
+    fs.writeFileSync(claude, "#!/usr/bin/env node\nconsole.log('9.9.9 (stub)');\n", { mode: 0o755 });
+    const values: Record<string, string> = { XBOOKMARKS_CLAUDE_BIN: claude, TYPESAFE_API_KEY: 'ts', OPENROUTER_API_KEY: 'or' };
+    const keys: CredentialStore = {
+      get: (key) => (values[key] ? { key, value: values[key], source: 'env' } : { key, source: 'none' }),
+    };
+    return createFindWiring({
+      db,
+      store: keys,
+      config: loadConfig({}),
+      articleFetcher: noFetch,
+      browser: { list: async () => ({ ok: true, models: [] }) as never },
+    });
+  }
+
+  it("uses the phase-1 provider when no fallback was ever chosen - not a hidden pi-ai filing provider", async () => {
+    db.setState(
+      'app_settings',
+      JSON.stringify({ categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' }),
+    );
+    const model = await realWiring().describe();
+    expect(model).toMatchObject({ available: true, spend: { providerId: 'claude-cli', billing: 'subscription' } });
+  });
+
+  it('names the Settings field to change when the chosen fallback cannot run', async () => {
+    db.setState(
+      'app_settings',
+      JSON.stringify({ categorizer: 'typesafe', taxonomyProvider: 'claude-cli', fallbackProvider: 'pi-ai' }),
+    );
+    const model = await realWiring().describe();
+    expect(model.available).toBe(false);
+    expect(model.reason).toMatch(/^Jev's fallback language model cannot run: .*ANTHROPIC_API_KEY/);
+    expect(model.reason).toContain('open Settings and change "Jev\'s fallback provider" under Phase 2 - Filing.');
   });
 });

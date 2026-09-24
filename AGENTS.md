@@ -246,10 +246,22 @@ derived from a settings document by `filingSelection` (`'typesafe'`, or the save
 `assignmentProvider`), and picking a value applies BOTH `categorizer` and `assignmentProvider`
 together via `applyFilingSelection` - so the two settings fields can no longer be set independently
 and can never disagree. In `app.js`'s `createCategorizationForm`, the old `assignmentProvider` field
-still exists as an internal (never-appended) `<select>` - it still drives the Filing model/source
-picker below and still holds Jev's `extend`-mode fallback provider - but the owner can only ever move
-it by picking a provider in the combined selector; `method.select`'s `change` handler is what keeps
-it in sync and re-renders the filing model list only when the underlying provider actually changed.
+still exists as an internal (never-appended) `<select>` that drives the Filing model/source picker;
+the owner moves it only by picking a provider in the combined selector.
+
+**Jev's fallback is its OWN visible field, never the hidden `assignmentProvider`** (bug: a pi-ai
+filing pick kept as Jev's hidden fallback blocked every sync with "needs ANTHROPIC_API_KEY").
+`fallbackProvider`/`fallbackModel` (`src/settings/settings.ts`) are shown under Phase 2 only while
+Jev files (the form's third pass, `fallback`, which takes its suggestions from the assignment role -
+`XBOCategorization.roleOf`), checked by `passProblems`, and read by `applySettingsToConfig` as the
+assignment ROLE while `categorizer === 'typesafe'`. Unset means the PHASE-1 provider at its own
+filing suggestion - how a document from before the field resolves. `writeSettings`/`toPayload` save
+only the fields the chosen method reads, so no stored field is ever one the owner cannot see. The
+sync preflight (`createSyncPreflight`, also run by `POST /api/sync` BEFORE the paid confirmation)
+requires the fallback only when extending an existing tree, and a failed check names the Settings
+field (`requirePassSettings`). Any save adopts the stored document into every form
+(`adoptSavedSettings`), and closing Settings drops its unsaved edits, so the landing and the panel
+always show the same thing.
 
 ## Assignment-pass categorizers (`XBOOKMARKS_CATEGORIZER`, issue #61)
 
@@ -263,8 +275,9 @@ invents no labels, so it structurally cannot do that pass.
 
 **`buildCategorizers` (`src/categorize/build.ts`) decides the METHOD first, and the
 `assignmentProvider`/`assignmentModel` settings matter ONLY when that method is the LLM one** - once
-`config.categorizer === 'typesafe'`, they are read solely as Jev's `extend`-mode fallback provider,
-never as what files a bookmark. A bug (fixed alongside the phase-2 UI below) let the owner pick an
+`config.categorizer === 'typesafe'`, the assignment role is Jev's `extend`-mode fallback, resolved
+from the separate `fallbackProvider` setting (see the settings-form paragraph), never what files a
+bookmark. A bug (fixed alongside the phase-2 UI below) let the owner pick an
 LLM provider for phase 2 while the method was still Jev, so the chosen provider silently never ran.
 The fix is UI-only - `buildCategorizers` itself was already correct for a self-consistent settings
 document - but any new phase-2 UI must keep it impossible to leave the method and the provider
