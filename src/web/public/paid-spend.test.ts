@@ -115,6 +115,11 @@ describe('findCostSentence - what "Find bookmarks" says about its model', () => 
     expect(text).toContain('$3 in / $15 out per 1M tokens');
   });
 
+  it('names Jev as paid when Jev is the filing method', () => {
+    const jev = { providerId: 'typesafe', providerLabel: 'TypeSafe', model: 'jev-latest', modelLabel: 'Jev (jev-latest)', billing: 'per-token' };
+    expect(paid.findCostSentence(jev)).toBe('Billed per token to your own account: Jev (jev-latest) via typesafe.');
+  });
+
   it('says a subscription or local model is not billed per call', () => {
     const sub = { providerId: 'claude-cli', model: 'anthropic/claude-haiku-4-5', modelLabel: 'Claude Haiku 4.5', billing: 'subscription' };
     expect(paid.findCostSentence(sub)).toBe(

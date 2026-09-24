@@ -1,17 +1,17 @@
 import type { Database } from '../db/database';
 import type { CategoryNode, CategoryTreeNode, TaxonomyNode } from '../types';
-import { OWNER_MARKER, findOwnerAnchor, findOwnerSibling, stripOwnerMarker } from './owner-categories';
+import { OWNER_MARKER, findOwnerAnchor, findOwnerSibling, nameKey, stripOwnerMarker } from './owner-categories';
 
 /**
- * The node a designed/filed name lands on under `parentId`, WITHOUT creating
- * anything: the existing sibling of that name, else an owner category the
- * name near-duplicates - a sibling ("LLM" beside the owner's "LLMs"), an
- * owner ROOT minted again somewhere deeper ("Food > Cooking" when "Cooking"
- * is the owner's top-level category), or, for the first segment of a path,
- * the one owner category of that name wherever it sits (the model re-rooted
- * it). A deeper name is NOT redirected to a deeper owner category: "Python >
- * Tools" is not the owner's "Rust > Tools". Undefined means a new node is
- * genuinely needed.
+ * The node a designed name lands on under `parentId`, WITHOUT creating
+ * anything: the existing sibling of that name, else a sibling it
+ * near-duplicates ("LLM" beside "LLMs" - the owner's first, whoever made it),
+ * else an owner ROOT minted again somewhere deeper ("Food > Cooking" when
+ * "Cooking" is the owner's top-level category), or, for the first segment of
+ * a path, the one owner category of that name wherever it sits (the model
+ * re-rooted it). A deeper name is NOT redirected to a deeper owner category:
+ * "Python > Tools" is not the owner's "Rust > Tools". Undefined means a new
+ * node is genuinely needed.
  */
 export function findMergeTarget(
   db: Database,
@@ -19,10 +19,22 @@ export function findMergeTarget(
   parentId: number | null,
   atTop: boolean,
 ): CategoryNode | undefined {
-  const exact = db.findCategory(name, parentId) ?? findOwnerSibling(db, name, parentId);
+  const exact =
+    db.findCategory(name, parentId) ?? findOwnerSibling(db, name, parentId) ?? findSimilarSibling(db, name, parentId);
   if (exact) return exact;
   const anchor = findOwnerAnchor(db, name);
   return anchor && (atTop || anchor.parentId === null) ? anchor : undefined;
+}
+
+/**
+ * Any existing category directly under `parentId` whose name means the same as
+ * `name` (`nameKey`): a pass that grows the tree reuses it rather than adding
+ * a near-duplicate twin beside it.
+ */
+function findSimilarSibling(db: Database, name: string, parentId: number | null): CategoryNode | undefined {
+  const key = nameKey(name);
+  if (!key) return undefined;
+  return db.getAllCategories().find((c) => c.parentId === parentId && nameKey(c.name) === key);
 }
 
 /**
@@ -31,7 +43,9 @@ export function findMergeTarget(
  * exists (by name under the same parent, or as the owner's own category it
  * near-duplicates - see {@link findMergeTarget}) is reused, and only a
  * genuinely new node is created. Depth is capped at `maxDepth`; branches
- * deeper than that are truncated. Idempotent.
+ * deeper than that are truncated. Idempotent, and ADD-ONLY: it never renames,
+ * moves or deletes an existing category, which is what lets every sync's
+ * pass 1 grow the tree without being able to change it.
  *
  * Each node's one-line `description` (issue #61) is carried through to the row;
  * `getOrCreateCategory` only ever fills a missing one in, so re-materializing
@@ -203,7 +217,7 @@ const MAX_RENDERED_DESCRIPTION_CHARS = 120;
  * reuse existing nodes. Empty tree renders as "(no categories yet)".
  *
  * A node's one-line description (issue #61) is appended after an em-free dash
- * when it has one, which is what tells the `extend` prompt how siblings differ
+ * when it has one, which is what tells every prompt how siblings differ
  * instead of leaving the model to guess from bare labels. Nodes designed before
  * descriptions existed simply render as before.
  *

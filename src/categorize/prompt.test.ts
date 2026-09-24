@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExtendPrompt, buildPrompt, parseAssignments } from './prompt';
+import { buildPrompt, parseAssignments } from './prompt';
 import type { ArticleContext } from '../articles/link-metadata';
 import type { RawBookmark } from '../types';
 
@@ -43,23 +43,11 @@ describe('buildPrompt', () => {
   });
 });
 
-describe('owner categories in the assignment prompts', () => {
-  it('asks both modes to prefer the [owner] categories and never to copy the marker', () => {
-    for (const prompt of [buildPrompt([bm('1')], '- Rust [owner]', 4), buildExtendPrompt([bm('1')], '- Rust [owner]', 4)]) {
-      expect(prompt).toContain('Categories marked [owner] were created by the person by hand');
-      expect(prompt).toContain('never write it in a path');
-    }
-    expect(buildExtendPrompt([bm('1')], '- Rust [owner]', 4)).toContain('Never create a category that means the same thing');
-  });
-});
-
-describe('buildExtendPrompt', () => {
-  it('includes the linked article title/description for a link-heavy post (issue #25)', () => {
-    const articleContext = new Map<string, ArticleContext>([
-      ['123', { title: 'A Robotics Breakthrough' }],
-    ]);
-    const prompt = buildExtendPrompt([bm('123', 'https://t.co/abcd')], '- Robotics', 4, articleContext);
-    expect(prompt).toContain('linked article: A Robotics Breakthrough');
+describe('owner categories in the assignment prompt', () => {
+  it('asks the filer to prefer the [owner] categories and never to copy the marker', () => {
+    const prompt = buildPrompt([bm('1')], '- Rust [owner]', 4);
+    expect(prompt).toContain('Categories marked [owner] were created by the person by hand');
+    expect(prompt).toContain('never write it in a path');
   });
 });
 

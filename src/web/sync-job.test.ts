@@ -6,7 +6,9 @@ import { Database } from '../db/database';
 import { loadConfig, type Config } from '../config';
 import type { CredentialStore, ResolvedCredential } from '../creds/resolve';
 import type { BookmarkPage, XClient } from '../x/client';
-import type { AssignMode, BatchCategorizer } from '../categorize/llm';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { BatchCategorizer } from '../categorize/llm';
 import type { TaxonomyDesigner, TaxonomyNode } from '../categorize/taxonomy';
 import type { Assignment, RawBookmark } from '../types';
 import { writeSettings } from '../settings/settings';
@@ -60,9 +62,9 @@ class FakeTaxonomer implements TaxonomyDesigner {
 }
 
 class FakeCategorizer implements BatchCategorizer {
-  modes: AssignMode[] = [];
-  async categorizeBatch(batch: RawBookmark[], _tree: string, mode: AssignMode): Promise<Assignment[]> {
-    this.modes.push(mode);
+  batches: string[][] = [];
+  async categorizeBatch(batch: RawBookmark[]): Promise<Assignment[]> {
+    this.batches.push(batch.map((b) => b.postId));
     return batch.map((b) => ({ postId: b.postId, categories: [['AI', 'Evals']] }));
   }
 }
@@ -134,8 +136,6 @@ describe('createSyncJob', () => {
       categorizer: 'typesafe',
       provider: 'claude-cli',
       taxonomyModel: 'anthropic/claude-sonnet-5',
-      fallbackProvider: 'claude-cli',
-      fallbackModel: 'anthropic/claude-opus-4-8',
       effort: 'max',
       configuredAt: '2026-01-01T00:00:00.000Z',
     });
@@ -148,7 +148,6 @@ describe('createSyncJob', () => {
     expect(config.llm.defaultProvider).toBe('claude-cli');
     expect(config.llm.roles.taxonomy.model).toBe('anthropic/claude-sonnet-5');
     expect(config.llm.roles.taxonomy.params?.effort).toBe('max');
-    expect(config.llm.roles.assignment.model).toBe('anthropic/claude-opus-4-8');
     // The paid path announces itself every run - never silently.
     expect(messages[0]).toContain('TypeSafe Jev');
     expect(messages[0]).toContain('pay-per-token');
@@ -192,10 +191,10 @@ describe('createSyncJob', () => {
     }
   });
 
-  it('files only the NEW bookmarks on a second run, extending the existing tree', async () => {
+  it('files only the NEW bookmarks on a second run', async () => {
     const run = job();
     await run(() => {});
-    expect(categorizer.modes).toEqual(['strict']);
+    expect(categorizer.batches).toEqual([['1', '2']]);
 
     const summary = await createSyncJob({
       db,
@@ -206,7 +205,7 @@ describe('createSyncJob', () => {
     })(() => {});
 
     expect(summary.newBookmarks).toBe(1);
-    expect(categorizer.modes).toEqual(['strict', 'extend']);
+    expect(categorizer.batches).toEqual([['1', '2'], ['3']]);
     expect(db.getBookmarkCount()).toBe(3);
   });
 });
@@ -214,30 +213,21 @@ describe('createSyncJob', () => {
 /**
  * Regression for the owner's report: Claude Code subscription for phase 1, Jev
  * for phase 2, no ANTHROPIC_API_KEY - and every sync died on
- * `pi-ai model "anthropic/claude-haiku-4-5" ... needs ANTHROPIC_API_KEY`.
- *
- * The landing view let a pi-ai filing choice survive a switch to Jev (the
- * combined selector keeps the filing provider as Jev's fallback, and hides it),
- * so the stored document was exactly OWNER_DOC below. The sync preflight then
- * required the assignment role - that hidden pi-ai - even on a FIRST run, where
- * Jev files strictly and never calls a language model.
+ * `pi-ai model "anthropic/claude-haiku-4-5" ... needs ANTHROPIC_API_KEY`,
+ * because a pi-ai filing provider left over from before Jev was picked was
+ * still checked. Jev calls no language model now, so nothing but phase 1's
+ * model may ever be required of a Jev sync.
  */
-describe("Jev's fallback language model (the hidden pi-ai filing provider)", () => {
+describe('a Jev sync requires only the phase-1 language model', () => {
   const OWNER_DOC = {
     categorizer: 'typesafe',
     taxonomyProvider: 'claude-cli',
     assignmentProvider: 'pi-ai',
+    fallbackProvider: 'pi-ai',
     configuredAt: '2026-09-21T10:28:55.227Z',
   };
   /** Everything the owner's `av inject` resolves - and no ANTHROPIC_API_KEY. */
-  const OWNER_KEYS = {
-    ...X_CREDS,
-    OPENROUTER_API_KEY: 'or',
-    TYPESAFE_API_KEY: 'ts',
-    OPENCODE_API_KEY: 'oc',
-    OPENAI_API_KEY: 'oa',
-    CLAUDE_CODE_OAUTH_TOKEN: 'oauth',
-  };
+  const OWNER_KEYS = { ...X_CREDS, TYPESAFE_API_KEY: 'ts', OPENROUTER_API_KEY: 'or' };
   let db: Database;
   let seen: Config[];
 
@@ -252,8 +242,6 @@ describe("Jev's fallback language model (the hidden pi-ai filing provider)", () 
         return { taxonomer: new FakeTaxonomer(), categorizer: new FakeCategorizer() };
       },
     })(() => {});
-  const preflight = () =>
-    createSyncPreflight({ db, store: storeWith(OWNER_KEYS), config: loadConfig({ ...X_CREDS }) })();
 
   beforeEach(() => {
     db = new Database(':memory:');
@@ -262,35 +250,131 @@ describe("Jev's fallback language model (the hidden pi-ai filing provider)", () 
   });
   afterEach(() => db.close());
 
-  it("runs the owner's saved settings: the unseen pi-ai filing provider is never Jev's fallback", async () => {
+  it('starts a first and a later sync with a stale pi-ai filer and an old fallback stored', async () => {
     db.setState('app_settings', JSON.stringify(OWNER_DOC));
-    // First run (no tree yet), then an extending run - both must start.
     await run();
-    db.getOrCreateCategory('AI', null, new Date().toISOString());
     await run();
     expect(seen).toHaveLength(2);
-    for (const config of seen) {
-      expect(config.categorizer).toBe('typesafe');
-      // Unset fallback = the phase-1 provider (the subscription), with its own filing suggestion.
-      expect(config.llm.roles.assignment.provider).toBe('claude-cli');
-      expect(config.llm.roles.assignment.model).toBeUndefined();
-    }
+    for (const config of seen) expect(config.categorizer).toBe('typesafe');
+    await expect(
+      createSyncPreflight({ db, store: storeWith(OWNER_KEYS), config: loadConfig({ ...X_CREDS }) })(),
+    ).resolves.toBeDefined();
   });
 
-  it("does not require Jev's fallback on a first run, which never calls it", async () => {
-    writeSettings(db, { ...OWNER_DOC, fallbackProvider: 'pi-ai' } as never);
-    await expect(preflight()).resolves.toBeDefined();
-  });
-
-  it("refuses an extending sync whose chosen fallback lacks its key, naming the setting to change", async () => {
-    writeSettings(db, { ...OWNER_DOC, fallbackProvider: 'pi-ai' } as never);
-    db.getOrCreateCategory('AI', null, new Date().toISOString());
-    const failure = preflight();
-    await expect(failure).rejects.toThrow(/^Jev's fallback language model cannot run: .*ANTHROPIC_API_KEY/);
-    await expect(failure).rejects.toThrow(/open Settings and change "Jev's fallback provider" under Phase 2 - Filing\./);
-    // ...and the job itself refuses the same way, before reading X.
-    await expect(run()).rejects.toThrow(/Jev's fallback provider/);
+  it('refuses a sync whose phase-1 model lacks its key, naming the Settings field to change', async () => {
+    writeSettings(db, { categorizer: 'typesafe', taxonomyProvider: 'pi-ai', taxonomyModel: 'anthropic/claude-opus-4-8' } as never);
+    const failure = createSyncPreflight({ db, store: storeWith(OWNER_KEYS), config: loadConfig({ ...X_CREDS }) })();
+    await expect(failure).rejects.toThrow(/^The phase 1 \(taxonomy\) language model cannot run: .*ANTHROPIC_API_KEY/);
+    await expect(failure).rejects.toThrow(/open Settings and change "Taxonomy provider" under Phase 1 - Taxonomy\./);
+    await expect(run()).rejects.toThrow(/Taxonomy provider/);
     expect(seen).toEqual([]);
+  });
+});
+
+/**
+ * The whole in-app sync with the REAL categorizer builder: the real
+ * `claude-cli` adapter spawning a stub `claude` that records every prompt it
+ * is given, and the real TypeSafe SDK against a local stand-in for the API.
+ * Only the X client is faked. Proves the design end to end: phase 1 runs on
+ * every sync (designing, then growing the tree for a novel topic), and Jev
+ * files - into the category phase 1 just added - without a single filing
+ * call to a language model.
+ */
+describe('Jev syncs end to end: phase 1 every sync, no language model in phase 2', () => {
+  let dir: string;
+  let claude: string;
+  let promptLog: string;
+  let typesafe: http.Server;
+  let typesafeUrl: string;
+  const jevStates: string[] = [];
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbo-e2e-'));
+    promptLog = path.join(dir, 'prompts.log');
+    claude = path.join(dir, 'claude');
+    const design = { tree: [{ name: 'AI', description: 'Artificial intelligence.', children: [{ name: 'Evals', children: [] }] }] };
+    const grow = { tree: [{ name: 'Gardening', description: 'Growing plants.', children: [] }] };
+    fs.writeFileSync(
+      claude,
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv[2] === '--version') { console.log('9.9.9 (stub)'); process.exit(0); }
+let input = '';
+process.stdin.on('data', (c) => (input += c));
+process.stdin.on('end', () => {
+  const first = input.split('\\n')[0];
+  fs.appendFileSync(${JSON.stringify(promptLog)}, first + '\\n');
+  const tree = first.startsWith('You are growing') ? ${JSON.stringify(JSON.stringify(grow))} : first.startsWith('You are designing') ? ${JSON.stringify(JSON.stringify(design))} : '{"assignments":[]}';
+  process.stdout.write(JSON.stringify({ result: tree }));
+});
+`,
+      { mode: 0o755 },
+    );
+    // A stand-in TypeSafe API: "tomato" posts are Gardening, the rest AI > Evals.
+    typesafe = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const text = JSON.stringify(body.state);
+        jevStates.push(text);
+        const want = /tomato/.test(text) ? ['Gardening'] : ['AI', 'Evals'];
+        const answers: Record<string, unknown> = {};
+        for (const [key, q] of Object.entries(body.questions as Record<string, { criteria: Record<string, unknown> }>)) {
+          const labels = Object.keys(q.criteria);
+          const hit = labels.find((l) => want.includes(l));
+          answers[key] = {
+            type: 'choice',
+            choice: hit ?? labels[0],
+            confidence: hit ? 0.95 : 0.05,
+            probabilities: Object.fromEntries(labels.map((l) => [l, l === hit ? 0.95 : 0.02])),
+          };
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ model: 'jev-stub', answers, usage: { input_tokens: 1, output_tokens: 0 } }));
+      });
+    });
+    await new Promise<void>((resolve) => typesafe.listen(0, '127.0.0.1', resolve));
+    typesafeUrl = `http://127.0.0.1:${(typesafe.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => typesafe.close(() => resolve()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('designs, then grows the tree for a novel topic, and Jev files both syncs with no LLM filing call', async () => {
+    const db = new Database(':memory:');
+    try {
+      db.setRefreshToken('stored-refresh-token');
+      writeSettings(db, { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' });
+      const sync = (bookmarks: RawBookmark[]) =>
+        createSyncJob({
+          db,
+          store: fakeStore({ ...X_CREDS, TYPESAFE_API_KEY: 'not-a-real-key', XBOOKMARKS_CLAUDE_BIN: claude }),
+          config: loadConfig({ ...X_CREDS, XBOOKMARKS_TYPESAFE_BASE_URL: typesafeUrl }),
+          connect: async () => new FakeXClient(bookmarks),
+        })(() => {});
+      const post = (postId: string, text: string): RawBookmark => ({ ...bm(postId), text });
+
+      await sync([post('2', 'an eval harness'), post('1', 'llm evals')]);
+      await sync([post('3', 'growing tomatoes'), post('2', 'an eval harness'), post('1', 'llm evals')]);
+
+      const prompts = fs.readFileSync(promptLog, 'utf8').trim().split('\n');
+      expect(prompts).toEqual([
+        expect.stringMatching(/^You are designing a category taxonomy/),
+        expect.stringMatching(/^You are growing the category taxonomy/),
+      ]);
+      expect(jevStates.length).toBeGreaterThan(0);
+
+      const gardening = db.findCategory('Gardening', null)!;
+      const evals = db.findCategory('Evals', db.findCategory('AI', null)!.id)!;
+      expect(db.getBookmarksForCategory(gardening.id).map((b) => b.postId)).toEqual(['3']);
+      expect(db.getBookmarksForCategory(evals.id).map((b) => b.postId).sort()).toEqual(['1', '2']);
+      expect(db.getAllCategories().some((c) => c.name === 'Uncategorized')).toBe(false);
+    } finally {
+      db.close();
+    }
   });
 });
 
@@ -346,32 +430,30 @@ describe('createSyncSpend (security review 2, #20)', () => {
     ]);
   });
 
-  it('drops the taxonomy pass once a tree exists, since an incremental sync never runs it', async () => {
+  it('keeps the taxonomy pass once a tree exists, since every sync runs it', async () => {
     writeSettings(db, { categorizer: 'claude-cli', taxonomyProvider: 'pi-ai', assignmentProvider: 'claude-cli' });
     expect((await spend()).map((p) => p.pass)).toEqual(['taxonomy']);
     db.getOrCreateCategory('AI', null, new Date().toISOString());
-    expect(await spend()).toEqual([]);
+    expect((await spend()).map((p) => p.pass)).toEqual(['taxonomy']);
   });
 
-  it("names Jev filing, and its paid LLM fallback when a tree is being extended", async () => {
-    writeSettings(db, {
-      categorizer: 'typesafe',
-      taxonomyProvider: 'claude-cli',
-      assignmentProvider: 'claude-cli',
-      fallbackProvider: 'pi-ai',
-    });
+  it('names Jev filing, and never a language model behind it', async () => {
+    // A stored document from when Jev had a fallback language model.
+    db.setState(
+      'app_settings',
+      JSON.stringify({ categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai', fallbackProvider: 'pi-ai' }),
+    );
     expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([['filing', 'typesafe']]);
+    db.getOrCreateCategory('AI', null, new Date().toISOString());
+    expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([['filing', 'typesafe']]);
+  });
+
+  it('names a paid taxonomy pass beside Jev on every sync', async () => {
+    writeSettings(db, { categorizer: 'typesafe', taxonomyProvider: 'pi-ai', assignmentProvider: 'claude-cli' });
     db.getOrCreateCategory('AI', null, new Date().toISOString());
     expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([
+      ['taxonomy', 'pi-ai'],
       ['filing', 'typesafe'],
-      ['filing-fallback', 'pi-ai'],
     ]);
-  });
-
-  it('never bills a fallback the owner could not see: an unset one follows the phase-1 provider', async () => {
-    // The owner's stored document: a pi-ai filing provider left over from before Jev was picked.
-    db.setState('app_settings', JSON.stringify({ categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' }));
-    db.getOrCreateCategory('AI', null, new Date().toISOString());
-    expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([['filing', 'typesafe']]);
   });
 });

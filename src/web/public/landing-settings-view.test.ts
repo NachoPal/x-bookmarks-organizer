@@ -11,8 +11,9 @@ import { buildSettingsCatalog } from "../../settings/catalog";
  * ANTHROPIC_API_KEY.
  *
  * Reproduced: the combined "Filing method" selector kept a pi-ai filing
- * provider picked earlier as Jev's (hidden) fallback, and the landing's Sync
- * saved it. These pin that Jev's fallback is a visible field, that a save
+ * provider picked earlier as a hidden language model behind Jev, and the
+ * landing's Sync saved it. Jev calls no language model now, so these pin that
+ * no language-model field shows or is saved while Jev files, that a save
  * sends only what is on screen, and that the landing and the Settings panel
  * always show the same stored document after either one saves.
  *
@@ -94,59 +95,49 @@ async function boot(initial: Record<string, unknown>) {
   const puts = () => sent.filter((s) => s.method === "PUT" && s.url === "/api/settings").map((s) => s.body);
   const syncButton = () =>
     [...doc.querySelectorAll<HTMLButtonElement>(".first-run button")].find((b) => b.textContent === "Sync my bookmarks")!;
-  const fallbackGroup = (prefix: string) => $(`${prefix}-fallback-title`).closest(".phase-subgroup") as HTMLElement;
-  return { $, value, change, puts, syncButton, fallbackGroup, stored: () => settings };
+  /** Whether a form shows any field for a language model in phase 2. */
+  const phase2Models = (prefix: string) =>
+    [...doc.querySelectorAll<HTMLElement>(`[id^="${prefix}-"]`)].filter(
+      (n) => /assignment|fallback/i.test(n.id) && n.closest(".field") && !(n.closest(".field") as HTMLElement).hidden,
+    );
+  return { $, value, change, puts, syncButton, phase2Models, doc, stored: () => settings };
 }
 
-describe("landing view + Settings: Jev's fallback is visible and both forms agree", () => {
-  it("shows the owner's saved document with the unseen pi-ai filing provider resolved to the phase-1 provider", async () => {
-    const { value, fallbackGroup, $ } = await boot({
+describe("landing view + Settings: Jev needs no language model, and both forms agree", () => {
+  it("shows the owner's saved document - an unseen pi-ai filer and an old fallback - as Jev alone", async () => {
+    const { value, phase2Models, doc, $ } = await boot({
       categorizer: "typesafe",
       taxonomyProvider: "claude-cli",
       assignmentProvider: "pi-ai",
+      fallbackProvider: "pi-ai",
       configuredAt: "2026-09-21T10:28:55.227Z",
     });
     for (const prefix of ["firstrun", "settings"]) {
       expect(value(`${prefix}-categorizer`)).toBe("typesafe");
-      expect(fallbackGroup(prefix).hidden).toBe(false);
-      expect(value(`${prefix}-fallbackProvider`)).toBe("claude-cli");
+      expect(phase2Models(prefix)).toEqual([]);
     }
-    // Nothing on the landing blocks this selection.
+    expect(doc.body.textContent).not.toMatch(/fallback language model/i);
+    // Nothing blocks this selection.
     expect($("settings-categorization-note").hidden).toBe(true);
   });
 
   it("saves exactly what the landing shows when switching pi-ai -> Jev, and the sync starts on it", async () => {
-    const { change, puts, syncButton, value, fallbackGroup } = await boot({
+    const { change, puts, syncButton, value, phase2Models } = await boot({
       categorizer: "claude-cli",
       taxonomyProvider: "claude-cli",
       assignmentProvider: "claude-cli",
     });
-    expect(fallbackGroup("firstrun").hidden).toBe(true);
+    expect(phase2Models("firstrun").length).toBeGreaterThan(0);
     // The owner's path: try pi-ai for filing, then settle on Jev.
     await change("firstrun-categorizer", "pi-ai");
     await change("firstrun-categorizer", "typesafe");
-    expect(fallbackGroup("firstrun").hidden).toBe(false);
-    expect(value("firstrun-fallbackProvider")).toBe("claude-cli");
+    expect(phase2Models("firstrun")).toEqual([]);
 
     syncButton().click();
     await tick();
-    expect(puts()).toEqual([{ categorizer: "typesafe", taxonomyProvider: "claude-cli", fallbackProvider: "claude-cli" }]);
+    expect(puts()).toEqual([{ categorizer: "typesafe", taxonomyProvider: "claude-cli" }]);
     // The Settings panel shows the same stored choice.
     expect(value("settings-categorizer")).toBe("typesafe");
-    expect(value("settings-fallbackProvider")).toBe("claude-cli");
-  });
-
-  it("blocks the landing's Sync with a visible reason when the chosen fallback has no key", async () => {
-    const { change, puts, syncButton, $ } = await boot({
-      categorizer: "typesafe",
-      taxonomyProvider: "claude-cli",
-    });
-    await change("firstrun-fallbackProvider", "pi-ai");
-    syncButton().click();
-    await tick();
-    expect(puts()).toEqual([]);
-    const note = [...$("bookmarks").querySelectorAll(".first-run .settings-note")].map((n) => n.textContent).join(" ");
-    expect(note).toContain("Jev's fallback runs on Anthropic API, which needs ANTHROPIC_API_KEY.");
   });
 
   it("brings the landing to what Settings saved, even over an unsaved landing edit", async () => {

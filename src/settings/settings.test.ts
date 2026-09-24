@@ -113,27 +113,22 @@ describe('settings persistence', () => {
     expect(readSettings(db, catalog)).toEqual(settings);
   });
 
-  it("stores only the fields the chosen method reads - Jev's fallback under Jev, the filer otherwise", () => {
+  it('stores only the fields the chosen method reads - no filer under Jev, the filer otherwise', () => {
     writeSettings(db, {
       categorizer: 'typesafe',
       taxonomyProvider: 'claude-cli',
       assignmentProvider: 'pi-ai',
       assignmentModel: 'openrouter/acme/x',
-      fallbackProvider: 'pi-ai',
-      fallbackModel: 'opencode/gpt-5.1',
     });
     expect(JSON.parse(db.getState('app_settings')!)).toEqual({
       categorizer: 'typesafe',
       taxonomyProvider: 'claude-cli',
-      fallbackProvider: 'pi-ai',
-      fallbackModel: 'opencode/gpt-5.1',
     });
     writeSettings(db, {
       categorizer: 'claude-cli',
       taxonomyProvider: 'claude-cli',
       assignmentProvider: 'pi-ai',
       assignmentModel: 'opencode/gpt-5.1',
-      fallbackProvider: 'pi-ai',
     });
     expect(JSON.parse(db.getState('app_settings')!)).toEqual({
       categorizer: 'claude-cli',
@@ -426,77 +421,47 @@ describe('phase-2 provider wiring (bug fix): a saved LLM choice never resolves t
   });
 });
 
-describe("Jev's fallback language model", () => {
-  // Under Jev the assignment ROLE is Jev's fallback (new-category filing while
-  // extending, and "Find bookmarks"). It used to be the stored
-  // `assignmentProvider`, which no screen shows while Jev is the method - so a
-  // pi-ai choice left over from before Jev was picked blocked every sync.
-  it('resolves an unset fallback to the phase-1 provider, never the hidden filing provider', () => {
-    const { settings, errors } = validateSettings(
-      { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' },
-      catalog,
-    );
+describe("a document saved while Jev had a fallback language model", () => {
+  // Jev used to hand bookmarks it could not place to a language model; that
+  // fallback, and its Settings field, are gone. A stored document may still
+  // carry the fields: they are ignored, and dropped on the next save.
+  const legacy = {
+    categorizer: 'typesafe',
+    taxonomyProvider: 'claude-cli',
+    fallbackProvider: 'pi-ai',
+    fallbackModel: 'opencode/gpt-5.1',
+    configuredAt: '2026-09-24T00:00:00.000Z',
+  };
+
+  it('reads without an error, and without the old fields', () => {
+    const { settings, errors } = validateSettings(legacy, catalog);
     expect(errors).toEqual([]);
-    expect(settings.fallbackProvider).toBeUndefined();
-    const config = applySettingsToConfig(loadConfig({}), settings);
-    expect(config.llm.roles.assignment.provider).toBe('claude-cli');
+    expect(settings).not.toHaveProperty('fallbackProvider');
+    expect(settings).not.toHaveProperty('fallbackModel');
+    // Even an unknown old fallback provider is not an error any more.
+    expect(validateSettings({ ...legacy, fallbackProvider: 'nope', fallbackModel: 'gpt' }, catalog).errors).toEqual([]);
+  });
+
+  it('never runs the old fallback: nothing maps it onto a role', () => {
+    const config = applySettingsToConfig(loadConfig({}), validateSettings(legacy, catalog).settings);
+    expect(config.categorizer).toBe('typesafe');
+    expect(config.llm.roles.assignment.provider).not.toBe('pi-ai');
     expect(config.llm.roles.assignment.model).toBeUndefined();
   });
 
-  it('follows the phase-1 provider when that is the paid one', () => {
-    const config = applySettingsToConfig(loadConfig({}), {
-      categorizer: 'typesafe',
-      taxonomyProvider: 'pi-ai',
-      assignmentProvider: 'claude-cli',
-    });
-    expect(config.llm.roles.assignment.provider).toBe('pi-ai');
-  });
-
-  it('runs an explicitly chosen fallback provider and model', () => {
-    const { settings, errors } = validateSettings(
-      {
+  it('drops the old fields on the next save', () => {
+    const db = new Database(':memory:');
+    try {
+      db.setState('app_settings', JSON.stringify(legacy));
+      writeSettings(db, readSettings(db, catalog)!);
+      expect(JSON.parse(db.getState('app_settings')!)).toEqual({
         categorizer: 'typesafe',
         taxonomyProvider: 'claude-cli',
-        assignmentProvider: 'claude-cli',
-        fallbackProvider: 'pi-ai',
-        fallbackModel: 'opencode/gpt-5.1',
-      },
-      catalog,
-    );
-    expect(errors).toEqual([]);
-    const config = applySettingsToConfig(loadConfig({}), settings);
-    expect(config.llm.roles.assignment.provider).toBe('pi-ai');
-    expect(config.llm.roles.assignment.model).toBe('opencode/gpt-5.1');
-  });
-
-  it('ignores the fallback entirely while a language model files', () => {
-    const config = applySettingsToConfig(loadConfig({}), {
-      categorizer: 'claude-cli',
-      taxonomyProvider: 'claude-cli',
-      assignmentProvider: 'claude-cli',
-      fallbackProvider: 'pi-ai',
-      fallbackModel: 'opencode/gpt-5.1',
-    });
-    expect(config.llm.roles.assignment.provider).toBe('claude-cli');
-    expect(config.llm.roles.assignment.model).toBeUndefined();
-  });
-
-  it('refuses an unknown fallback provider or a model of the wrong shape, naming the field', () => {
-    const unknown = validateSettings({ categorizer: 'typesafe', fallbackProvider: 'nope' }, catalog);
-    expect(unknown.errors[0]).toMatch(/^Unknown Jev's fallback provider "nope"/);
-    expect(unknown.settings.fallbackProvider).toBeUndefined();
-    const shape = validateSettings({ categorizer: 'typesafe', fallbackProvider: 'pi-ai', fallbackModel: 'gpt' }, catalog);
-    expect(shape.errors[0]).toContain("Jev's fallback model \"gpt\"");
-  });
-
-  it('lets an exported assignment-provider variable claim it on the CLI', () => {
-    const env = { XBOOKMARKS_ASSIGNMENT_PROVIDER: 'pi-ai' };
-    const config = applySettingsToConfig(
-      loadConfig(env),
-      { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli', fallbackProvider: 'claude-cli' },
-      env,
-    );
-    expect(config.llm.roles.assignment.provider).toBe('pi-ai');
+        configuredAt: '2026-09-24T00:00:00.000Z',
+      });
+    } finally {
+      db.close();
+    }
   });
 });
 

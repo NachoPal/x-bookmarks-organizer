@@ -21,11 +21,8 @@
    * The taxonomy pass is ALWAYS a language model - Jev invents no labels, so
    * it structurally cannot design the tree - which is why pass 1's provider,
    * model and effort stay live for both methods. Pass 2's provider and model
-   * belong to the model method alone: Jev files bookmarks without a prompt.
-   * Jev's own language model - its FALLBACK, which files a bookmark it fits
-   * nowhere while a sync extends the tree, and runs "Find bookmarks" - is
-   * shown and saved only while Jev is the method, so no hidden choice is ever
-   * what a run uses.
+   * belong to the model method alone: Jev files bookmarks without a prompt,
+   * and calls no language model at all.
    */
   function fieldsFor(methodId) {
     var usesModel = methodId !== "typesafe";
@@ -35,29 +32,15 @@
       effort: true,
       assignmentProvider: usesModel,
       assignmentModel: usesModel,
-      fallbackProvider: !usesModel,
-      fallbackModel: !usesModel,
     };
-  }
-
-  /**
-   * The provider role a form pass draws its suggestions from: Jev's fallback
-   * runs on the assignment (filing) role.
-   */
-  function roleOf(pass) {
-    return pass === "fallback" ? "assignment" : pass;
   }
 
   /**
    * A pass's provider id from saved settings. A document saved before each
    * pass had its own provider (issue #70) carries one `provider` for both.
-   * Jev's fallback left unset means the phase-1 provider - the server
-   * resolves it the same way (`applySettingsToConfig`), and never to the
-   * filing provider, which is not shown while Jev files.
    */
   function passProvider(settings, pass) {
     if (!settings) return "";
-    if (pass === "fallback") return settings.fallbackProvider || passProvider(settings, "taxonomy");
     return settings[pass + "Provider"] || settings.provider || "";
   }
 
@@ -110,8 +93,8 @@
    * What picking `selected` in the combined filing selector sets `categorizer`
    * and `assignmentProvider` to. Jev only ever sets the METHOD - the filing
    * provider is left as `previousAssignmentProvider` so switching back
-   * restores it, but nothing reads or saves it while Jev files (Jev's own
-   * language model is the separate, visible `fallbackProvider`). Any other
+   * restores it, but nothing reads or saves it while Jev files (Jev calls no
+   * language model). Any other
    * value is a provider id, which sets BOTH the language-model method (the
    * "claude-cli" id predates issue #70 and just means "a model files it") and
    * that provider, in the same action - so a saved LLM-provider choice can
@@ -322,16 +305,7 @@
     "~/.config/x-bookmarks-organizer/credentials.json";
 
   /** The fields a save actually persists, in the order compared. */
-  var SAVED_FIELDS = [
-    "categorizer",
-    "taxonomyProvider",
-    "assignmentProvider",
-    "fallbackProvider",
-    "taxonomyModel",
-    "assignmentModel",
-    "fallbackModel",
-    "effort",
-  ];
+  var SAVED_FIELDS = ["categorizer", "taxonomyProvider", "assignmentProvider", "taxonomyModel", "assignmentModel", "effort"];
 
   /**
    * Whether the current selection is identical to the saved configuration
@@ -352,8 +326,6 @@
       taxonomyModel: savedSettings.taxonomyModel,
       assignmentProvider: passProvider(savedSettings, "assignment"),
       assignmentModel: savedSettings.assignmentModel,
-      fallbackProvider: passProvider(savedSettings, "fallback"),
-      fallbackModel: savedSettings.fallbackProvider ? savedSettings.fallbackModel : "",
       effort: savedSettings.effort,
     });
     var current = toPayload(values);
@@ -386,7 +358,6 @@
     var passes = [
       { pass: "taxonomy", name: "Phase 1", used: true },
       { pass: "assignment", name: "Phase 2", used: fields.assignmentModel },
-      { pass: "fallback", name: "Jev's fallback", used: fields.fallbackModel },
     ];
     for (var i = 0; i < passes.length; i++) {
       var p = passes[i];
@@ -408,7 +379,7 @@
       }
       if (sourcesOf(provider).length === 0) continue;
       var model = values[p.pass + "Model"] || "";
-      var suggested = provider.suggested ? provider.suggested[roleOf(p.pass)] : undefined;
+      var suggested = provider.suggested ? provider.suggested[p.pass] : undefined;
       var source = sourceOfModel(provider, model || suggested);
       var chosen = findSource(provider, values[p.pass + "Source"]) || source;
       if (!model && chosen && (!source || source.id !== chosen.id)) {
@@ -518,15 +489,12 @@
       taxonomyProvider: values.taxonomyProvider,
     };
     // Only what the chosen method reads, so a save never carries a field the
-    // owner cannot see on screen: the filer under the model method, Jev's
-    // fallback under Jev.
+    // owner cannot see on screen: no filer under Jev.
     if (fields.assignmentProvider && values.assignmentProvider) payload.assignmentProvider = values.assignmentProvider;
-    if (fields.fallbackProvider && values.fallbackProvider) payload.fallbackProvider = values.fallbackProvider;
     if (values.taxonomyModel) payload.taxonomyModel = values.taxonomyModel;
     if (fields.assignmentModel && values.assignmentModel) {
       payload.assignmentModel = values.assignmentModel;
     }
-    if (fields.fallbackModel && values.fallbackModel) payload.fallbackModel = values.fallbackModel;
     if (values.effort) payload.effort = values.effort;
     return payload;
   }
@@ -653,7 +621,6 @@
     emptyStateKind: emptyStateKind,
     showFilterTabs: showFilterTabs,
     fieldsFor: fieldsFor,
-    roleOf: roleOf,
     passProvider: passProvider,
     findProvider: findProvider,
     findMethod: findMethod,

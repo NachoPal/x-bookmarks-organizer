@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildIncrementalTaxonomyPrompt,
   buildReconcilePrompt,
   buildTaxonomyPrompt,
   extractDomain,
@@ -61,7 +62,7 @@ describe('buildTaxonomyPrompt', () => {
     expect(prompt).toContain('"tree"');
   });
 
-  it('includes an existing tree so incremental runs extend it', () => {
+  it('includes an existing tree to design around', () => {
     const prompt = buildTaxonomyPrompt([bm('1')], '- AI\n  - Evals', 3, 4);
     expect(prompt).toContain('- AI');
     expect(prompt).toContain('  - Evals');
@@ -431,5 +432,73 @@ describe('buildReconcilePrompt', () => {
     expect(prompt).toContain('## Part 1 of 2 (700 bookmarks)\n{"tree":[{"name":"Rust","description":"The Rust language.","children":[]}]}');
     expect(prompt).toContain('## Part 2 of 2 (650 bookmarks)');
     expect(prompt).toContain('Return ONLY a JSON object');
+  });
+});
+
+describe('incremental pass 1 (every sync after the first)', () => {
+  const TREE = '- AI - Artificial intelligence.\n  - Evals\n- Rust [owner]';
+
+  it('shows the whole tree and only the new bookmarks, and asks for additions alone', () => {
+    const prompt = buildIncrementalTaxonomyPrompt([bm('7', 'growing tomatoes')], TREE, 4);
+    expect(prompt).toContain(TREE);
+    expect(prompt).toContain('[0] @bob: growing tomatoes');
+    expect(prompt).toContain('Every category above already exists and is FIXED');
+    expect(prompt).toContain('never rename, re-describe, merge, move or remove one');
+    expect(prompt).toContain('Nodes marked [owner] were created by the person by hand');
+    expect(prompt).toContain('Prefer the existing categories');
+    expect(prompt).toContain('Never add a category that means the same thing as an existing one');
+    expect(prompt).toContain('containing ONLY the categories you add');
+    expect(prompt).toContain('return {"tree":[]}');
+    expect(prompt).toContain('Do not nest deeper than 4 levels');
+    // It grows the tree; it is not asked to design a deep one from scratch.
+    expect(prompt).not.toContain('AT LEAST');
+  });
+
+  it('the designer sends the incremental prompt and accepts "nothing new" as an answer', async () => {
+    const prompts: string[] = [];
+    const designer = new LlmTaxonomyDesigner(
+      async (prompt) => {
+        prompts.push(prompt);
+        return '{"tree":[]}';
+      },
+      { minDepth: 3, maxDepth: 4, contextWindow: async () => 200_000 },
+    );
+    const books = [bm('1', 'an eval harness')];
+    expect(await designer.designTaxonomy(books, TREE, undefined, 'incremental')).toEqual([]);
+    expect(prompts).toEqual([buildIncrementalTaxonomyPrompt(books, TREE, 4)]);
+  });
+
+  it('batched, tolerates parts that need nothing and merges only the ones that add something', async () => {
+    const library = (n: number) =>
+      Array.from({ length: n }, (_, i) => bm(String(i), `post ${String(i).padStart(4, '0')} ${'x'.repeat(190)}`));
+    const prompts: string[] = [];
+    // Only the first and the last part need anything new.
+    const runner: LlmRunner = async (prompt) => {
+      prompts.push(prompt);
+      if (prompt.startsWith('You are merging')) return '{"tree":[{"name":"Gardening","children":[]}]}';
+      const [, part, count] = /PART (\d+) of (\d+)/.exec(prompt) ?? [];
+      if (part === '1') return '{"tree":[{"name":"Gardening","description":"Plants.","children":[]}]}';
+      if (part === count) return '{"tree":[{"name":"Horticulture","description":"Plants too.","children":[]}]}';
+      return '{"tree":[]}';
+    };
+    const designer = new LlmTaxonomyDesigner(runner, { minDepth: 3, maxDepth: 4, contextWindow: async () => 60_000 });
+    const tree = await designer.designTaxonomy(library(3_000), TREE, undefined, 'incremental');
+    const parts = prompts.filter((p) => /PART \d+ of/.test(p)).length;
+    expect(parts).toBeGreaterThanOrEqual(3);
+    expect(tree).toEqual([{ name: 'Gardening', children: [] }]);
+    const merge = prompts.at(-1)!;
+    expect(merge).toContain('You are merging proposed additions');
+    expect(merge).toContain('## Part 1 of 2');
+    expect(merge).toContain('Horticulture');
+    expect(merge).toContain('containing ONLY the categories you add');
+
+    const nothing = new LlmTaxonomyDesigner(async (p) => (prompts.push(p), '{"tree":[]}'), {
+      minDepth: 3,
+      maxDepth: 4,
+      contextWindow: async () => 60_000,
+    });
+    prompts.length = 0;
+    expect(await nothing.designTaxonomy(library(3_000), TREE, undefined, 'incremental')).toEqual([]);
+    expect(prompts.some((p) => p.startsWith('You are merging'))).toBe(false);
   });
 });

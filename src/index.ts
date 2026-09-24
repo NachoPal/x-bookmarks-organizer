@@ -3,7 +3,13 @@ import { loadConfig, requireXCredentials, type Config } from './config';
 import { createCredentialStore, dotenvExposure, type CredentialStore } from './creds/resolve';
 import { Database } from './db/database';
 import { getAuthenticatedClient, login } from './x/auth';
-import { buildCategorizers, buildTaxonomyDesigner, reportCategorizerBilling, requireLlm } from './categorize/build';
+import {
+  buildCategorizers,
+  buildTaxonomyDesigner,
+  reportCategorizerBilling,
+  requireLlm,
+  syncLlmRoles,
+} from './categorize/build';
 import { Categorizer } from './categorize/llm';
 import { recategorizeAll, runIngest } from './ingest';
 import { startServer } from './web/server';
@@ -160,7 +166,7 @@ async function cmdRun(baseConfig: Config, db: Database, store: CredentialStore):
   const config = withStoredSettings(baseConfig, db);
   requireXCredentials(config);
   const llm = createLlmFactory(config, process.env, store);
-  await requireLlm(llm, ['taxonomy', 'assignment']);
+  await requireLlm(llm, syncLlmRoles(config));
   reportCategorizerBilling(config, llm, (msg) => console.log(msg));
   const client = await getAuthenticatedClient(config, db);
   const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store, (msg) => console.log(msg));
@@ -185,7 +191,7 @@ async function cmdRun(baseConfig: Config, db: Database, store: CredentialStore):
 async function cmdRecategorize(baseConfig: Config, db: Database, store: CredentialStore): Promise<void> {
   const config = withStoredSettings(baseConfig, db);
   const llm = createLlmFactory(config, process.env, store);
-  await requireLlm(llm, ['taxonomy', 'assignment']);
+  await requireLlm(llm, syncLlmRoles(config));
   reportCategorizerBilling(config, llm, (msg) => console.log(msg));
   const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store, (msg) => console.log(msg));
 

@@ -32,8 +32,8 @@ export interface RoleSpend {
   price?: ModelPrice;
 }
 
-/** Which sync pass a paid call belongs to. `filing-fallback` is Jev's new-category LLM fallback. */
-export type SyncPassId = 'taxonomy' | 'filing' | 'filing-fallback';
+/** Which sync pass a paid call belongs to. */
+export type SyncPassId = 'taxonomy' | 'filing';
 
 /** One pass of the NEXT sync that will be billed per token. */
 export interface PaidPass {

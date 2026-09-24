@@ -7,17 +7,24 @@
  * purpose: it reads the whole library, so it costs a model call per batch,
  * and the owner decides when that is worth it.
  *
- * The question asked is narrow - "which of these belong in THIS category?" -
- * rather than re-running the full filing prompt over the whole tree: the
- * answer is the same for the category in question, the prompt carries one
- * node instead of the whole tree, and nothing else about a bookmark can
- * change. The write is ADD-ONLY (`Database.addBookmarksToCategory`): a match
- * gains this category and keeps every category it already had.
+ * It runs on the configured phase-2 method ({@link FindMatcher}):
+ *
+ * - A language model is asked a narrow question - "which of these belong in
+ *   THIS category?" - rather than the full filing prompt over the whole tree:
+ *   the answer is the same for the category in question, the prompt carries
+ *   one node instead of the whole tree, and nothing else about a bookmark can
+ *   change ({@link llmFindMatcher}).
+ * - Jev walks each bookmark down the whole tree exactly as a sync files it,
+ *   and a bookmark it files into the category or anywhere below it is a match
+ *   ({@link filingFindMatcher}).
+ *
+ * The write is ADD-ONLY (`Database.addBookmarksToCategory`): a match gains
+ * this category and keeps every category it already had.
  */
 import type { ArticleContext } from '../articles/link-metadata';
 import type { Database } from '../db/database';
 import type { RawBookmark } from '../types';
-import type { LlmRunner } from './llm';
+import type { BatchCategorizer, LlmRunner } from './llm';
 
 const MAX_TEXT_CHARS = 500;
 const MAX_ARTICLE_CHARS = 300;
@@ -115,9 +122,44 @@ export interface FindSummary {
   addedBookmarkIds: number[];
 }
 
+/**
+ * Decides which bookmarks of one batch belong in the target: the post ids of
+ * the matches, restricted to the batch.
+ */
+export type FindMatcher = (
+  batch: RawBookmark[],
+  target: FindTarget,
+  articleContext?: Map<string, ArticleContext>,
+) => Promise<string[]>;
+
+/** A language model answering the one-category prompt. */
+export function llmFindMatcher(runner: LlmRunner): FindMatcher {
+  return async (batch, target, articleContext) =>
+    parseFindMatches(await runner(buildFindPrompt(batch, target, articleContext)), new Set(batch.map((b) => b.postId)));
+}
+
+/**
+ * A filing method (Jev) filing each bookmark into the whole tree (`treeText`,
+ * as `renderTreeForPrompt` draws it), exactly as a sync would: a bookmark
+ * with a path at or below the target is a match. Jev's paths are the tree's
+ * own names (the walk builds them from real nodes), so a prefix comparison on
+ * names is exact.
+ */
+export function filingFindMatcher(categorizer: BatchCategorizer, treeText: string): FindMatcher {
+  return async (batch, target, articleContext) => {
+    const validIds = new Set(batch.map((b) => b.postId));
+    const assignments = await categorizer.categorizeBatch(batch, treeText, articleContext);
+    const within = (path: string[]) =>
+      path.length >= target.path.length && target.path.every((name, i) => path[i] === name);
+    return assignments
+      .filter((a) => validIds.has(a.postId) && a.categories.some(within))
+      .map((a) => a.postId);
+  };
+}
+
 export interface FindDeps {
   db: Database;
-  runner: LlmRunner;
+  matcher: FindMatcher;
   categoryId: number;
   batchSize: number;
   /** Linked-article titles, fed in exactly as the filing pass gets them. */
@@ -151,7 +193,7 @@ export function describeFindTarget(db: Database, categoryId: number): FindTarget
  * thrown run is simply lost - the links are real either way).
  */
 export async function findBookmarksForCategory(deps: FindDeps): Promise<FindSummary> {
-  const { db, runner, categoryId, batchSize } = deps;
+  const { db, matcher, categoryId, batchSize } = deps;
   const log = deps.logger ?? (() => {});
   const target = describeFindTarget(db, categoryId);
   if (!target) throw new Error('That category no longer exists.');
@@ -171,8 +213,7 @@ export async function findBookmarksForCategory(deps: FindDeps): Promise<FindSumm
   const addedBookmarkIds: number[] = [];
   for (let i = 0; i < batches; i++) {
     const batch = candidates.slice(i * size, (i + 1) * size);
-    const response = await runner(buildFindPrompt(batch, target, context));
-    const matched = new Set(parseFindMatches(response, new Set(batch.map((b) => b.postId))));
+    const matched = new Set(await matcher(batch, target, context));
     // The category may have been deleted while the model was thinking; stop
     // rather than fail on a foreign key.
     if (!db.getCategoryById(categoryId)) throw new Error('That category was deleted while bookmarks were being found.');

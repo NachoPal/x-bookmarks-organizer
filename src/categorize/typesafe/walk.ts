@@ -109,9 +109,8 @@ export interface WalkResult {
   paths: ScoredPath[];
   /**
    * True when not even the root level was answered confidently, so the
-   * bookmark belongs nowhere in the current tree. This is the signal the
-   * caller routes to the LLM for new-node invention (`extend` mode), rather
-   * than the flat `Uncategorized` dump.
+   * bookmark belongs nowhere in the current tree (and is filed
+   * `Uncategorized`).
    */
   unresolved: boolean;
 }

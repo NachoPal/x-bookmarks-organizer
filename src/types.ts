@@ -145,7 +145,7 @@ export interface CategoryNode {
   /**
    * One-line gloss emitted by the taxonomy-design pass, written to separate
    * this node from its siblings (issue #61). Null for any node designed before
-   * the column existed, or created ad hoc by an `extend` run.
+   * the column existed, or created without one by an older version.
    */
   description?: string | null;
   createdAt: string;

@@ -36,21 +36,16 @@ describe('Categorizer', () => {
     expect(res).toEqual([{ postId: '1', categories: [['AI']] }]);
   });
 
-  it('emits a fixed-tree prompt in strict mode and a reuse-or-create prompt in extend mode', async () => {
+  it('emits the fixed-tree prompt: filing never invents a category', async () => {
     const prompts: string[] = [];
     const runner: LlmRunner = async (prompt) => {
       prompts.push(prompt);
       return '{"assignments":[]}';
     };
     const cat = new Categorizer(runner, { model: 'm', maxDepth: 4 });
-    await cat.categorizeBatch([bm('1')], '- AI', 'strict');
-    await cat.categorizeBatch([bm('1')], '- AI', 'extend');
+    await cat.categorizeBatch([bm('1')], '- AI');
 
-    // Strict forbids inventing categories; extend explicitly permits creating a
-    // new node when nothing fits. These are the two distinct emitted interfaces.
     expect(prompts[0]).toMatch(/do not invent/i);
     expect(prompts[0]).not.toMatch(/create a NEW category/i);
-    expect(prompts[1]).toMatch(/create a NEW category/i);
-    expect(prompts[1]).toMatch(/prefer existing nodes/i);
   });
 });

@@ -14,9 +14,9 @@ import { TypeSafeLevelAsker } from './client';
  * server standing in for the TypeSafe API - the same "spin up a local server
  * rather than mock fetch" discipline `HttpArticleFetcher`'s tests use.
  *
- * It is the proof of the design's central claim: `src/ingest.ts` is unchanged
- * and cannot tell which categorizer it was handed. No network leaves the
- * machine, no API key is real, and nothing is billable.
+ * It is the proof of the design's central claim: `src/ingest.ts` cannot tell
+ * which categorizer it was handed. No network leaves the machine, no API key
+ * is real, and nothing is billable.
  */
 
 const WHEN = '2024-01-01T00:00:00.000Z';
@@ -126,10 +126,10 @@ describe('TypeSafe categorizer through the real ingestion loop', () => {
       const summary = await runIngest({
         db,
         client: fakeXClient([bookmark('1', 'a post about agent harnesses')]),
-        // Pass 1 must not run: a tree already exists, so this throws if called.
+        // Pass 1 grows the tree first; the existing tree already fits.
         taxonomer: {
           async designTaxonomy() {
-            throw new Error('the taxonomy pass must not run on an incremental run');
+            return [];
           },
         },
         categorizer,
@@ -151,6 +151,45 @@ describe('TypeSafe categorizer through the real ingestion loop', () => {
     }
   });
 
+  it('files a novel topic into the category pass 1 added for it on the same sync', async () => {
+    const stub = await startStubTypeSafe(['Gardening', 'Tomatoes']);
+    const modes: (string | undefined)[] = [];
+    try {
+      const categorizer = new TypeSafeCategorizer(
+        { db, asker: new TypeSafeLevelAsker({ apiKey: 'not-a-real-key', baseURL: stub.baseUrl }) },
+        { maxDepth: 4 },
+      );
+
+      await runIngest({
+        db,
+        client: fakeXClient([bookmark('1', 'growing tomatoes on a balcony')]),
+        taxonomer: {
+          async designTaxonomy(_bookmarks, _tree, _context, mode) {
+            modes.push(mode);
+            return [
+              { name: 'Gardening', description: 'Growing plants.', children: [{ name: 'Tomatoes', children: [] }] },
+            ];
+          },
+        },
+        categorizer,
+        batchSize: 15,
+        maxDepth: 4,
+        articleFetcher: { async fetch() { return { ok: false, reason: 'offline test' }; } } as never,
+      });
+
+      expect(modes).toEqual(['incremental']);
+      // Jev saw pass 1's new category among the roots it was offered...
+      const rootCriteria = Object.values(stub.requests[0]!.questions)[0]!.criteria;
+      expect(rootCriteria).toMatchObject({ Gardening: 'Growing plants.' });
+      // ...and filed the bookmark into it.
+      const tomatoes = db.findCategory('Tomatoes', db.findCategory('Gardening', null)!.id)!;
+      expect(db.getBookmarksForCategory(tomatoes.id).map((b) => b.postId)).toEqual(['1']);
+      expect(db.getAllCategories()).toHaveLength(7);
+    } finally {
+      await stub.close();
+    }
+  });
+
   it('sends the taxonomy descriptions to the API as Choice criteria', async () => {
     const stub = await startStubTypeSafe(['AI', 'Harnesses']);
     try {
@@ -159,7 +198,7 @@ describe('TypeSafe categorizer through the real ingestion loop', () => {
         { maxDepth: 4 },
       );
 
-      await categorizer.categorizeBatch([bookmark('1', 'agents')], '', 'strict');
+      await categorizer.categorizeBatch([bookmark('1', 'agents')], '');
 
       const rootRequest = stub.requests[0]!;
       const criteria = Object.values(rootRequest.questions)[0]!.criteria;
@@ -172,7 +211,7 @@ describe('TypeSafe categorizer through the real ingestion loop', () => {
     }
   });
 
-  it('falls back to Uncategorized (never an invented node) when nothing fits in strict mode', async () => {
+  it('falls back to Uncategorized (never an invented node) when nothing fits', async () => {
     // Nothing the stub is willing to pick: every level comes back unconfident.
     const stub = await startStubTypeSafe([]);
     try {
@@ -181,7 +220,7 @@ describe('TypeSafe categorizer through the real ingestion loop', () => {
         { maxDepth: 4 },
       );
 
-      const assignments = await categorizer.categorizeBatch([bookmark('1', 'unrelated')], '', 'strict');
+      const assignments = await categorizer.categorizeBatch([bookmark('1', 'unrelated')], '');
 
       expect(assignments).toEqual([]);
       expect(db.getAllCategories()).toHaveLength(5);

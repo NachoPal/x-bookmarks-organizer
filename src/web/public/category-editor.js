@@ -190,7 +190,7 @@
    * Everything the find confirmation states, from the server's preview
    * (`GET /api/categories/:id/find-bookmarks`): the scope sentence, whether
    * the run can start, and the primary button's label - which says "paid"
-   * when the filing model is billed per token, exactly like a paid sync.
+   * when the filing method (a model, or Jev) is billed per token, exactly like a paid sync.
    */
   function findConfirm(name, preview) {
     const p = preview || {};

@@ -53,21 +53,24 @@ It is not a knowledge graph, not multi-user, and not hosted - see the
   [Other model providers](#other-model-providers-pi-ai-optional-paid)) runs either pass on a model
   from Anthropic, OpenAI, xAI or OpenRouter **billed per token to your own API key**, or on a local
   OpenAI-compatible server. It works in **two passes**:
-  1. **Taxonomy design (holistic).** All bookmarks are shown to the model at once, as a compact
-     list, and it designs one coherent, genuinely nested category tree with complete freedom over
-     the labels and structure, targeting a minimum nesting depth (`XBOOKMARKS_MIN_DEPTH`, default
-     3). This is the hard, large-context step, so it runs on an Opus-class model (Claude Opus 5.5) at medium effort
-     (`XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT`). It runs **only on the first run**
-     (when no generated tree exists yet) and whenever you run `recategorize`. Incremental runs
-     against an existing tree **skip** this pass to conserve quota. Categories you added yourself
-     (see [Your own categories](#your-own-categories)) do not count as a tree: a first sync still
+  1. **Taxonomy design.** Runs first on **every** sync that finds new bookmarks. On the first sync
+     all bookmarks are shown to the model at once, as a compact list, and it designs one coherent,
+     genuinely nested category tree with complete freedom over the labels and structure, targeting a
+     minimum nesting depth (`XBOOKMARKS_MIN_DEPTH`, default 3). Every later sync shows it only the
+     NEW bookmarks against the whole current tree (descriptions included), and it adds just the
+     categories they need - a new top-level category or a sub-category anywhere - preferring the
+     existing ones and never renaming, moving, re-describing or deleting a category that already
+     exists. This is the hard, large-context step, so it runs on an Opus-class model (Claude Opus
+     5.5) at medium effort (`XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT`).
+     `recategorize` redesigns the whole tree from scratch. Categories you added yourself (see
+     [Your own categories](#your-own-categories)) do not count as a tree: a first sync still
      designs one, keeping yours exactly as they are and building around and inside them.
-  2. **Assignment.** Each bookmark is filed into the tree - by default a Haiku-class Claude model
-     (`XBOOKMARKS_MODEL`) to conserve subscription quota, or optionally a paid alternative (see
+  2. **Assignment (filing).** Each new bookmark is filed **strictly** into that tree - by default by
+     a Haiku-class Claude model (`XBOOKMARKS_MODEL`) to conserve subscription quota, or optionally
+     by Jev, a paid alternative (see
      [Choosing the assignment categorizer](#choosing-the-assignment-categorizer-optional-opt-in-paid)
-     below). A bookmark may be filed under several branches at once; anything that fits nothing
-     lands in `Uncategorized`. On an incremental run, only this cheap pass runs, over the new
-     bookmarks: it reuses existing nodes and creates a new one only when a bookmark fits nothing.
+     below). Filing never creates a category - every category comes from pass 1. A bookmark may be
+     filed under several branches at once; anything that fits nothing lands in `Uncategorized`.
      Already-stored bookmarks are never re-touched; use `recategorize` to rebuild the whole tree
      holistically.
 - **Storage** - a single local SQLite file (`data/bookmarks.db` by default), fully owned and
@@ -111,20 +114,24 @@ It is not a knowledge graph, not multi-user, and not hosted - see the
 A category you add in the category editor is **yours** (the person icon on its row is filled).
 You can add them before the first sync or between syncs. The automatic organizer never renames,
 moves, re-describes or deletes one of your categories - on a sync, a `recategorize`, or with any
-filing method - it only files posts into them and may create new sub-categories inside them:
+filing method - it only files posts into them, and a sync's taxonomy pass may add new
+sub-categories inside them:
 
 - **First sync** with your categories already there: the taxonomy pass still designs a full tree,
   with yours as fixed anchors, then files every bookmark strictly into the merged tree.
-- **Later syncs** file the new bookmarks into the existing tree and prefer your categories when a
-  post fits; a new category that only restates one of yours ("LLM" next to your "LLMs") is merged
-  into yours instead of created.
+- **Later syncs** first let the taxonomy pass add whatever categories the new bookmarks need
+  (it is shown yours, marked as yours, and told to prefer them), then file the new bookmarks
+  strictly into the tree; a new category that only restates one of yours ("LLM" next to your
+  "LLMs") is merged into yours instead of created.
 - **`recategorize`** keeps your categories (with the categories that hold them in place, and the
   posts already in them) and rebuilds only the generated rest around them.
-- **Find bookmarks** (the magnifier on a row) runs the filing model over the bookmarks you have
-  already synced and **adds** the ones that fit to that category - nothing is removed from any other
-  category. It is the way to fill a category you added between syncs, since a sync only files new
-  bookmarks. The dialog says how many bookmarks it checks and how the filing model is billed; a
-  per-token model must be confirmed first, like a paid sync. The result toast offers Undo.
+- **Find bookmarks** (the magnifier on a row) runs your phase 2 filing method - the filing model,
+  or Jev - over the bookmarks you have already synced and **adds** the ones that belong to that
+  category (for Jev: the ones it files into the category or anywhere below it) - nothing is removed
+  from any other category. It is the way to fill a category you added between syncs, since a sync
+  only files new bookmarks. The dialog says how many bookmarks it checks and how the method is
+  billed; a per-token method (Jev always is) must be confirmed first, like a paid sync. The result
+  toast offers Undo.
 
 Categories that existed before this feature were all made by the organizer as far as the app can
 tell, so they start as generated. Press the person icon on any row to make it yours (or to hand it
@@ -412,7 +419,10 @@ uses); on the CLI it is `XBOOKMARKS_CATEGORIZER`:
 
 **Leave it unset and nothing changes** - categorization stays on the flat-rate subscription and no
 code path can spend money. The **taxonomy-design pass always stays on the LLM** either way: Jev is a
-classifier and invents no labels.
+classifier and invents no labels, and it never needs to - every sync's taxonomy pass has already
+added any category the new bookmarks need before Jev files them. Jev calls no language model: a
+bookmark it cannot place with confidence is filed at the deepest category it is sure of, or in
+`Uncategorized`.
 
 `typesafe` requires BOTH the explicit opt-in and a `TYPESAFE_API_KEY` resolved through the usual
 credential chain; without a key it refuses to run rather than falling back silently (in the app, the

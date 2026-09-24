@@ -1,7 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from '../db/database';
 import type { RawBookmark } from '../types';
-import { buildFindPrompt, describeFindTarget, findBookmarksForCategory, parseFindMatches } from './find';
+import {
+  buildFindPrompt,
+  describeFindTarget,
+  filingFindMatcher,
+  findBookmarksForCategory,
+  llmFindMatcher,
+  parseFindMatches,
+} from './find';
+import { buildCategoryTree, renderTreeForPrompt } from './tree';
+import { TypeSafeCategorizer } from './typesafe/categorizer';
+import type { LevelAsker } from './typesafe/client';
 
 const WHEN = '2026-09-24T00:00:00.000Z';
 
@@ -63,11 +73,11 @@ describe('findBookmarksForCategory', () => {
       db,
       categoryId: rust.id,
       batchSize: 2,
-      runner: async (prompt) => {
+      matcher: llmFindMatcher(async (prompt) => {
         prompts.push(prompt);
         const ids = [...prompt.matchAll(/post_id: (\d+)\n\s+author: @a\n\s+text: rust/g)].map((m) => m[1]);
         return JSON.stringify({ matches: ids });
-      },
+      }),
       logger: (m) => logs.push(m),
     });
 
@@ -90,10 +100,10 @@ describe('findBookmarksForCategory', () => {
       db,
       categoryId: rust.id,
       batchSize: 10,
-      runner: async () => {
+      matcher: llmFindMatcher(async () => {
         calls++;
         return '{"matches":[]}';
-      },
+      }),
     });
     expect(calls).toBe(0);
     expect(summary.added).toBe(0);
@@ -105,7 +115,56 @@ describe('findBookmarksForCategory', () => {
     db.getOrCreateCategory('Axum', inner.id, WHEN);
     expect(describeFindTarget(db, inner.id)).toEqual({ path: ['Rust', 'Web'], description: null, children: ['Axum'] });
     await expect(
-      findBookmarksForCategory({ db, categoryId: 999, batchSize: 10, runner: async () => '{"matches":[]}' }),
+      findBookmarksForCategory({
+        db,
+        categoryId: 999,
+        batchSize: 10,
+        matcher: llmFindMatcher(async () => '{"matches":[]}'),
+      }),
     ).rejects.toThrow(/no longer exists/);
+  });
+
+  it('with Jev, walks each candidate down the whole tree and adds those it files at or below the category', async () => {
+    const ai = db.getOrCreateCategory('AI', null, WHEN, 'Machine learning.');
+    const rust = db.createCategory('Rust', null, WHEN)!;
+    db.getOrCreateCategory('Async', rust.id, WHEN, 'Async Rust.');
+    db.storeCategorizedBatch(
+      [bm('1', 'tokio runtime internals'), bm('2', 'rust borrow checker'), bm('3', 'gpt evals')],
+      () => [ai.id],
+      WHEN,
+    );
+    const inRust = db.createCategory('Web', rust.id, WHEN)!;
+    db.storeCategorizedBatch([bm('4', 'rust axum')], () => [inRust.id], WHEN);
+
+    // A fake Jev: "tokio" is async Rust, "rust" is Rust itself, anything else AI.
+    const asked: string[] = [];
+    const asker: LevelAsker = {
+      async ask(state, levels) {
+        const text = String((state as Record<string, unknown>).post_text);
+        asked.push(text);
+        const want = /tokio/.test(text) ? ['Rust', 'Async'] : /rust/.test(text) ? ['Rust'] : ['AI'];
+        return levels.map((level) => ({
+          probabilities: new Map(level.options.map((o) => [o.id, want.includes(o.name) ? 0.95 : 0.02] as const)),
+          confidence: level.options.some((o) => want.includes(o.name)) ? 0.95 : 0.05,
+        }));
+      },
+    };
+    const jev = new TypeSafeCategorizer({ db, asker }, { maxDepth: 4 });
+
+    const summary = await findBookmarksForCategory({
+      db,
+      categoryId: rust.id,
+      batchSize: 10,
+      matcher: filingFindMatcher(jev, renderTreeForPrompt(buildCategoryTree(db))),
+    });
+
+    const id = (p: string) => db.getBookmarkByPostId(p)!.id;
+    expect(summary).toMatchObject({ checked: 3, added: 2 });
+    expect(summary.addedBookmarkIds.sort()).toEqual([id('1'), id('2')].sort());
+    // Added to the category the owner pointed at, beside what each already had.
+    expect(db.getCategoryIdsForBookmarks([id('1')]).get(id('1'))!.sort()).toEqual([ai.id, rust.id].sort());
+    expect(db.getCategoryIdsForBookmarks([id('3')]).get(id('3'))).toEqual([ai.id]);
+    // A bookmark already inside the subtree is never walked.
+    expect(asked.some((t) => t.includes('axum'))).toBe(false);
   });
 });
