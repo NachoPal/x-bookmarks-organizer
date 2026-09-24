@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { CredentialStore } from './creds/resolve';
 import { missingCredentialMessage } from './creds/resolve';
+import { PACKAGE_ROOT } from './paths';
 import type { LlmConfig } from './llm/types';
 
 /**
@@ -17,7 +18,13 @@ export interface Config {
   xClientId: string;
   /** X OAuth 2.0 app Client Secret (env: XBOOKMARKS_CLIENT_SECRET). */
   xClientSecret: string;
-  /** Absolute path to the local SQLite database file. */
+  /**
+   * Absolute path to the local SQLite database file. Defaults to
+   * `data/bookmarks.db` under the package root - never the working directory,
+   * so starting from elsewhere cannot silently serve an empty library. An
+   * explicit (relative) XBOOKMARKS_DB_PATH still resolves against the cwd, as
+   * any path typed on a command line does.
+   */
   dbPath: string;
   /** OAuth redirect URI. Must match the value registered on the X app exactly. */
   redirectUri: string;
@@ -315,7 +322,7 @@ function typeSafeFromEnv(env: NodeJS.ProcessEnv): TypeSafeConfig {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, store?: CredentialStore): Config {
   const dbPath = env.XBOOKMARKS_DB_PATH
     ? path.resolve(env.XBOOKMARKS_DB_PATH)
-    : path.resolve(process.cwd(), 'data', 'bookmarks.db');
+    : path.resolve(PACKAGE_ROOT, 'data', 'bookmarks.db');
 
   const xClientId = store ? store.get('XBOOKMARKS_CLIENT_ID').value : env.XBOOKMARKS_CLIENT_ID;
   const xClientSecret = store ? store.get('XBOOKMARKS_CLIENT_SECRET').value : env.XBOOKMARKS_CLIENT_SECRET;

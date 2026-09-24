@@ -37,7 +37,8 @@ single required mechanism:
 1. **The process environment** - a shell profile, a systemd unit, a Docker `-e` flag, CI secrets,
    or a vault such as Automic Vault. Unchanged from before this chain existed.
 2. **A `.env` file in the project root** - the easiest option if you have no vault. Copy
-   [`.env.example`](../.env.example) to `.env` (gitignored) and fill it in.
+   [`.env.example`](../.env.example) to `.env` (gitignored), fill it in, and `chmod 600 .env`.
+   Only the `.env` next to `package.json` is read, whichever directory you start the app from.
 3. **Your OS keychain** (macOS Keychain / Linux Secret Service / Windows Credential Manager).
 4. **`~/.config/x-bookmarks-organizer/credentials.json`**, owner-only (`chmod 600`).
 
@@ -77,7 +78,8 @@ claude setup-token
 
 Either way the app strips `ANTHROPIC_API_KEY` from the CLI's environment, so no pay-per-use API
 billing can occur. If `claude` is installed somewhere off your `PATH`, point `XBOOKMARKS_CLAUDE_BIN`
-at it.
+at it - exported in your shell environment: it names a program that runs as you, so it is never read
+from `.env` (nor the keychain or config file).
 
 The same token can instead drive the opt-in `pi-claude-subscription` provider, which runs the
 subscription through pi. Anthropic's Claude Code terms prohibit that use and it carries a risk to your

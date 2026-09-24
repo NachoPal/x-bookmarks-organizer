@@ -67,9 +67,16 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   (including an empty tree) throws, which keeps `recategorize`'s design-before-clear safety.
 - **Secrets resolve through a layered credential chain** (`src/creds/resolve.ts`,
   `CredentialStore`): process env (tier 1, unchanged - `av inject` is one example among several,
-  never a requirement) -> a gitignored `.env` in the project root -> the OS keychain via the
+  never a requirement) -> a gitignored `.env` in the PACKAGE root -> the OS keychain via the
   platform CLI (`security` / `secret-tool` / `cmdkey`) -> an owner-only (`chmod 600`)
-  `~/.config/x-bookmarks-organizer/credentials.json`. First hit wins. `loadConfig` and
+  `~/.config/x-bookmarks-organizer/credentials.json`. First hit wins. "Project root" means
+  `PACKAGE_ROOT` (`src/paths.ts`), NEVER `process.cwd()` - a `.env` in whatever directory `xbo` is
+  launched from is not the owner's file (security finding #3); the default `dbPath` and
+  `data/eval/` resolve from it for the same reason. `ENV_ONLY_KEYS` (`XBOOKMARKS_CLAUDE_BIN`,
+  `XBOOKMARKS_PIAI_BASE_URL`) skip tiers 2-4 entirely: they choose what program runs as the owner
+  and where prompts go, so no file may set them - a new key with that power belongs in that set. A
+  group/world-readable `.env` is still READ (a fresh `cp .env.example .env` is `0644`) but warned
+  about at startup and as `/api/setup` `credentials.dotenvExposure` (Settings + first run). `loadConfig` and
   `createLlmFactory` both take an optional `CredentialStore`; omitting it keeps behavior
   byte-identical to env-only, which is what every test that injects a fake `env` relies on. Never
   read a *committed* file, never log or surface a resolved `value` (only its `source` is safe to
@@ -1443,9 +1450,8 @@ it ingests by design or a page the owner already has open.
   is a secret of the same class as `credentials.json`, which the credential chain already writes
   `0600` and refuses to read when looser. Best-effort (try/catch): Windows has no such mode.
 
-Deferred on purpose: the `.env` read from `process.cwd()` (`src/creds/resolve.ts`) lets a directory
-the owner runs `xbo` from redirect `XBOOKMARKS_CLAUDE_BIN` at an arbitrary binary. It is a separate
-pass because it changes how every credential resolves.
+The `.env`-from-`process.cwd()` gap deferred here was closed later (security review 2, #3/#8) -
+see the credential-chain constraint above.
 
 ## Live vs. tested
 

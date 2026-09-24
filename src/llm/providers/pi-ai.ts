@@ -74,7 +74,11 @@ export { PI_UPSTREAMS, type HostedUpstream, type PiUpstream } from './pi-upstrea
 /** Provider id - the value of `XBOOKMARKS_LLM_PROVIDER` / `XBOOKMARKS_*_PROVIDER`. */
 export const PI_AI_PROVIDER_ID = 'pi-ai';
 
-/** Base URL of an OpenAI-compatible local endpoint (Ollama, LM Studio, vLLM...). */
+/**
+ * Base URL of an OpenAI-compatible local endpoint (Ollama, LM Studio, vLLM...).
+ * Process environment ONLY (`ENV_ONLY_KEYS` in `src/creds/resolve.ts`): it
+ * decides where prompts full of bookmark text are sent, so no file may set it.
+ */
 export const PIAI_LOCAL_BASE_URL_KEY = 'XBOOKMARKS_PIAI_BASE_URL';
 /** Optional key for that endpoint; most local servers need none. */
 export const PIAI_LOCAL_API_KEY_KEY = 'XBOOKMARKS_PIAI_API_KEY';
@@ -449,7 +453,8 @@ export function resolveUpstreamKey(cfg: ResolvedProviderConfig, ref: PiModelRef)
           state: 'unconfigured',
           detail:
             `pi-ai model "local/${ref.modelId}" needs ${PIAI_LOCAL_BASE_URL_KEY} - the base URL of an ` +
-            'OpenAI-compatible server, e.g. http://127.0.0.1:11434/v1 for Ollama.',
+            'OpenAI-compatible server, e.g. http://127.0.0.1:11434/v1 for Ollama - exported in the ' +
+            'environment, since it is never read from .env.',
         },
       };
     }
@@ -669,7 +674,8 @@ export function createPiAiProvider(load: () => Promise<PiRuntime> = loadPiRuntim
       {
         key: PIAI_LOCAL_BASE_URL_KEY,
         required: false,
-        description: 'Base URL of an OpenAI-compatible local server, for "local/<model>" ids.',
+        description:
+          'Base URL of an OpenAI-compatible local server, for "local/<model>" ids. Environment only - never read from .env.',
         secret: false,
       },
       {

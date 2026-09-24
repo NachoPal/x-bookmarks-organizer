@@ -64,7 +64,33 @@
     };
   }
 
-  var api = { missingCredentials: missingCredentials, missingCredentialsAlert: missingCredentialsAlert };
+  /**
+   * The server's report that the chain's `.env` is readable by other local
+   * users (`/api/setup` `credentials.dotenvExposure`, security finding #8),
+   * shaped for the notice - or null when there is nothing to say. Unlike the
+   * missing-credentials alert it is NOT gated on an empty library: an exposed
+   * `.env` matters just as much once bookmarks exist, so the Settings panel
+   * shows it too. `fix` is the exact command, the same one the server logged
+   * at startup.
+   */
+  function dotenvExposureNotice(credentials) {
+    var exposure = credentials && credentials.dotenvExposure;
+    if (!exposure || typeof exposure.file !== "string" || !exposure.file) return null;
+    var mode = typeof exposure.mode === "string" && exposure.mode ? exposure.mode : null;
+    return {
+      title: "Your .env file is readable by other users",
+      detail:
+        (mode ? "Its mode is " + mode + ", so " : "So ") +
+        "other accounts on this machine can read the X client secret and API keys it holds. Fix it with:",
+      fix: "chmod 600 " + exposure.file,
+    };
+  }
+
+  var api = {
+    missingCredentials: missingCredentials,
+    missingCredentialsAlert: missingCredentialsAlert,
+    dotenvExposureNotice: dotenvExposureNotice,
+  };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {

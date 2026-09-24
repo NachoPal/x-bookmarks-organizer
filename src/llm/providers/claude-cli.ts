@@ -17,7 +17,12 @@ export { redactError };
 /** Provider id, and the default value of `XBOOKMARKS_LLM_PROVIDER`. */
 export const CLAUDE_CLI_PROVIDER_ID = 'claude-cli';
 
-/** Env key naming the `claude` binary, for a non-PATH install (and the offline test seam). */
+/**
+ * Env key naming the `claude` binary, for a non-PATH install (and the offline
+ * test seam). Read from the process environment ONLY - never `.env`, the
+ * keychain or the config file (`ENV_ONLY_KEYS` in `src/creds/resolve.ts`):
+ * it names a program run as the owner, so no file may choose it.
+ */
 export const CLAUDE_BIN_KEY = 'XBOOKMARKS_CLAUDE_BIN';
 
 /** Env key holding the Claude *subscription* token. Optional: a logged-in CLI needs no token. */
@@ -41,7 +46,7 @@ const VERSION_PROBE_TIMEOUT_MS = 10_000;
 /** What the owner is told when the binary is not there. */
 const NOT_INSTALLED_DETAIL =
   'The `claude` CLI was not found. Install it and run `claude` once to log in, ' +
-  `or point ${CLAUDE_BIN_KEY} at the binary.`;
+  `or point ${CLAUDE_BIN_KEY} at the binary (an exported environment variable - it is never read from .env).`;
 
 /**
  * Flags that make `claude -p` behave like a completion call instead of an agent.

@@ -279,7 +279,7 @@
     if (source.freeform) {
       return {
         text:
-          "Runs on your own OpenAI-compatible server (set XBOOKMARKS_PIAI_BASE_URL) - no per-call charge.",
+          "Runs on your own OpenAI-compatible server (export XBOOKMARKS_PIAI_BASE_URL in the environment; .env is not read for it) - no per-call charge.",
         state: "none",
       };
     }

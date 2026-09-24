@@ -32,7 +32,7 @@ import {
   type AppSettings,
 } from '../settings/settings';
 import { TYPESAFE_API_KEY } from '../config';
-import type { CredentialStore } from '../creds/resolve';
+import type { CredentialStore, DotenvExposure } from '../creds/resolve';
 import {
   listPresets,
   readPresetDoc,
@@ -102,6 +102,14 @@ export interface ServerOptions {
    * ever read out of it - never a value (`AGENTS.md`).
    */
   credentials?: CredentialStore;
+  /**
+   * Whether the chain's `.env` is readable by other local users (security
+   * finding #8): its path and mode, or null when it is owner-only or absent.
+   * A function, not a value, so a `chmod 600` clears the setup surface's
+   * notice on the next read with no restart. Undefined (every test-built
+   * server) reports nothing and touches no file.
+   */
+  dotenvExposure?: () => DotenvExposure | null;
   /**
    * The in-app ranking pass (issue #80): the run itself, plus the free
    * questions the UI asks before offering it. Undefined leaves the "Rank now"
@@ -545,6 +553,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         // `claude-cli` has no credential-chain key (issue #35), so its own
         // Save-blocking signal is its `check()`, not a key's presence.
         providerAvailability: { [CLAUDE_CLI_PROVIDER_ID]: await claudeCliStatus() },
+        // The same warning the server printed at startup, so an owner who
+        // never reads the log still sees that `.env` is exposed.
+        dotenvExposure: opts.dotenvExposure ? opts.dotenvExposure() : null,
       },
       x: {
         connected: !!db.getRefreshToken(),
