@@ -16,7 +16,7 @@ const EMPTY_TREE_TEXT = '(no categories yet)';
 export interface IngestDeps {
   db: Database;
   client: XClient;
-  /** Pass 1: holistic taxonomy design (Opus-class, high effort). */
+  /** Pass 1: holistic taxonomy design (Opus-class, medium effort by default). */
   taxonomer: TaxonomyDesigner;
   /** Pass 2: assignment into the finished tree (Haiku-class). */
   categorizer: BatchCategorizer;

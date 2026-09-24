@@ -158,7 +158,8 @@ const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:3000/callback';
 const DEFAULT_AUTH_PORT = 3000;
 const DEFAULT_WEB_PORT = 5173;
 const DEFAULT_LLM_PROVIDER = 'claude-cli';
-const DEFAULT_TAXONOMY_EFFORT = 'high';
+/** Pass 1's reasoning effort when neither the env nor a saved setting names one. */
+export const DEFAULT_TAXONOMY_EFFORT = 'medium';
 const DEFAULT_BATCH_SIZE = 15;
 const DEFAULT_MIN_DEPTH = 3;
 const DEFAULT_MAX_DEPTH = 4;

@@ -7366,7 +7366,7 @@
         fillOptions(P.model.select, categorization().modelOptions(p, pass), modelValue);
       }
       if (pass === "taxonomy") {
-        const effortOptions = categorization().effortOptions(p);
+        const effortOptions = categorization().effortOptions(p, catalog && catalog.defaultEffort);
         fillOptions(effort.select, effortOptions, (values && values.effort) || "");
         effort.field.hidden = effortOptions.length <= 1;
       }
@@ -7419,7 +7419,7 @@
         source.hint.dataset.key = keyNotice.state;
         source.hint.classList.toggle("field-billing", keyNotice.state !== "none" || paid);
       }
-      effort.hint.textContent = hintFor(categorization().effortOptions(providerOf("taxonomy")), effort.select.value);
+      effort.hint.textContent = hintFor(categorization().effortOptions(providerOf("taxonomy"), catalog && catalog.defaultEffort), effort.select.value);
       // Jev files bookmarks without a prompt, so it has no filing model; the
       // taxonomy pass is always a model, so Phase 1 never goes away. The
       // filing PROVIDER field is never shown at all now - the combined
@@ -7852,7 +7852,7 @@
     const jev = categorization().findMethod(catalog, "typesafe");
     const rows = [
       ["Taxonomy", passLine("taxonomy")],
-      ["Effort", settings.effort || "high"],
+      ["Effort", settings.effort || catalog.defaultEffort || "Default"],
       ["Filing", settings.categorizer === "typesafe" ? (jev ? jev.label : "Jev (TypeSafe)") : passLine("assignment")],
     ];
     setupSummaryEl.replaceChildren(

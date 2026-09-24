@@ -45,7 +45,7 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   every run. Keep it a separate id (selecting it IS the opt-in), never a default, never a mode of
   `pi-ai`, and never drop the warning; do not "unify" `claude-cli` into it.
 - **Categorization is two passes** (`src/ingest.ts`): pass 1 designs a taxonomy holistically over
-  ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus-class + high effort, configurable) so
+  ALL bookmarks at once (`src/categorize/taxonomy.ts`, Opus 5.5 at medium effort by default - `DEFAULT_TAXONOMY_EFFORT` in `config.ts`, the settings catalog's `defaultEffort` - configurable) so
   the tree is genuinely deep; pass 2 files each bookmark into that fixed tree in batches
   (`src/categorize/prompt.ts`, Haiku-class to conserve quota). Pass 1 (the expensive Opus pass)
   runs ONLY on the first run (empty tree) and on `recategorize`. An incremental `run` against an

@@ -32,6 +32,7 @@ const MODELS: Record<string, unknown[]> = {
   anthropic: [
     model("anthropic", "claude-haiku-4-5", "Claude Haiku 4.5"),
     model("anthropic", "claude-opus-4-8", "Claude Opus 4.8", 5, 25),
+    model("anthropic", "claude-opus-5-5", "Claude Opus 5.5", 4, 20),
   ],
   opencode: [
     model("opencode", "big-pickle", "Big Pickle", 0, 0),
@@ -150,7 +151,7 @@ describe("the searchable model picker", () => {
     expect($("settings-taxonomySource").closest(".field")!.hasAttribute("hidden")).toBe(false);
     expect($<HTMLSelectElement>("settings-taxonomySource").value).toBe("anthropic");
     expect(sent.some((s) => s.url === "/api/models?provider=claude-cli&source=anthropic")).toBe(true);
-    expect($<HTMLInputElement>("settings-taxonomyModelSearch").value).toMatch(/^Recommended: Claude Opus 4\.8/);
+    expect($<HTMLInputElement>("settings-taxonomyModelSearch").value).toMatch(/^Recommended: Claude Opus 5\.5/);
 
     change("settings-taxonomyProvider", "pi-ai");
     await tick();
@@ -158,7 +159,7 @@ describe("the searchable model picker", () => {
     // It opens on the source hosting pi-ai's own taxonomy suggestion.
     expect($<HTMLSelectElement>("settings-taxonomySource").value).toBe("anthropic");
     expect(sent.some((s) => s.url === "/api/models?provider=pi-ai&source=anthropic")).toBe(true);
-    expect($<HTMLInputElement>("settings-taxonomyModelSearch").value).toMatch(/^Recommended: Claude Opus 4\.8/);
+    expect($<HTMLInputElement>("settings-taxonomyModelSearch").value).toMatch(/^Recommended: Claude Opus 5\.5/);
 
     // Every wired upstream is offered, OpenCode among the gateways.
     const groups = [...$("settings-taxonomySource").querySelectorAll("optgroup")].map((g) => g.label);
