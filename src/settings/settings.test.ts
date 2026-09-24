@@ -101,7 +101,7 @@ describe('settings persistence', () => {
 
   it('round-trips a saved selection', () => {
     const settings: AppSettings = {
-      categorizer: 'typesafe',
+      categorizer: 'claude-cli',
       taxonomyProvider: 'claude-cli',
       assignmentProvider: 'claude-cli',
       taxonomyModel: 'anthropic/claude-sonnet-5',
@@ -111,6 +111,36 @@ describe('settings persistence', () => {
     };
     writeSettings(db, settings);
     expect(readSettings(db, catalog)).toEqual(settings);
+  });
+
+  it("stores only the fields the chosen method reads - Jev's fallback under Jev, the filer otherwise", () => {
+    writeSettings(db, {
+      categorizer: 'typesafe',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'openrouter/acme/x',
+      fallbackProvider: 'pi-ai',
+      fallbackModel: 'opencode/gpt-5.1',
+    });
+    expect(JSON.parse(db.getState('app_settings')!)).toEqual({
+      categorizer: 'typesafe',
+      taxonomyProvider: 'claude-cli',
+      fallbackProvider: 'pi-ai',
+      fallbackModel: 'opencode/gpt-5.1',
+    });
+    writeSettings(db, {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'opencode/gpt-5.1',
+      fallbackProvider: 'pi-ai',
+    });
+    expect(JSON.parse(db.getState('app_settings')!)).toEqual({
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'opencode/gpt-5.1',
+    });
   });
 
   it('survives a reopen of the same database file (durable, not per-process)', () => {
@@ -135,11 +165,11 @@ describe('applySettingsToConfig', () => {
 
   it('maps the chosen method and each pass\'s provider onto the ingest config', () => {
     const config = applySettingsToConfig(base(), {
-      categorizer: 'typesafe',
+      categorizer: 'claude-cli',
       taxonomyProvider: 'pi-ai',
       assignmentProvider: 'claude-cli',
     });
-    expect(config.categorizer).toBe('typesafe');
+    expect(config.categorizer).toBe('claude-cli');
     expect(config.llm.roles.taxonomy.provider).toBe('pi-ai');
     expect(config.llm.roles.assignment.provider).toBe('claude-cli');
     // Summaries are not a categorization pass: picking a paid model to design
@@ -393,6 +423,80 @@ describe('phase-2 provider wiring (bug fix): a saved LLM choice never resolves t
       assignmentProvider: 'pi-ai',
     });
     expect(withLlm.categorizer).toBe('claude-cli');
+  });
+});
+
+describe("Jev's fallback language model", () => {
+  // Under Jev the assignment ROLE is Jev's fallback (new-category filing while
+  // extending, and "Find bookmarks"). It used to be the stored
+  // `assignmentProvider`, which no screen shows while Jev is the method - so a
+  // pi-ai choice left over from before Jev was picked blocked every sync.
+  it('resolves an unset fallback to the phase-1 provider, never the hidden filing provider', () => {
+    const { settings, errors } = validateSettings(
+      { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' },
+      catalog,
+    );
+    expect(errors).toEqual([]);
+    expect(settings.fallbackProvider).toBeUndefined();
+    const config = applySettingsToConfig(loadConfig({}), settings);
+    expect(config.llm.roles.assignment.provider).toBe('claude-cli');
+    expect(config.llm.roles.assignment.model).toBeUndefined();
+  });
+
+  it('follows the phase-1 provider when that is the paid one', () => {
+    const config = applySettingsToConfig(loadConfig({}), {
+      categorizer: 'typesafe',
+      taxonomyProvider: 'pi-ai',
+      assignmentProvider: 'claude-cli',
+    });
+    expect(config.llm.roles.assignment.provider).toBe('pi-ai');
+  });
+
+  it('runs an explicitly chosen fallback provider and model', () => {
+    const { settings, errors } = validateSettings(
+      {
+        categorizer: 'typesafe',
+        taxonomyProvider: 'claude-cli',
+        assignmentProvider: 'claude-cli',
+        fallbackProvider: 'pi-ai',
+        fallbackModel: 'opencode/gpt-5.1',
+      },
+      catalog,
+    );
+    expect(errors).toEqual([]);
+    const config = applySettingsToConfig(loadConfig({}), settings);
+    expect(config.llm.roles.assignment.provider).toBe('pi-ai');
+    expect(config.llm.roles.assignment.model).toBe('opencode/gpt-5.1');
+  });
+
+  it('ignores the fallback entirely while a language model files', () => {
+    const config = applySettingsToConfig(loadConfig({}), {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'claude-cli',
+      assignmentProvider: 'claude-cli',
+      fallbackProvider: 'pi-ai',
+      fallbackModel: 'opencode/gpt-5.1',
+    });
+    expect(config.llm.roles.assignment.provider).toBe('claude-cli');
+    expect(config.llm.roles.assignment.model).toBeUndefined();
+  });
+
+  it('refuses an unknown fallback provider or a model of the wrong shape, naming the field', () => {
+    const unknown = validateSettings({ categorizer: 'typesafe', fallbackProvider: 'nope' }, catalog);
+    expect(unknown.errors[0]).toMatch(/^Unknown Jev's fallback provider "nope"/);
+    expect(unknown.settings.fallbackProvider).toBeUndefined();
+    const shape = validateSettings({ categorizer: 'typesafe', fallbackProvider: 'pi-ai', fallbackModel: 'gpt' }, catalog);
+    expect(shape.errors[0]).toContain("Jev's fallback model \"gpt\"");
+  });
+
+  it('lets an exported assignment-provider variable claim it on the CLI', () => {
+    const env = { XBOOKMARKS_ASSIGNMENT_PROVIDER: 'pi-ai' };
+    const config = applySettingsToConfig(
+      loadConfig(env),
+      { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli', fallbackProvider: 'claude-cli' },
+      env,
+    );
+    expect(config.llm.roles.assignment.provider).toBe('pi-ai');
   });
 });
 

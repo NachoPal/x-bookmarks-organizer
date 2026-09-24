@@ -114,6 +114,15 @@ export interface ServerOptions {
    */
   syncSpend?: () => Promise<PaidPass[]>;
   /**
+   * What a sync checks before it reads X or calls a model -
+   * `createSyncPreflight`. Rejects with an actionable, owner-facing message.
+   * `POST /api/sync` runs it BEFORE the paid confirmation, so a sync that
+   * cannot start (e.g. Jev's fallback lacks its key) is refused with the reason
+   * rather than authorized and then failing. Undefined skips it (a test-built
+   * server); the job itself still runs the same checks.
+   */
+  syncPreflight?: () => Promise<unknown>;
+  /**
    * The work one in-app sync performs (issue #71). Undefined leaves the Sync
    * button disabled with {@link SYNC_UNAVAILABLE_MESSAGE} - which is what a
    * test-built server, and any viewer started without the ingest wiring, gets.
@@ -680,7 +689,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       configuredAt: previous?.configuredAt ?? new Date().toISOString(),
     };
     writeSettings(db, saved);
-    return { settings: saved };
+    // Answer with the document as `/api/setup` will read it back, so every
+    // form that adopts this response shows exactly what is stored.
+    return { settings: effectiveSettings(db, catalog) };
   });
 
   // One source's full model list for the settings selector's searchable
@@ -728,6 +739,13 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       return reply.code(409).send({ error: FIND_RUNNING_MESSAGE });
     }
     if (!syncRunner.isRunning()) {
+      if (opts.syncPreflight) {
+        try {
+          await opts.syncPreflight();
+        } catch (err) {
+          return reply.code(422).send({ error: err instanceof Error ? err.message : String(err) });
+        }
+      }
       const paidPasses = await paidSyncPasses();
       if (paidPasses.length > 0 && (req.body ?? {}).confirm !== true) {
         return reply.code(400).send({ error: SYNC_CONFIRM_MESSAGE, confirmRequired: true, paidPasses });

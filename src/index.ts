@@ -16,7 +16,7 @@ import type { ResolvedProviderConfig } from './llm/types';
 import { buildSettingsCatalog } from './settings/catalog';
 import { createModelBrowser } from './settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from './settings/settings';
-import { createSyncJob, createSyncSpend } from './web/sync-job';
+import { createSyncJob, createSyncPreflight, createSyncSpend } from './web/sync-job';
 import { describeRoleSpend } from './web/paid-spend';
 import { createFindWiring } from './web/find-job';
 import { createRankWiring } from './web/rank-job';
@@ -468,6 +468,8 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // Which of the next sync's passes are billed per token - a paid sync is
     // confirmed in the app before it starts (security review 2, #20).
     syncSpend: createSyncSpend({ db, store, config: baseConfig, browser: modelBrowser }),
+    // ...and whether it can start at all, checked before that confirmation.
+    syncPreflight: createSyncPreflight({ db, store, config: baseConfig }),
     // The "Rank now" button's work (issue #80). `baseConfig` again, for the
     // same reason as the sync job - and because the ranker's opt-in and knobs
     // are deliberately NOT settings-panel choices: turning ranking on stays an

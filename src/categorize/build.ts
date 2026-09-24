@@ -136,6 +136,7 @@ export function reportCategorizerBilling(config: Config, llm: LlmFactory, log: L
       `Assignment pass: TypeSafe Jev (${model}) - ${billingLabel('per-token')}. ` +
         'Switch the categorization method back to the language model to stop paying TypeSafe per call.',
     );
+    log(`Jev's fallback (files a bookmark Jev fits nowhere, only when extending an existing tree): ${passLine(llm.describe('assignment'))}`);
   } else {
     const assignment = llm.describe('assignment');
     log(`Assignment pass: ${passLine(assignment)}`);
@@ -151,6 +152,57 @@ export function reportCategorizerBilling(config: Config, llm: LlmFactory, log: L
 function passLine(pass: RoleDescription): string {
   const line = `${pass.providerId} / ${pass.model} - ${billingLabel(pass.billing)}.`;
   return pass.warning ? `${line} ${pass.warning}` : line;
+}
+
+/** The in-app control that chose the model a pass runs on, for a preflight message. */
+export interface PassSetting {
+  role: LlmRole;
+  /** What the owner calls it, e.g. "Jev's fallback language model". */
+  label: string;
+  /** The Settings field that picks it, and the phase it sits under. */
+  field: string;
+  phase: string;
+}
+
+export const TAXONOMY_SETTING: PassSetting = {
+  role: 'taxonomy',
+  label: 'The phase 1 (taxonomy) language model',
+  field: 'Taxonomy provider',
+  phase: 'Phase 1 - Taxonomy',
+};
+
+/**
+ * Who files with a language model under `config`: the filer the owner chose,
+ * or - while Jev is the method - Jev's own fallback. Both run on the
+ * assignment role, so the setting is what differs.
+ */
+export function filingSetting(config: Config): PassSetting {
+  return config.categorizer === 'typesafe'
+    ? { role: 'assignment', label: "Jev's fallback language model", field: "Jev's fallback provider", phase: 'Phase 2 - Filing' }
+    : { role: 'assignment', label: 'The phase 2 (filing) language model', field: 'Filing method', phase: 'Phase 2 - Filing' };
+}
+
+/**
+ * {@link requireLlm} for the app: the same checks, but a failure names the
+ * Settings field that picked the model and how to change it, ahead of the
+ * adapter's own actionable detail - so the owner is never left holding a raw
+ * provider error about a model they do not know they chose.
+ */
+export async function requirePassSettings(llm: LlmFactory, settings: PassSetting[]): Promise<void> {
+  for (const setting of settings) {
+    const health = await llm.check(setting.role);
+    if (health.state === 'ok') continue;
+    throw new Error(passSettingProblem(setting, health.detail));
+  }
+}
+
+/** The sentence {@link requirePassSettings} throws, for a caller that reports rather than throws. */
+export function passSettingProblem(setting: PassSetting, detail: string): string {
+  const reason = /[.!?]$/.test(detail.trim()) ? detail.trim() : `${detail.trim()}.`;
+  return (
+    `${setting.label} cannot run: ${reason} ` +
+    `To use a different one, open Settings and change "${setting.field}" under ${setting.phase}.`
+  );
 }
 
 /**

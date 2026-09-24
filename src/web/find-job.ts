@@ -2,7 +2,8 @@
  * The in-app "Find bookmarks for this category" run.
  *
  * It asks the FILING model - the assignment role, exactly as the settings
- * panel configured it for syncs - which already-stored bookmarks belong in one
+ * panel configured it for syncs (Jev's fallback language model while Jev is
+ * the filing method) - which already-stored bookmarks belong in one
  * category, and adds them there (`src/categorize/find.ts`). A library-wide
  * pass takes minutes, so it is the sync's shape: one run at a time on a
  * {@link FindRunner}, started by `POST /api/categories/:id/find-bookmarks`
@@ -20,7 +21,7 @@ import type { CredentialStore } from '../creds/resolve';
 import type { Database } from '../db/database';
 import { buildArticleContext } from '../articles/link-metadata';
 import { HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
-import { requireLlm } from '../categorize/build';
+import { filingSetting, passSettingProblem, requirePassSettings } from '../categorize/build';
 import { findBookmarksForCategory, type FindSummary } from '../categorize/find';
 import { billingLabel, createLlmFactory, type LlmFactory } from '../llm/factory';
 import { toRunner } from '../llm/runner';
@@ -86,7 +87,7 @@ export function createFindWiring(deps: FindWiringDeps): FindWiring {
 
   return {
     async describe() {
-      const { llm } = current();
+      const { config, llm } = current();
       const health = await llm.check('assignment');
       const spend = await describeRoleSpend(llm, 'assignment', catalog, browser);
       let warning: string | undefined;
@@ -97,7 +98,9 @@ export function createFindWiring(deps: FindWiringDeps): FindWiring {
       }
       return {
         available: health.state === 'ok',
-        ...(health.state === 'ok' ? {} : { reason: health.detail }),
+        // Names the Settings field that chose this model (Jev's fallback
+        // while Jev files), not just the provider's own complaint.
+        ...(health.state === 'ok' ? {} : { reason: passSettingProblem(filingSetting(config), health.detail) }),
         ...(spend ? { spend } : {}),
         ...(warning ? { warning } : {}),
       };
@@ -106,7 +109,7 @@ export function createFindWiring(deps: FindWiringDeps): FindWiring {
     job(categoryId) {
       return async (log) => {
         const { config, llm } = current();
-        await requireLlm(llm, ['assignment']);
+        await requirePassSettings(llm, [filingSetting(config)]);
         const role = llm.describe('assignment');
         const line = `Filing model: ${role.providerId} / ${role.model} - ${billingLabel(role.billing)}.`;
         log(role.warning ? `${line} ${role.warning}` : line);

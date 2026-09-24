@@ -24,10 +24,13 @@ import type { XClient } from '../x/client';
 import { getAuthenticatedClient } from '../x/auth';
 import {
   buildCategorizers as defaultBuildCategorizers,
+  filingSetting,
   reportCategorizerBilling,
-  requireLlm,
+  requirePassSettings,
+  TAXONOMY_SETTING,
   type BuiltCategorizers,
   type Log,
+  type PassSetting,
 } from '../categorize/build';
 import { createLlmFactory, type LlmFactory } from '../llm/factory';
 import { needsTaxonomyDesign, runIngest as defaultRunIngest, type IngestSummary } from '../ingest';
@@ -75,21 +78,11 @@ export function createSyncJob(deps: SyncJobDeps): SyncJob {
   const connect = deps.connect ?? ((config, db) => getAuthenticatedClient(config, db));
   const build = deps.buildCategorizers ?? defaultBuildCategorizers;
   const ingest = deps.ingest ?? defaultRunIngest;
-  const catalog = buildSettingsCatalog();
+  const preflight = createSyncPreflight(deps);
 
   return async (log) => {
     const { db, store } = deps;
-    const settings = effectiveSettings(db, catalog);
-    // No `env` argument: in the app the owner's visible choice wins over a
-    // stray variable in the shell that launched `serve` - see
-    // `applySettingsToConfig`.
-    const config = applySettingsToConfig(deps.config, settings);
-
-    requireXCredentials(config);
-    if (!db.getRefreshToken()) throw new Error(NOT_CONNECTED_MESSAGE);
-
-    const llm = createLlmFactory(config, process.env, store);
-    await requireLlm(llm, ['taxonomy', 'assignment']);
+    const { config, llm } = await preflight();
     reportCategorizerBilling(config, llm, log);
 
     log('Connecting to X...');
@@ -105,6 +98,40 @@ export function createSyncJob(deps: SyncJobDeps): SyncJob {
       maxDepth: config.maxCategoryDepth,
       logger: log,
     }) as Promise<IngestSummary>;
+  };
+}
+
+/**
+ * Everything a sync checks before it reads X or calls a model, as its own
+ * step: the job runs it first, and `POST /api/sync` runs it BEFORE asking the
+ * owner to confirm a paid run, so a sync that cannot start is refused with
+ * the reason instead of being authorized and then failing.
+ *
+ * Only the language models this run will actually call are required: pass 1
+ * and a language-model filer always, but Jev's fallback only when an existing
+ * tree is being extended - on a first run Jev files strictly into the new
+ * tree and never calls it. A failure names the Settings field that chose the
+ * model (`requirePassSettings`).
+ */
+export function createSyncPreflight(
+  deps: Pick<SyncJobDeps, 'db' | 'store' | 'config'>,
+): () => Promise<{ config: Config; llm: LlmFactory }> {
+  const catalog = buildSettingsCatalog();
+  return async () => {
+    const { db, store } = deps;
+    // No `env` argument: in the app the owner's visible choice wins over a
+    // stray variable in the shell that launched `serve` - see
+    // `applySettingsToConfig`.
+    const config = applySettingsToConfig(deps.config, effectiveSettings(db, catalog));
+
+    requireXCredentials(config);
+    if (!db.getRefreshToken()) throw new Error(NOT_CONNECTED_MESSAGE);
+
+    const llm = createLlmFactory(config, process.env, store);
+    const passes: PassSetting[] = [TAXONOMY_SETTING];
+    if (config.categorizer !== 'typesafe' || !needsTaxonomyDesign(db)) passes.push(filingSetting(config));
+    await requirePassSettings(llm, passes);
+    return { config, llm };
   };
 }
 
