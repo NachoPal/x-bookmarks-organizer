@@ -327,7 +327,7 @@ describe('the pi-ai 0.87.1 models, through the real installed catalog', () => {
     expect(openai.get('openai/gpt-6-luna')).toMatchObject({ label: 'GPT-6 Luna', contextWindow: 272_000, maxOutputTokens: 128_000 });
   });
 
-  it('saves the new models as per-pass picks, and leaves the default suggestions where they were', async () => {
+  it('saves the new models as per-pass picks, with Opus 5.5 the taxonomy suggestion on every Claude route', async () => {
     const res = await app.inject({
       method: 'PUT',
       url: '/api/settings',
@@ -347,7 +347,7 @@ describe('the pi-ai 0.87.1 models, through the real installed catalog', () => {
     for (const id of ['claude-cli', 'pi-claude-subscription', 'pi-ai']) {
       const provider = catalog.providers.find((p) => p.id === id)!;
       expect(provider.suggested, id).toMatchObject({
-        taxonomy: 'anthropic/claude-opus-4-8',
+        taxonomy: 'anthropic/claude-opus-5-5',
         assignment: 'anthropic/claude-haiku-4-5',
       });
     }

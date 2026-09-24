@@ -104,6 +104,12 @@ describe('effortOptions', () => {
     expect(options.map((o: { value: string }) => o.value)).toEqual(['', 'low', 'medium', 'high']);
   });
 
+  it("names the level the Default entry stands for, from the catalog's defaultEffort", () => {
+    expect(XBO.effortOptions(catalog.providers[0], 'medium')[0]).toMatchObject({ value: '', label: 'Default (medium)' });
+    // No stated default: the entry does not guess one.
+    expect(XBO.effortOptions(catalog.providers[0])[0].label).toBe('Default');
+  });
+
   it('yields only the default entry for a provider with no effort axis', () => {
     expect(XBO.effortOptions({ id: 'x', models: [], efforts: [] })).toHaveLength(1);
   });

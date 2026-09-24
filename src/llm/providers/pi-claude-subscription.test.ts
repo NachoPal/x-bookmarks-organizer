@@ -197,10 +197,10 @@ describe('the pi-claude-subscription provider (opt-in, fake runtime)', () => {
     expect(p.warning).toContain('claude-cli');
     expect(p.label).toMatch(/against Anthropic's terms/);
     expect(p.models.map((m) => m.id)).toEqual([
-      'anthropic/claude-opus-4-8',
+      'anthropic/claude-opus-5-5',
       'anthropic/claude-haiku-4-5',
       'anthropic/claude-sonnet-5',
-      'anthropic/claude-opus-5-5',
+      'anthropic/claude-opus-4-8',
     ]);
     expect(p.models.every((m) => m.requiresKey === 'CLAUDE_CODE_OAUTH_TOKEN')).toBe(true);
     expect(p.models.every((m) => typeof m.contextWindow === 'number')).toBe(true);
@@ -228,7 +228,7 @@ describe('opting in is a per-pass choice, and never the default', () => {
     const llm = createLlmFactory(config, env);
     expect(llm.describe('taxonomy')).toMatchObject({
       providerId: PI_CLAUDE_SUBSCRIPTION_PROVIDER_ID,
-      model: 'anthropic/claude-opus-4-8',
+      model: 'anthropic/claude-opus-5-5',
       billing: 'subscription',
       warning: PI_CLAUDE_SUBSCRIPTION_WARNING,
     });
@@ -240,7 +240,7 @@ describe('opting in is a per-pass choice, and never the default', () => {
     expect(lines[0]).toBe(
       'Assignment pass: claude-cli / anthropic/claude-haiku-4-5 - Claude subscription (no per-call charge; consumes your subscription quota).',
     );
-    expect(lines[1]).toContain('Taxonomy pass: pi-claude-subscription / anthropic/claude-opus-4-8 - Claude subscription');
+    expect(lines[1]).toContain('Taxonomy pass: pi-claude-subscription / anthropic/claude-opus-5-5 - Claude subscription');
     expect(lines[1]).toContain(PI_CLAUDE_SUBSCRIPTION_WARNING);
   });
 

@@ -77,9 +77,9 @@ describe('createLlmFactory - role resolution', () => {
     expect(billing).toBe('subscription');
   });
 
-  it('keeps the historical Opus-pass-1 / Haiku-pass-2 defaults, with summary on Sonnet 5', () => {
+  it('keeps the Opus-pass-1 / Haiku-pass-2 split (Opus 5.5 designs), with summary on Sonnet 5', () => {
     const llm = factoryFor({});
-    expect(llm.describe('taxonomy').model).toBe('anthropic/claude-opus-4-8');
+    expect(llm.describe('taxonomy').model).toBe('anthropic/claude-opus-5-5');
     expect(llm.describe('assignment').model).toBe('anthropic/claude-haiku-4-5');
     expect(llm.describe('summary').model).toBe('anthropic/claude-sonnet-5');
   });
@@ -96,9 +96,9 @@ describe('createLlmFactory - role resolution', () => {
     expect(resolutionOf(env, 'summary').model).toBe('small-model');
   });
 
-  it('passes the taxonomy effort through, defaulting to high', () => {
+  it('passes the taxonomy effort through, defaulting to medium', () => {
     const env = { XBOOKMARKS_LLM_PROVIDER: 'recorder' };
-    expect(resolutionOf(env, 'taxonomy').params?.effort).toBe('high');
+    expect(resolutionOf(env, 'taxonomy').params?.effort).toBe('medium');
     expect(
       resolutionOf({ ...env, XBOOKMARKS_TAXONOMY_EFFORT: 'max' }, 'taxonomy').params?.effort,
     ).toBe('max');

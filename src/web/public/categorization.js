@@ -460,9 +460,13 @@
     return { text: BILLING_HINTS[provider.billing] || "", emphasis: provider.billing === "per-token" };
   }
 
-  /** Effort options, led by the same empty-valued "Default" entry. */
-  function effortOptions(provider) {
-    var options = [{ value: "", label: "Default (high)", hint: "The app's own default for this pass." }];
+  /**
+   * Effort options, led by the same empty-valued "Default" entry, which names
+   * the level it stands for (the catalog's `defaultEffort`) when it is known.
+   */
+  function effortOptions(provider, defaultEffort) {
+    var label = defaultEffort ? "Default (" + defaultEffort + ")" : "Default";
+    var options = [{ value: "", label: label, hint: "The app's own default for this pass." }];
     var efforts = (provider && provider.efforts) || [];
     for (var i = 0; i < efforts.length; i++) {
       options.push({ value: efforts[i], label: efforts[i], hint: "" });

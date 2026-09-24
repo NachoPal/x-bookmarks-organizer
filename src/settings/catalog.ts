@@ -14,7 +14,7 @@
  * key) is availability, answered separately by the provider's `check()` and the
  * credential chain.
  */
-import { CATEGORIZER_IDS, TYPESAFE_API_KEY, type CategorizerId } from '../config';
+import { CATEGORIZER_IDS, DEFAULT_TAXONOMY_EFFORT, TYPESAFE_API_KEY, type CategorizerId } from '../config';
 import { listProviders } from '../llm/registry';
 import '../llm/providers';
 import { suggestedModelFor, type Billing, type LlmRole, type ModelSource } from '../llm/types';
@@ -80,6 +80,8 @@ export interface CatalogMethod {
 export interface SettingsCatalog {
   methods: CatalogMethod[];
   providers: CatalogProvider[];
+  /** The taxonomy pass's effort when none is chosen - what the "Default" option means. */
+  defaultEffort: string;
 }
 
 const METHOD_COPY: Record<CategorizerId, Omit<CatalogMethod, 'id'>> = {
@@ -136,6 +138,7 @@ export function buildSettingsCatalog(): SettingsCatalog {
     providers: listProviders()
       .map((p) => toCatalogProvider(p.id))
       .filter((p): p is CatalogProvider => p !== undefined),
+    defaultEffort: DEFAULT_TAXONOMY_EFFORT,
   };
 }
 

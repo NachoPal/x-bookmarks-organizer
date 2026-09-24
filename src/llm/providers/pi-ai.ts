@@ -151,13 +151,13 @@ export interface CuratedPiModel {
 
 export const CURATED_PI_MODELS: readonly CuratedPiModel[] = [
   {
-    ref: 'anthropic/claude-opus-4-8',
-    label: 'Claude Opus 4.8 (Anthropic API)',
+    ref: 'anthropic/claude-opus-5-5',
+    label: 'Claude Opus 5.5 (Anthropic API)',
     suggestedFor: ['taxonomy'],
-    role: 'Opus-class Claude - the pick for designing the tree',
+    role: 'Newest Opus-class Claude - the pick for designing the tree',
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
-    price: { input: 5, output: 25 },
+    price: { input: 4, output: 20 },
   },
   {
     ref: 'anthropic/claude-haiku-4-5',
@@ -178,13 +178,13 @@ export const CURATED_PI_MODELS: readonly CuratedPiModel[] = [
     price: { input: 2, output: 10 },
   },
   {
-    ref: 'anthropic/claude-opus-5-5',
-    label: 'Claude Opus 5.5 (Anthropic API)',
+    ref: 'anthropic/claude-opus-4-8',
+    label: 'Claude Opus 4.8 (Anthropic API)',
     suggestedFor: [],
-    role: 'Newest Claude Opus',
+    role: 'Previous Claude Opus',
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
-    price: { input: 4, output: 20 },
+    price: { input: 5, output: 25 },
   },
   {
     ref: 'openai/gpt-5.5',

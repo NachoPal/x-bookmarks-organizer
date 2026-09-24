@@ -26,13 +26,15 @@ describe('the settings catalog', () => {
   it('is built from the provider registry, so a new provider needs no change here', () => {
     const claude = catalog.providers.find((p) => p.id === 'claude-cli')!;
     expect(claude.billing).toBe('subscription');
-    expect(claude.models.map((m) => m.id)).toContain('anthropic/claude-opus-4-8');
-    // A newer model is a quick pick, never the default (the suggestions below).
     expect(claude.models.map((m) => m.id)).toContain('anthropic/claude-opus-5-5');
+    // The previous Opus stays a quick pick, never the default (the suggestions below).
+    expect(claude.models.map((m) => m.id)).toContain('anthropic/claude-opus-4-8');
     // The effort axis the adapter actually accepts, ascending.
     expect(claude.efforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    // What the effort selector's "Default" entry means: medium.
+    expect(catalog.defaultEffort).toBe('medium');
     // The Recommended option's real value per pass: Opus designs, Haiku files.
-    expect(claude.suggested.taxonomy).toBe('anthropic/claude-opus-4-8');
+    expect(claude.suggested.taxonomy).toBe('anthropic/claude-opus-5-5');
     expect(claude.suggested.assignment).toBe('anthropic/claude-haiku-4-5');
   });
 });
@@ -167,7 +169,7 @@ describe('applySettingsToConfig', () => {
     expect(config.llm.roles.taxonomy.model).toBeUndefined();
     expect(config.llm.roles.assignment.model).toBeUndefined();
     // The app's own default effort is kept rather than cleared.
-    expect(config.llm.roles.taxonomy.params?.effort).toBe('high');
+    expect(config.llm.roles.taxonomy.params?.effort).toBe('medium');
   });
 
   it('touches nothing outside the selector (batch size, depth, TypeSafe tuning)', () => {
@@ -267,7 +269,7 @@ describe('per-pass providers (issue #70)', () => {
     expect(viaPi.warning).toMatch(/Account risk/);
     expect(viaPi.warning).toMatch(/terms prohibit/);
     expect(viaPi.label).toMatch(/against Anthropic's terms/);
-    expect(viaPi.suggested).toEqual({ taxonomy: 'anthropic/claude-opus-4-8', assignment: 'anthropic/claude-haiku-4-5' });
+    expect(viaPi.suggested).toEqual({ taxonomy: 'anthropic/claude-opus-5-5', assignment: 'anthropic/claude-haiku-4-5' });
 
     // Either route, on either pass, is a valid saved choice.
     for (const [taxonomyProvider, assignmentProvider] of [

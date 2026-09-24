@@ -56,7 +56,7 @@ It is not a knowledge graph, not multi-user, and not hosted - see the
   1. **Taxonomy design (holistic).** All bookmarks are shown to the model at once, as a compact
      list, and it designs one coherent, genuinely nested category tree with complete freedom over
      the labels and structure, targeting a minimum nesting depth (`XBOOKMARKS_MIN_DEPTH`, default
-     3). This is the hard, large-context step, so it runs on an Opus-class model at high effort
+     3). This is the hard, large-context step, so it runs on an Opus-class model (Claude Opus 5.5) at medium effort
      (`XBOOKMARKS_TAXONOMY_MODEL` / `XBOOKMARKS_TAXONOMY_EFFORT`). It runs **only on the first run**
      (when no tree exists yet) and whenever you run `recategorize`. Incremental runs against an
      existing tree **skip** this pass to conserve quota.
@@ -346,8 +346,8 @@ complete list (it also covers per-role LLM provider overrides and the TypeSafe w
 | `XBOOKMARKS_TAXONOMY_PROVIDER` / `XBOOKMARKS_ASSIGNMENT_PROVIDER` | - | Provider for just one pass, overriding `XBOOKMARKS_LLM_PROVIDER` |
 | `XBOOKMARKS_LLM_MODEL`   | -                      | Model for every role, unless a role overrides it |
 | `XBOOKMARKS_MODEL`       | `claude-haiku-4-5`     | Assignment-pass model (Haiku-class); also the summary model if `XBOOKMARKS_SUMMARY_MODEL` is unset AND this is explicitly set |
-| `XBOOKMARKS_TAXONOMY_MODEL` | `claude-opus-4-8`   | Taxonomy-design-pass model (Opus-class)  |
-| `XBOOKMARKS_TAXONOMY_EFFORT` | `high`             | Taxonomy-pass effort (low/medium/high/xhigh/max) |
+| `XBOOKMARKS_TAXONOMY_MODEL` | `claude-opus-5-5`   | Taxonomy-design-pass model (Opus-class)  |
+| `XBOOKMARKS_TAXONOMY_EFFORT` | `medium`           | Taxonomy-pass effort (low/medium/high/xhigh/max) |
 | `XBOOKMARKS_BATCH_SIZE`  | `15`                   | Bookmarks per assignment request         |
 | `XBOOKMARKS_MIN_DEPTH`   | `3`                    | Target minimum nesting depth (best-effort) |
 | `XBOOKMARKS_MAX_DEPTH`   | `4`                    | Maximum category tree depth              |
@@ -451,7 +451,7 @@ Selecting it **is** the opt-in: in the app pick **Claude subscription via pi (ag
 terms)** as a pass's provider in Settings → Categorization (the selector shows the warning above
 under it); on the CLI set `XBOOKMARKS_TAXONOMY_PROVIDER=pi-claude-subscription` and/or
 `XBOOKMARKS_ASSIGNMENT_PROVIDER=pi-claude-subscription`. It is never a default. Its models use the
-`claude-cli` ids (`claude-opus-4-8`, `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-5-5`), with the same Opus-for-pass-1 /
+`claude-cli` ids (`claude-opus-5-5`, `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-4-8`), with the same Opus-for-pass-1 /
 Haiku-for-pass-2 suggestion. The token comes through the usual credential chain and is handed to pi on
 every call - pi never looks for a credential itself, and `ANTHROPIC_API_KEY` is never read. A value that
 is not a subscription token is refused, because pi would bill an API key per token. Every run prints

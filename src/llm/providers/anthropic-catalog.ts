@@ -52,9 +52,9 @@ export interface CuratedAnthropicModel {
  */
 export const CURATED_ANTHROPIC_MODELS: readonly CuratedAnthropicModel[] = [
   {
-    id: 'claude-opus-4-8',
-    label: 'Claude Opus 4.8',
-    role: 'Opus-class - the pick for designing the tree',
+    id: 'claude-opus-5-5',
+    label: 'Claude Opus 5.5',
+    role: 'Newest Opus - the pick for designing the tree',
     suggestedFor: ['taxonomy'],
   },
   {
@@ -64,7 +64,7 @@ export const CURATED_ANTHROPIC_MODELS: readonly CuratedAnthropicModel[] = [
     suggestedFor: ['assignment', 'chat'],
   },
   { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', role: 'Balanced - the pick for summaries', suggestedFor: ['summary'] },
-  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', role: 'Newest Opus', suggestedFor: [] },
+  { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', role: 'Previous Opus', suggestedFor: [] },
 ];
 
 export function anthropicModelId(bareId: string): string {
