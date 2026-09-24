@@ -45,14 +45,16 @@ export interface CuratedAnthropicModel {
 /**
  * The RECOMMENDED quick picks - a maintained shortlist, not the whole
  * catalog - shared by both providers so "Opus designs, Haiku files, Sonnet
- * summarizes" reads the same on either route. The full catalog beyond these
- * three is reached through {@link buildAnthropicModelCatalog}.
+ * summarizes" reads the same on either route. A pick with an empty
+ * `suggestedFor` is surfaced first but is never a pass's default; append such
+ * a pick, since `suggestedModelFor` falls back to the FIRST entry. The full
+ * catalog beyond these is reached through {@link buildAnthropicModelCatalog}.
  */
 export const CURATED_ANTHROPIC_MODELS: readonly CuratedAnthropicModel[] = [
   {
     id: 'claude-opus-4-8',
     label: 'Claude Opus 4.8',
-    role: 'Most capable - the pick for designing the tree',
+    role: 'Opus-class - the pick for designing the tree',
     suggestedFor: ['taxonomy'],
   },
   {
@@ -62,6 +64,7 @@ export const CURATED_ANTHROPIC_MODELS: readonly CuratedAnthropicModel[] = [
     suggestedFor: ['assignment', 'chat'],
   },
   { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', role: 'Balanced - the pick for summaries', suggestedFor: ['summary'] },
+  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', role: 'Newest Opus', suggestedFor: [] },
 ];
 
 export function anthropicModelId(bareId: string): string {

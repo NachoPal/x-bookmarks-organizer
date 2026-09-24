@@ -200,10 +200,11 @@ describe('the pi-claude-subscription provider (opt-in, fake runtime)', () => {
       'anthropic/claude-opus-4-8',
       'anthropic/claude-haiku-4-5',
       'anthropic/claude-sonnet-5',
+      'anthropic/claude-opus-5-5',
     ]);
     expect(p.models.every((m) => m.requiresKey === 'CLAUDE_CODE_OAUTH_TOKEN')).toBe(true);
     expect(p.models.every((m) => typeof m.contextWindow === 'number')).toBe(true);
-    // The full Claude catalog beyond those three is browsable too, no-spend.
+    // The full Claude catalog beyond those picks is browsable too, no-spend.
     expect(p.modelCatalog!.sources.map((s) => s.id)).toEqual(['anthropic']);
   });
 });

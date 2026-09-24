@@ -27,6 +27,8 @@ describe('the settings catalog', () => {
     const claude = catalog.providers.find((p) => p.id === 'claude-cli')!;
     expect(claude.billing).toBe('subscription');
     expect(claude.models.map((m) => m.id)).toContain('anthropic/claude-opus-4-8');
+    // A newer model is a quick pick, never the default (the suggestions below).
+    expect(claude.models.map((m) => m.id)).toContain('anthropic/claude-opus-5-5');
     // The effort axis the adapter actually accepts, ascending.
     expect(claude.efforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     // The Recommended option's real value per pass: Opus designs, Haiku files.
@@ -406,7 +408,7 @@ describe('a provider with a full model catalog (pi-ai)', () => {
     const viaPi = catalog.providers.find((p) => p.id === 'pi-claude-subscription')!;
     expect(cli.sources!.map((s) => s.id)).toEqual(['anthropic']);
     expect(viaPi.sources!.map((s) => s.id)).toEqual(['anthropic']);
-    expect(cli.models.length).toBe(3);
+    expect(cli.models.length).toBe(4);
   });
 
   it('accepts (and reads back) any <source>/<model> of the catalog, per pass', () => {

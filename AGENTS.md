@@ -918,7 +918,11 @@ leave `vitest`'s `rolldown` dependency without its platform native binding (`Can
 binding` from `@rolldown/binding-<platform>`) - this is the long-standing npm optional-deps bug
 (npm/cli#4828), reproducible even on an unmodified checkout. Fix with
 `npm install --no-save @rolldown/binding-<platform>@<rolldown's exact version>` (e.g.
-`darwin-arm64`) rather than reinstalling `node_modules` again, which reproduces it.
+`darwin-arm64`) rather than reinstalling `node_modules` again, which reproduces it. The same bug
+bites a dependency BUMP: `npm install <pkg>@<v>` (even `--package-lock-only`) deletes every other
+platform's `@rolldown/binding-*` entry from `package-lock.json`, which breaks `npm ci` on CI. Check
+`git diff --stat package-lock.json`; if it removed those, restore the lockfile and update only the
+bumped packages' entries (version/resolved/integrity), then confirm with `npm ci`.
 
 ## Article title as a categorization signal (issue #25)
 
