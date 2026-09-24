@@ -800,6 +800,54 @@
       </div>
     </div>
 
+    <!-- A sync with a per-token pass (a pi-ai model, or Jev filing) is a paid
+         run, so it is confirmed the way a ranking run is (security review 2,
+         #20): the price before the scope, Cancel focused first, and the ONE
+         place the viewer sends `{ confirm: true }` to POST /api/sync. -->
+    <div id="sync-confirm-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="sync-confirm-modal"
+      class="reader-modal setup-modal"
+      hidden
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="sync-confirm-title"
+      aria-describedby="sync-confirm-cost"
+    >
+      <div class="setup-panel reset-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="sync-confirm-title" class="setup-title">Start a paid sync?</h2>
+          </div>
+        </div>
+        <div class="reset-body">
+          <p id="sync-confirm-cost" class="rank-cost">
+            <svg class="rank-cost-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M12.4 7.4A3 3 0 0 0 10 6.3c-1.4 0-2.4.7-2.4 1.8 0 2.5 5 1.2 5 3.8 0 1.1-1.1 1.8-2.6 1.8a3.2 3.2 0 0 1-2.5-1.1"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+              <line x1="10" y1="4.6" x2="10" y2="15.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span id="sync-confirm-cost-text" class="rank-cost-text"></span>
+          </p>
+          <ul id="sync-confirm-passes" class="paid-pass-list"></ul>
+          <p class="reset-text-muted reset-text">
+            Only new bookmarks are fetched and filed. What a pass costs depends on how many there
+            are, and the price is also the first line of the sync's progress log.
+          </p>
+        </div>
+        <div class="setup-footer">
+          <button id="sync-confirm-cancel" class="btn btn-secondary" type="button">Cancel</button>
+          <button id="sync-confirm-ok" class="btn btn-primary" type="button">Start paid sync</button>
+        </div>
+      </div>
+    </div>
+
     <!-- The Jev rules (rubric) editor (issue #102, manage/select split).
 
          Two views in one dialog rather than two dialogs: the preset LIST and
@@ -1099,6 +1147,7 @@
     <script src="view-persist.js" defer></script>
     <script src="sort-order.js" defer></script>
     <script src="ranking.js" defer></script>
+    <script src="paid-spend.js" defer></script>
     <script src="breadcrumb.js" defer></script>
     <script src="category-picker.js" defer></script>
     <script src="card-drag.js" defer></script>

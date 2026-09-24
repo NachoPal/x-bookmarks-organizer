@@ -49,6 +49,10 @@
   // The server's reason (the provider adapter's own actionable message), used
   // for the button tooltip and the modal so the owner is told what to fix.
   let summaryUnavailableReason = SUMMARY_UNAVAILABLE_MESSAGE;
+  // How a NEW summary is billed (`/api/summary-status`'s `spend`, security
+  // review 2, #20). Null until the status resolves, which reads as "not paid"
+  // - so every Summarize button is re-labelled once it arrives.
+  let summarySpend = null;
 
   // ---- move a post to another category (issue #92) ------------------------
   // Two entry points, ONE re-file: the card's drag handle dropped on a
@@ -674,6 +678,8 @@
       // category editor also stranded focus, because the pencil it returns
       // the keyboard to is inside the drawer that just went `inert`.
       if (isCatEditorOpen() || isCatDeleteOpen() || isMovePickerOpen() || isRubricOpen()) return;
+      // And the two paid confirmations, which own Escape the same way.
+      if (isRankOpen() || isSyncConfirmOpen()) return;
       setCollapsed(true);
     });
   }
@@ -848,7 +854,7 @@
     popovers.forEach((p) => p.toggle.addEventListener("click", () => setPopoverOpen(p, !isPopoverOpen(p))));
 
     document.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape" || isSetupOpen() || isRankOpen()) return;
+      if (e.key !== "Escape" || isSetupOpen() || isRankOpen() || isSyncConfirmOpen()) return;
       popovers.forEach((p) => isPopoverOpen(p) && setPopoverOpen(p, false));
     });
     // A click anywhere outside dismisses it; inside it (or on its icon,
@@ -2516,6 +2522,46 @@
   function applySummarizeButtonLabel(btn, hasSummary) {
     btn.replaceChildren(sparkleIcon(), document.createTextNode(hasSummary ? "Summary" : "Summarize"));
     btn.classList.toggle("has-summary", hasSummary);
+    // A per-token summary is marked AT the button (security review 2, #20):
+    // a visible "Paid" tag plus the price in its accessible name and tooltip.
+    // A saved summary reopens from cache for free, so it never carries one.
+    const paid = paidSpend().showsPaidMark(summarySpend, hasSummary);
+    if (paid) btn.appendChild(el("span", "paid-tag", "Paid"));
+    if (paid) {
+      btn.setAttribute("aria-label", paidSpend().summarizeButtonLabel(summarySpend, hasSummary));
+      if (!btn.disabled) btn.title = paidSpend().summaryCostSentence(summarySpend);
+    } else {
+      btn.removeAttribute("aria-label");
+      if (!btn.disabled) btn.removeAttribute("title");
+    }
+  }
+
+  /** Re-label every Summarize button on screen, once the billing is known. */
+  function refreshSummarizeButtons() {
+    for (const btn of document.querySelectorAll(".summarize-link")) {
+      applySummarizeButtonLabel(btn, btn.classList.contains("has-summary"));
+    }
+  }
+
+  // Inert defaults, like NO_RANKING: without the helper nothing is called
+  // paid, and nothing invents a price.
+  const NO_PAID_SPEND = {
+    isPaid: () => false,
+    summaryCostSentence: () => "",
+    summarizeButtonLabel: (_spend, hasSummary) => (hasSummary ? "Open the saved summary" : "Summarize"),
+    showsPaidMark: () => false,
+    summaryLoadingText: () => "Generating summary\u2026",
+    summaryRetryLabel: () => "Try again",
+    summaryFailureNote: () => "It is not retried automatically.",
+    paidPasses: () => [],
+    syncNeedsConfirm: () => false,
+    syncConfirmCost: () => "This sync includes a pass billed per token.",
+    syncPassLine: (p) => ({ label: (p && p.label) || "Pass", detail: "" }),
+    syncConfirmLabel: () => "Start paid sync",
+  };
+
+  function paidSpend() {
+    return window.XBOPaidSpend || NO_PAID_SPEND;
   }
 
   /**
@@ -5683,11 +5729,18 @@
     fetchSummary(bm);
   }
 
-  function fetchSummary(bm) {
+  /**
+   * Load (or generate) a summary. `retry` is the owner's deliberate "Try
+   * again": the only request that goes past the server's hold on a failed
+   * summary (security review 2, #19) - reopening the modal never re-bills one.
+   */
+  function fetchSummary(bm, opts) {
+    const retry = !!(opts && opts.retry);
     const seq = ++summaryRequestSeq;
     renderSummaryLoading();
 
-    getJSON(`/api/bookmarks/${bm.id}/summary`, { method: "POST" })
+    const url = retry ? `/api/bookmarks/${bm.id}/summary/retry` : `/api/bookmarks/${bm.id}/summary`;
+    getJSON(url, { method: "POST" })
       .then((data) => {
         if (seq !== summaryRequestSeq) return; // superseded by a newer open/retry
         renderSummaryResult(data.summary);
@@ -5707,8 +5760,10 @@
           renderSummaryNothing(err.body && err.body.error);
         } else {
           // The provider is there but the call failed (CLI not logged in,
-          // quota, network). Keep the button enabled and show what to fix.
-          renderSummaryError(bm, err && err.body && err.body.error);
+          // quota, network) - just now (502), or earlier and held by the
+          // server (429). Keep the button enabled and show what to fix.
+          const body = (err && err.body) || {};
+          renderSummaryError(bm, body.error, body.failedAt);
         }
       });
   }
@@ -5740,7 +5795,7 @@
     loading.setAttribute("role", "status");
     const spinner = el("span", "reader-spinner");
     spinner.setAttribute("aria-hidden", "true");
-    loading.append(spinner, el("span", null, "Generating summary…"));
+    loading.append(spinner, el("span", null, paidSpend().summaryLoadingText(summarySpend)));
     summaryBodyEl.replaceChildren(loading);
   }
 
@@ -5785,7 +5840,7 @@
     summaryBodyEl.replaceChildren(fallback);
   }
 
-  function renderSummaryError(bm, message) {
+  function renderSummaryError(bm, message, failedAt) {
     const fallback = el("div", "reader-fallback");
     fallback.setAttribute("role", "alert");
     fallback.appendChild(el("span", "reader-fallback-icon", "⚠️"));
@@ -5796,11 +5851,20 @@
         message || "Couldn't generate a summary. Please try again.",
       ),
     );
-    const retry = el("button", "btn btn-secondary", "Retry");
+    // A failure is held, not retried on its own (it may already be billed),
+    // so the owner is told that - and that trying again is a second charge.
+    fallback.appendChild(
+      el("p", "reader-fallback-note", paidSpend().summaryFailureNote(summarySpend, failedAt)),
+    );
+    const retry = el("button", "btn btn-secondary", paidSpend().summaryRetryLabel(summarySpend));
     retry.type = "button";
-    retry.addEventListener("click", () => fetchSummary(bm));
+    retry.addEventListener("click", () => fetchSummary(bm, { retry: true }));
     fallback.appendChild(retry);
+    // A retry replaces the button it was pressed on; hand the keyboard the
+    // new one rather than letting focus fall out of the dialog to <body>.
+    const focusWasLost = document.activeElement === document.body || summaryBodyEl.contains(document.activeElement);
     summaryBodyEl.replaceChildren(fallback);
+    if (focusWasLost && isSummaryOpen()) retry.focus();
   }
 
   function onSummaryKeydown(e) {
@@ -5823,6 +5887,8 @@
       const data = await getJSON("/api/summary-status");
       summaryAvailable = Boolean(data.available);
       if (data.reason) summaryUnavailableReason = data.reason;
+      summarySpend = data.spend || null;
+      refreshSummarizeButtons();
     } catch (_) {
       // Leave the optimistic default; the endpoint itself still degrades
       // gracefully (503) if a summary is actually requested.
@@ -6109,25 +6175,131 @@
       return false;
     }
 
+    // A sync with a per-token pass needs the owner's explicit authorization
+    // (security review 2, #20). The SERVER decides whether this one does -
+    // from the settings the run will actually use, which a just-saved form
+    // may have changed since the last /api/setup - so an unconfirmed start
+    // is simply refused with the passes to show, and nothing is spent.
+    let res;
+    try {
+      res = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(options.confirmed ? { confirm: true } : {}),
+      });
+    } catch (_) {
+      renderSyncProgress({ state: "error", error: "Could not reach the server.", messages: [] });
+      return false;
+    }
+    if (!res.ok && res.status !== 409) {
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 400 && body.confirmRequired && !options.confirmed) {
+        openSyncConfirm(body.paidPasses || [], options);
+        return false;
+      }
+      renderSyncProgress({ state: "error", error: body.error || "Could not start the sync.", messages: [] });
+      return false;
+    }
     renderSyncProgress({
       state: "running",
       startedAt: new Date().toISOString(),
       messages: ["Starting sync…"],
     });
-    try {
-      const res = await fetch("/api/sync", { method: "POST" });
-      if (!res.ok && res.status !== 409) {
-        const body = await res.json().catch(() => ({}));
-        renderSyncProgress({ state: "error", error: body.error || "Could not start the sync.", messages: [] });
-        return false;
-      }
-    } catch (_) {
-      renderSyncProgress({ state: "error", error: "Could not reach the server.", messages: [] });
-      return false;
-    }
     markSyncRunning();
     pollSync();
     return true;
+  }
+
+  // ---- the paid-sync confirmation (security review 2, #20) ---------------
+  // The ranking run's discipline, applied to a sync whose passes include a
+  // per-token model: the price before the scope, Cancel focused first, and
+  // Confirm the only thing that sends `{ confirm: true }`.
+
+  const syncConfirmModalEl = document.getElementById("sync-confirm-modal");
+  const syncConfirmBackdropEl = document.getElementById("sync-confirm-backdrop");
+  const syncConfirmCostTextEl = document.getElementById("sync-confirm-cost-text");
+  const syncConfirmPassesEl = document.getElementById("sync-confirm-passes");
+  const syncConfirmCancelBtn = document.getElementById("sync-confirm-cancel");
+  const syncConfirmOkBtn = document.getElementById("sync-confirm-ok");
+  /** What the refused start was asked to do, replayed once confirmed; plus where focus returns. */
+  let syncConfirmPending = null;
+
+  function isSyncConfirmOpen() {
+    return !!syncConfirmModalEl && !syncConfirmModalEl.hidden;
+  }
+
+  function openSyncConfirm(passes, options) {
+    if (!syncConfirmModalEl) {
+      renderSyncProgress({
+        state: "error",
+        error: "This sync is billed per token and could not be confirmed in this viewer.",
+        messages: [],
+      });
+      return;
+    }
+    syncConfirmPending = { options: options || {}, returnFocus: document.activeElement };
+    const syncPopover = popovers.find((p) => p.name === "sync");
+    if (syncPopover && isPopoverOpen(syncPopover)) setPopoverOpen(syncPopover, false, { returnFocus: false });
+
+    syncConfirmCostTextEl.textContent = paidSpend().syncConfirmCost(passes);
+    syncConfirmPassesEl.replaceChildren(
+      ...passes.map((pass) => {
+        const line = paidSpend().syncPassLine(pass);
+        const item = el("li", "paid-pass");
+        item.append(el("span", "paid-pass-label", line.label), el("span", "paid-pass-detail", line.detail));
+        return item;
+      }),
+    );
+    syncConfirmOkBtn.textContent = paidSpend().syncConfirmLabel(passes);
+    syncConfirmModalEl.hidden = false;
+    syncConfirmBackdropEl.hidden = false;
+    // Cancel first: the button that spends money is never the default target.
+    syncConfirmCancelBtn.focus();
+  }
+
+  function closeSyncConfirm() {
+    if (!isSyncConfirmOpen()) return;
+    const pending = syncConfirmPending;
+    syncConfirmPending = null;
+    syncConfirmModalEl.hidden = true;
+    syncConfirmBackdropEl.hidden = true;
+    // Back to what started it when it is still usable (the setup dialog's
+    // button, the first-run Sync); the Sync button itself lives in a popover
+    // that opening the dialog closed, so its visible stand-in is the toggle.
+    const target = pending && pending.returnFocus;
+    const usable = (elm) => !!elm && elm.isConnected && !elm.disabled && elm.offsetParent !== null;
+    if (usable(target)) target.focus();
+    else {
+      const toggle = document.getElementById("sync-toggle");
+      if (toggle) toggle.focus();
+    }
+  }
+
+  /** The authorization: the ONE place a sync is started with `confirm: true`. */
+  async function confirmSync() {
+    const pending = syncConfirmPending;
+    if (!pending) return;
+    closeSyncConfirm();
+    const started = await startSync({ ...pending.options, confirmed: true });
+    // The setup dialog's third step shows the run it just started.
+    if (started && isSetupOpen()) renderSetupStep();
+    updateFirstRun();
+  }
+
+  function initSyncConfirm() {
+    if (!syncConfirmModalEl) return;
+    syncConfirmCancelBtn.addEventListener("click", () => closeSyncConfirm());
+    syncConfirmBackdropEl.addEventListener("click", () => closeSyncConfirm());
+    syncConfirmOkBtn.addEventListener("click", () => void confirmSync());
+    document.addEventListener("keydown", (e) => {
+      if (!isSyncConfirmOpen()) return;
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeSyncConfirm();
+        return;
+      }
+      trapModalFocus(syncConfirmModalEl, e);
+    });
   }
 
   /**
@@ -7750,7 +7922,8 @@
     });
     setupNextBtn.addEventListener("click", () => void onSetupNext());
     document.addEventListener("keydown", (e) => {
-      if (!isSetupOpen()) return;
+      // The paid-sync confirmation opens on top of step 3 and owns the keyboard.
+      if (!isSetupOpen() || isSyncConfirmOpen()) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         closeSetup();
@@ -8121,6 +8294,7 @@
   initFilterTabs();
   initSummary();
   initSync();
+  initSyncConfirm();
   initCategorizationSettings();
   initSetup();
   initReset();

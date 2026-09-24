@@ -1465,6 +1465,25 @@ it ingests by design or a page the owner already has open.
 The `.env`-from-`process.cwd()` gap deferred here was closed later (security review 2, #3/#8) -
 see the credential-chain constraint above.
 
+## Paid pi-ai paths (security review 2, #19/#20)
+
+- **No call is ever sent without an output cap.** `createLlmFactory`'s `paramsFor` fills
+  `maxOutputTokens` from `outputBudgetFor` (`src/llm/output-budget.ts`, where each role's number
+  and its reasoning live) when nothing explicit is set; `completeOnPi` adds `REASONING_ALLOWANCE`
+  for the effort in force (`outputCeiling`), capped at the model maximum. Left unset, pi used the
+  model maximum (128k for Sonnet 5). `claude-cli` ignores the param (subscription, no per-token
+  bill) - wiring it there is untested against the real CLI, so do it deliberately if ever.
+- **A failed summary is held, not repeated** (`src/web/summary-backoff.ts`): the summary POST
+  answers 429 with the held failure for `SUMMARY_FAILURE_BACKOFF_MS`, and only the owner's
+  `POST /api/bookmarks/:id/summary/retry` (Origin-guarded, so never cross-site) goes past it.
+- **Point-of-spend notices come from the server**, never inferred client-side:
+  `/api/summary-status` carries the summary role's `spend` (the "Paid" tag on Summarize), and
+  `createSyncSpend` (`sync-job.ts`) derives the NEXT sync's per-token passes from the settings
+  the run will use (pass 1 only while the tree is empty; Jev's LLM fallback only when extending).
+  A non-empty answer makes `POST /api/sync` refuse without `{ confirm: true }`; the client
+  POSTs unconfirmed and opens `#sync-confirm-modal` from the 400's `paidPasses`, so a
+  just-saved setting can never be started unconfirmed. Wording is `paid-spend.js` (`XBOPaidSpend`).
+
 ## Live vs. tested
 
 The live OAuth browser consent and the vault-injected run are performed by the operator. Automated

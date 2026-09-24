@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { buildServer } from './server';
+import { SummaryFailureBackoff } from './summary-backoff';
 import { Database } from '../db/database';
 import type { FastifyInstance } from 'fastify';
 import type { RawBookmark } from '../types';
@@ -401,6 +402,24 @@ describe('GET /api/summary-status', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ available: true });
   });
+
+  it('says how a new summary is billed, so a per-token one is marked paid (security review 2, #20)', async () => {
+    db = new Database(':memory:');
+    const spend = {
+      providerId: 'pi-ai',
+      providerLabel: 'pi-ai (your API key or a local model)',
+      model: 'anthropic/claude-sonnet-5',
+      modelLabel: 'Claude Sonnet 5 (Anthropic API)',
+      billing: 'per-token' as const,
+      price: { input: 2, output: 10 },
+    };
+    app = buildServer(db, { summaryGenerator: new FakeSummaryGenerator('x'), summarySpend: spend });
+    await app.ready();
+    const res = await app.inject({ method: 'GET', url: '/api/summary-status' });
+    expect(res.json()).toEqual({ available: true, spend });
+    // Never a key: the description is labels, ids, a billing kind and a price.
+    expect(JSON.stringify(res.json())).not.toMatch(/sk-/);
+  });
 });
 
 describe('POST /api/bookmarks/:id/summary', () => {
@@ -465,6 +484,70 @@ describe('POST /api/bookmarks/:id/summary', () => {
     expect((res.json() as { error: string }).error).toMatch(/Couldn't reach Claude/);
     // A failed call is never cached, so a retry can still succeed.
     expect(db.getSummaryForBookmark(b1.id)).toBeUndefined();
+  });
+
+  it('holds a failed summary instead of calling the model again, until the owner retries (#19)', async () => {
+    let calls = 0;
+    let fail = true;
+    const flaky: SummaryGenerator = {
+      async summarize() {
+        calls += 1;
+        if (fail) throw new Error('The pi-ai model failed: the response hit its output limit (8192 tokens).');
+        return 'Recovered summary.';
+      },
+    };
+    await setup({ summaryGenerator: flaky });
+    const b1 = db.getBookmarkByPostId('1')!;
+    const url = `/api/bookmarks/${b1.id}/summary`;
+
+    expect((await app.inject({ method: 'POST', url })).statusCode).toBe(502);
+    const held = await app.inject({ method: 'POST', url });
+    expect(held.statusCode).toBe(429);
+    expect(held.json()).toMatchObject({ retry: 'manual', error: expect.stringMatching(/output limit/) });
+    expect(Date.parse(held.json().failedAt)).not.toBeNaN();
+    expect(calls).toBe(1);
+
+    // The deliberate retry is never blocked, and a success lifts the hold.
+    fail = false;
+    const retried = await app.inject({ method: 'POST', url: `${url}/retry` });
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json().summary.summary).toBe('Recovered summary.');
+    expect(calls).toBe(2);
+    expect((await app.inject({ method: 'POST', url })).statusCode).toBe(200);
+    expect(calls).toBe(2);
+  });
+
+  it('lets a held failure lapse on its own once the back-off window passes', async () => {
+    let t = 0;
+    let calls = 0;
+    const failing: SummaryGenerator = {
+      async summarize() {
+        calls += 1;
+        throw new Error('quota exhausted');
+      },
+    };
+    db = new Database(':memory:');
+    const evals = db.getOrCreateCategory('Evals', null, new Date().toISOString());
+    db.storeCategorizedBatch([{ ...bm('1'), text: 'Just some thoughts.' }], () => [evals.id]);
+    app = buildServer(db, {
+      summaryGenerator: failing,
+      summaryFailureBackoff: new SummaryFailureBackoff(60_000, () => t),
+    });
+    await app.ready();
+    const url = `/api/bookmarks/${db.getBookmarkByPostId('1')!.id}/summary`;
+
+    await app.inject({ method: 'POST', url });
+    t = 59_000;
+    expect((await app.inject({ method: 'POST', url })).statusCode).toBe(429);
+    t = 60_000;
+    expect((await app.inject({ method: 'POST', url })).statusCode).toBe(502);
+    expect(calls).toBe(2);
+  });
+
+  it('answers the retry route like the summary route for a cached, unknown or bad id', async () => {
+    await setup({ summaryGenerator: new FakeSummaryGenerator('unused') });
+    expect((await app.inject({ method: 'POST', url: '/api/bookmarks/9999/summary/retry' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/api/bookmarks/abc/summary/retry' })).statusCode).toBe(400);
   });
 
   it('generates, caches, and returns a summary for a post with no article link', async () => {

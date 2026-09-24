@@ -12,7 +12,9 @@ import {
   CURATED_PI_MODELS,
   PI_AI_PROVIDER_ID,
   createPiAiProvider,
+  REASONING_ALLOWANCE,
   loadPiRuntime,
+  outputCeiling,
   parseModelRef,
   type PiRuntime,
 } from './pi-ai';
@@ -283,6 +285,33 @@ describe('the pi-ai provider (fake runtime)', () => {
     await expect(client.complete({ prompt: 'p' })).rejects.toThrow(/output limit/);
   });
 
+  it('sends the role budget as maxTokens, plus the thinking allowance of the effort in force (#19)', async () => {
+    const { provider, calls } = fakeRuntime();
+    const cfg = cfgOf({ ANTHROPIC_API_KEY: 'sk-ant-api03-test' });
+    // fakeModel's own maximum is 4,096, so use a budget below it.
+    await provider
+      .create(cfg, { model: 'anthropic/claude-haiku-4-5', params: { maxOutputTokens: 1_000 } })
+      .complete({ prompt: 'p' });
+    expect(calls[0]!.options.maxTokens).toBe(1_000);
+    expect(calls[0]!.options.reasoning).toBeUndefined();
+
+    // With an effort, the thinking allowance rides on top - still clamped to the model maximum.
+    await provider
+      .create(cfg, { model: 'anthropic/claude-haiku-4-5', params: { maxOutputTokens: 1_000, effort: 'low' } })
+      .complete({ prompt: 'p' });
+    expect(calls[1]!.options.reasoning).toBe('low');
+    expect(calls[1]!.options.maxTokens).toBe(4_096);
+  });
+
+  it('names the cap that was actually hit, not the model maximum', async () => {
+    const { provider } = fakeRuntime(() => reply('{"categories": [', { stopReason: 'length' }));
+    const client = provider.create(cfgOf({ ANTHROPIC_API_KEY: 'sk-ant-api03-test' }), {
+      model: 'anthropic/claude-haiku-4-5',
+      params: { maxOutputTokens: 512 },
+    });
+    await expect(client.complete({ prompt: 'p' })).rejects.toThrow(/output limit \(512 tokens\)/);
+  });
+
   it('loads the SDK once and reuses it', async () => {
     const { provider, loads } = fakeRuntime();
     const cfg = cfgOf({ ANTHROPIC_API_KEY: 'sk-ant-api03-test' });
@@ -535,5 +564,24 @@ describe('the full pi model catalog (issue: auto-load the selector)', () => {
       globalThis.fetch = realFetch;
     }
     expect(requests).toBe(0);
+  });
+});
+
+describe('outputCeiling (security review 2, #19)', () => {
+  it('adds the thinking allowance for the effort in force, bounded by the model maximum', () => {
+    expect(outputCeiling({ maxTokens: 128_000 }, 8_192, 'off')).toBe(8_192);
+    expect(outputCeiling({ maxTokens: 128_000 }, 32_768, 'high')).toBe(32_768 + REASONING_ALLOWANCE.high);
+    expect(outputCeiling({ maxTokens: 20_000 }, 32_768, 'high')).toBe(20_000);
+  });
+
+  it('leaves the call uncapped only when no budget was given at all', () => {
+    expect(outputCeiling({ maxTokens: 128_000 }, undefined, 'off')).toBeUndefined();
+    expect(outputCeiling({ maxTokens: 128_000 }, 0, 'off')).toBeUndefined();
+  });
+
+  it('keeps every level well under the 128k maximum that made #19 costly', () => {
+    for (const allowance of Object.values(REASONING_ALLOWANCE)) {
+      expect(allowance).toBeLessThanOrEqual(65_536);
+    }
   });
 });

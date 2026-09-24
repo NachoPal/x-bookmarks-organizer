@@ -1,5 +1,6 @@
 import type { Config } from '../config';
 import type { CredentialStore } from '../creds/resolve';
+import { outputBudgetFor } from './output-budget';
 import { getProvider, providerIds } from './registry';
 import './providers';
 import {
@@ -58,13 +59,18 @@ function modelFor(llm: LlmConfig, role: LlmRole, provider: ProviderDefinition): 
   return llm.roles[role].model ?? llm.defaultModel ?? suggestedModelFor(provider, role);
 }
 
-/** Drop params the provider does not support rather than failing - the same env may target several. */
-function paramsFor(llm: LlmConfig, role: LlmRole, provider: ProviderDefinition): ProviderParams {
-  const requested = llm.roles[role].params ?? {};
+/**
+ * Drop params the provider does not support rather than failing - the same env
+ * may target several. The output cap is never left to the model's own maximum
+ * (security review 2, #19): a role with no explicit one gets its budget from
+ * `outputBudgetFor`, so no per-token call is ever uncapped.
+ */
+function paramsFor(config: Config, role: LlmRole, provider: ProviderDefinition): ProviderParams {
+  const requested = config.llm.roles[role].params ?? {};
   return {
     effort: provider.capabilities.effort ? requested.effort : undefined,
     temperature: provider.capabilities.temperature ? requested.temperature : undefined,
-    maxOutputTokens: requested.maxOutputTokens,
+    maxOutputTokens: requested.maxOutputTokens ?? outputBudgetFor(role, { batchSize: config.batchSize }),
   };
 }
 
@@ -102,7 +108,7 @@ export function createLlmFactory(
       const provider = resolveProvider(role);
       const client = provider.create(cfg, {
         model: modelFor(llm, role, provider),
-        params: paramsFor(llm, role, provider),
+        params: paramsFor(config, role, provider),
       });
       clients.set(role, client);
       return client;
