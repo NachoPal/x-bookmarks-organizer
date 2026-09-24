@@ -503,6 +503,41 @@ function scrub(detail: string, apiKey: string | undefined): string {
   return apiKey && apiKey.length >= 8 ? detail.split(apiKey).join('[redacted]') : detail;
 }
 
+/**
+ * Tokens of thinking a reasoning pass may spend ON TOP of its answer budget.
+ * A model with adaptive thinking (and every OpenAI-style reasoning model)
+ * counts its thinking against the same `maxTokens` as the answer, so a cap
+ * sized for the answer alone would cut a deep pass off mid-thought. Sized a
+ * notch above pi's own `DEFAULT_THINKING_BUDGETS` for each level; for a model
+ * with budget-based thinking pi adds its budget again, which only loosens a
+ * cap that is still far below the model maximum.
+ */
+export const REASONING_ALLOWANCE: Record<ModelThinkingLevel, number> = {
+  off: 0,
+  minimal: 2_048,
+  low: 4_096,
+  medium: 16_384,
+  high: 32_768,
+  xhigh: 65_536,
+  max: 65_536,
+};
+
+/**
+ * The `maxTokens` a call is sent with (security review 2, #19): the role's
+ * answer budget plus the thinking allowance for the effort actually in force,
+ * never more than the model can produce. Undefined only when no budget was
+ * given at all, which no role built by `createLlmFactory` does.
+ */
+export function outputCeiling(
+  model: Pick<Model<Api>, 'maxTokens'>,
+  answerBudget: number | undefined,
+  effort: ModelThinkingLevel,
+): number | undefined {
+  if (!answerBudget || answerBudget <= 0) return undefined;
+  const total = answerBudget + REASONING_ALLOWANCE[effort];
+  return model.maxTokens > 0 ? Math.min(total, model.maxTokens) : total;
+}
+
 /** Load the runtime once, on first use. */
 export function lazyRuntime(load: () => Promise<PiRuntime>): () => Promise<PiRuntime> {
   let runtime: Promise<PiRuntime> | undefined;
@@ -542,14 +577,14 @@ export async function completeOnPi(opts: {
     messages: [{ role: 'user', content: req.prompt, timestamp: Date.now() }],
   };
 
+  const maxTokens = outputCeiling(model, req.maxOutputTokens ?? params.maxOutputTokens, clamped);
+
   let message: AssistantMessage;
   try {
     message = await rt.complete(model, context, {
       ...(apiKey ? { apiKey } : {}),
       ...(clamped !== 'off' ? { reasoning: clamped } : {}),
-      ...(req.maxOutputTokens ?? params.maxOutputTokens
-        ? { maxTokens: req.maxOutputTokens ?? params.maxOutputTokens }
-        : {}),
+      ...(maxTokens ? { maxTokens } : {}),
       ...(req.signal ? { signal: req.signal } : {}),
     });
   } catch (err) {
@@ -563,7 +598,8 @@ export async function completeOnPi(opts: {
   if (message.stopReason === 'length') {
     // A cut-off response is truncated JSON to every caller in this app;
     // saying so beats a parse error that points nowhere.
-    throw new Error(failure(`the response hit the model's output limit (${model.maxTokens} tokens) before it finished`));
+    const limit = maxTokens ?? model.maxTokens;
+    throw new Error(failure(`the response hit its output limit (${limit} tokens) before it finished`));
   }
   return {
     text: textOf(message),

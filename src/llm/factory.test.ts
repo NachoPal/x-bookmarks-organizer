@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { loadConfig } from '../config';
 import { createLlmFactory } from './factory';
+import {
+  CHAT_OUTPUT_TOKENS,
+  SUMMARY_OUTPUT_TOKENS,
+  TAXONOMY_OUTPUT_TOKENS,
+  outputBudgetFor,
+} from './output-budget';
 import { registerProvider } from './registry';
 import type { LlmRole, ProviderDefinition, ProviderParams } from './types';
 
@@ -98,6 +104,20 @@ describe('createLlmFactory - role resolution', () => {
     ).toBe('max');
     // The assignment pass has never sent an effort level.
     expect(resolutionOf(env, 'assignment').params?.effort).toBeUndefined();
+  });
+
+  it('gives every role an explicit output cap, never the model maximum (security review 2, #19)', () => {
+    const env = { XBOOKMARKS_LLM_PROVIDER: 'recorder' };
+    expect(resolutionOf(env, 'summary').params?.maxOutputTokens).toBe(SUMMARY_OUTPUT_TOKENS);
+    expect(resolutionOf(env, 'chat').params?.maxOutputTokens).toBe(CHAT_OUTPUT_TOKENS);
+    expect(resolutionOf(env, 'taxonomy').params?.maxOutputTokens).toBe(TAXONOMY_OUTPUT_TOKENS);
+    // The assignment budget follows the batch it has to answer for.
+    expect(resolutionOf(env, 'assignment').params?.maxOutputTokens).toBe(
+      outputBudgetFor('assignment', { batchSize: 15 }),
+    );
+    expect(
+      resolutionOf({ ...env, XBOOKMARKS_BATCH_SIZE: '40' }, 'assignment').params?.maxOutputTokens,
+    ).toBe(outputBudgetFor('assignment', { batchSize: 40 }));
   });
 
   it('drops params a provider does not support instead of failing', () => {

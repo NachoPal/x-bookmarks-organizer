@@ -228,14 +228,16 @@ describe('Cross-site requests cannot trigger a summary (security review finding 
     expectNoSideEffects();
   });
 
-  it('refuses a cross-origin form POST by its Origin', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: summaryUrl(),
-      headers: { host: `127.0.0.1:${port}`, origin: 'http://evil.example', 'content-type': 'text/plain' },
-      payload: 'x=1',
-    });
-    expect(res.statusCode).toBe(403);
+  it('refuses a cross-origin form POST by its Origin, to the summary and to its billed retry', async () => {
+    for (const url of [summaryUrl(), `${summaryUrl()}/retry`]) {
+      const res = await app.inject({
+        method: 'POST',
+        url,
+        headers: { host: `127.0.0.1:${port}`, origin: 'http://evil.example', 'content-type': 'text/plain' },
+        payload: 'x=1',
+      });
+      expect(res.statusCode).toBe(403);
+    }
     expectNoSideEffects();
   });
 

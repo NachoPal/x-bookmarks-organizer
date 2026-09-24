@@ -16,7 +16,8 @@ import type { ResolvedProviderConfig } from './llm/types';
 import { buildSettingsCatalog } from './settings/catalog';
 import { createModelBrowser } from './settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from './settings/settings';
-import { createSyncJob } from './web/sync-job';
+import { createSyncJob, createSyncSpend } from './web/sync-job';
+import { describeRoleSpend } from './web/paid-spend';
 import { createRankWiring } from './web/rank-job';
 import { backfillArticlePreviews } from './articles/backfill';
 import { HttpArticleFetcher } from './articles/fetch-article';
@@ -445,10 +446,14 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
   // server-side) since the owner can pick claude-cli for either pass
   // independently of the summary role's provider.
   const providerConfig: ResolvedProviderConfig = { get: (key) => store.get(key).value };
+  const modelBrowser = createModelBrowser();
   const app = await startServer(db, config.webPort, '127.0.0.1', {
     pageSize: config.pageSize,
     summaryGenerator,
     summaryUnavailableReason: available ? undefined : health.detail,
+    // How a new summary is billed, so a per-token one is marked as paid on the
+    // Summarize button itself (security review 2, #20).
+    summarySpend: available ? await describeRoleSpend(llm, 'summary', catalog, modelBrowser) : undefined,
     claudeCliCheck: () => {
       const provider = getProvider(CLAUDE_CLI_PROVIDER_ID);
       return provider
@@ -459,6 +464,9 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // purpose: the job re-reads the settings on every run, so changing them in
     // the Settings panel takes effect without restarting the viewer.
     syncJob: createSyncJob({ db, store, config: baseConfig }),
+    // Which of the next sync's passes are billed per token - a paid sync is
+    // confirmed in the app before it starts (security review 2, #20).
+    syncSpend: createSyncSpend({ db, store, config: baseConfig, browser: modelBrowser }),
     // The "Rank now" button's work (issue #80). `baseConfig` again, for the
     // same reason as the sync job - and because the ranker's opt-in and knobs
     // are deliberately NOT settings-panel choices: turning ranking on stays an
@@ -471,7 +479,7 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     rankerInterests: baseConfig.ranker.interests,
     credentials: store,
     dotenvExposure: () => dotenvExposure(),
-    modelBrowser: createModelBrowser(),
+    modelBrowser,
     xLogin: async () => {
       const current = applySettingsToConfig(
         loadConfig(process.env, store),

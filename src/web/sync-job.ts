@@ -32,7 +32,10 @@ import {
 import { createLlmFactory, type LlmFactory } from '../llm/factory';
 import { runIngest as defaultRunIngest, type IngestSummary } from '../ingest';
 import { buildSettingsCatalog } from '../settings/catalog';
+import { createModelBrowser, type ModelBrowser } from '../settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from '../settings/settings';
+import { DEFAULT_TYPESAFE_MODEL } from '../categorize/typesafe/client';
+import { asPaidPass, describeRoleSpend, type PaidPass } from './paid-spend';
 import type { SyncJob } from './sync';
 
 /** What the owner is told when X has never been connected from this machine. */
@@ -102,5 +105,59 @@ export function createSyncJob(deps: SyncJobDeps): SyncJob {
       maxDepth: config.maxCategoryDepth,
       logger: log,
     }) as Promise<IngestSummary>;
+  };
+}
+
+export interface SyncSpendDeps {
+  db: Database;
+  store: CredentialStore;
+  /** The same env-shaped baseline the job gets; the stored settings are layered on top per call. */
+  config: Config;
+  /** Where a catalog model's price is read from. Defaults to the real (local, free) browser. */
+  browser?: ModelBrowser;
+}
+
+/**
+ * Which passes of the NEXT sync will be billed per token (security review 2,
+ * #20) - what `POST /api/sync` demands an explicit `{ confirm: true }` for and
+ * the viewer's confirmation names.
+ *
+ * Resolved exactly the way {@link createSyncJob} resolves a run - the stored
+ * settings layered on `config`, re-read on every call - so the confirmation
+ * describes the run it authorizes. Only passes that will actually run count:
+ * pass 1 (taxonomy) runs only while the library has no tree yet, and Jev's
+ * LLM fallback only when an existing tree is being extended. A local read
+ * throughout: nothing is called and nothing is spent.
+ */
+export function createSyncSpend(deps: SyncSpendDeps): () => Promise<PaidPass[]> {
+  const catalog = buildSettingsCatalog();
+  const browser = deps.browser ?? createModelBrowser();
+
+  return async () => {
+    const { db, store } = deps;
+    const config = applySettingsToConfig(deps.config, effectiveSettings(db, catalog));
+    const llm = createLlmFactory(config, process.env, store);
+    const firstRun = db.getAllCategories().length === 0;
+    const passes: (PaidPass | undefined)[] = [];
+
+    if (firstRun) {
+      passes.push(asPaidPass(await describeRoleSpend(llm, 'taxonomy', catalog, browser), 'taxonomy', 'Taxonomy pass'));
+    }
+    const filing = await describeRoleSpend(llm, 'assignment', catalog, browser);
+    if (config.categorizer === 'typesafe') {
+      const model = config.typesafe.model ?? DEFAULT_TYPESAFE_MODEL;
+      passes.push({
+        pass: 'filing',
+        label: 'Filing pass',
+        providerId: 'typesafe',
+        providerLabel: 'TypeSafe',
+        model,
+        modelLabel: `Jev (${model})`,
+      });
+      if (!firstRun) passes.push(asPaidPass(filing, 'filing-fallback', 'New-category fallback'));
+    } else {
+      passes.push(asPaidPass(filing, 'filing', 'Filing pass'));
+    }
+    return passes.filter((p): p is PaidPass => p !== undefined);
   };
 }

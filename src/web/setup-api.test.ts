@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { buildServer, SYNC_UNAVAILABLE_MESSAGE, X_LOGIN_UNAVAILABLE_MESSAGE } from './server';
+import {
+  buildServer,
+  SYNC_CONFIRM_MESSAGE,
+  SYNC_UNAVAILABLE_MESSAGE,
+  X_LOGIN_UNAVAILABLE_MESSAGE,
+} from './server';
+import type { PaidPass } from './paid-spend';
 import { Database } from '../db/database';
 import { buildSettingsCatalog } from '../settings/catalog';
 import { readSettings } from '../settings/settings';
@@ -388,6 +394,75 @@ describe('POST /api/sync and GET /api/sync', () => {
     const res = await app.inject({ method: 'POST', url: '/api/sync' });
     expect(res.statusCode).toBe(503);
     expect(res.json().error).toBe(SYNC_UNAVAILABLE_MESSAGE);
+  });
+});
+
+describe('a sync with a per-token pass (security review 2, #20)', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let runs: number;
+
+  const PAID: PaidPass[] = [
+    {
+      pass: 'taxonomy',
+      label: 'Taxonomy pass',
+      providerId: 'pi-ai',
+      providerLabel: 'pi-ai (your API key or a local model)',
+      model: 'anthropic/claude-opus-4-8',
+      modelLabel: 'Claude Opus 4.8 (Anthropic API)',
+      price: { input: 5, output: 25 },
+    },
+  ];
+
+  const serve = async (paid: PaidPass[]) => {
+    db = new Database(':memory:');
+    runs = 0;
+    app = buildServer(db, {
+      syncJob: async () => {
+        runs += 1;
+        return summary;
+      },
+      syncSpend: async () => paid,
+    });
+    await app.ready();
+  };
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it('refuses to start without an explicit { confirm: true }, naming the paid passes', async () => {
+    await serve(PAID);
+    for (const payload of [undefined, {}, { confirm: 'yes' }]) {
+      const res = await app.inject({ method: 'POST', url: '/api/sync', ...(payload ? { payload } : {}) });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: SYNC_CONFIRM_MESSAGE, confirmRequired: true, paidPasses: PAID });
+    }
+    await settle();
+    expect(runs).toBe(0);
+  });
+
+  it('starts once confirmed', async () => {
+    await serve(PAID);
+    const res = await app.inject({ method: 'POST', url: '/api/sync', payload: { confirm: true } });
+    expect(res.statusCode).toBe(202);
+    await settle();
+    expect(runs).toBe(1);
+  });
+
+  it('needs no confirmation when nothing is billed per token, exactly as before', async () => {
+    await serve([]);
+    const res = await app.inject({ method: 'POST', url: '/api/sync' });
+    expect(res.statusCode).toBe(202);
+    await settle();
+    expect(runs).toBe(1);
+  });
+
+  it('reports the paid passes on /api/setup, so the Sync control can say so up front', async () => {
+    await serve(PAID);
+    const body = (await app.inject({ method: 'GET', url: '/api/setup' })).json();
+    expect(body.sync.paidPasses).toEqual(PAID);
   });
 });
 

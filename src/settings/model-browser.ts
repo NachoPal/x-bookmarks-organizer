@@ -115,3 +115,31 @@ export async function verifyCatalogModels(
   }
   return errors;
 }
+
+/**
+ * One model's catalog entry - its label and, for a paid model, its price - so
+ * a point-of-spend notice can say what a call costs (security review 2, #20).
+ * The recommended list answers first; a model picked from a source's full
+ * catalog is found in that source's listing. Both are local reads: no
+ * request, no key, no spend. Undefined for a model no catalog lists (a local
+ * server's, or a legacy id).
+ */
+export async function findCatalogModel(
+  catalog: SettingsCatalog,
+  browser: ModelBrowser,
+  providerId: string,
+  model: string,
+): Promise<CatalogModel | undefined> {
+  const provider = catalogProvider(catalog, providerId);
+  if (!provider) return undefined;
+  const recommended = provider.models.find((m) => m.id === model);
+  if (recommended) return recommended;
+  const source = sourceOfModel(provider, model);
+  if (!source || source.freeform) return undefined;
+  try {
+    const listing = await browser.list(providerId, source.id);
+    return listing.ok ? listing.models.find((m) => m.id === model) : undefined;
+  } catch {
+    return undefined;
+  }
+}

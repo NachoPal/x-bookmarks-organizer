@@ -10,7 +10,8 @@ import type { AssignMode, BatchCategorizer } from '../categorize/llm';
 import type { TaxonomyDesigner, TaxonomyNode } from '../categorize/taxonomy';
 import type { Assignment, RawBookmark } from '../types';
 import { writeSettings } from '../settings/settings';
-import { createSyncJob, NOT_CONNECTED_MESSAGE } from './sync-job';
+import type { ModelBrowser } from '../settings/model-browser';
+import { createSyncJob, createSyncSpend, NOT_CONNECTED_MESSAGE } from './sync-job';
 
 /**
  * Entirely offline. The X client and both categorization passes are faked, and
@@ -206,5 +207,75 @@ describe('createSyncJob', () => {
     expect(summary.newBookmarks).toBe(1);
     expect(categorizer.modes).toEqual(['strict', 'extend']);
     expect(db.getBookmarkCount()).toBe(3);
+  });
+});
+
+describe('createSyncSpend (security review 2, #20)', () => {
+  let db: Database;
+  const config = loadConfig({ ...X_CREDS });
+  const store = fakeStore({});
+  /** A catalog read that knows one model beyond the recommended list. */
+  const browser: ModelBrowser = {
+    async list(providerId, source) {
+      return {
+        ok: true,
+        models:
+          providerId === 'pi-ai' && source === 'openrouter'
+            ? [{ id: 'openrouter/acme/wordy-1', label: 'Wordy 1', suggestedFor: [], price: { input: 0.5, output: 1.5 } }]
+            : [],
+      };
+    },
+  };
+  const spend = () => createSyncSpend({ db, store, config, browser })();
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+  });
+  afterEach(() => db.close());
+
+  it('reports nothing paid for the default, subscription-backed passes', async () => {
+    expect(await spend()).toEqual([]);
+  });
+
+  it('names both pi-ai passes, with their catalog prices, before the first sync', async () => {
+    writeSettings(db, {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'anthropic/claude-opus-4-8',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'openrouter/acme/wordy-1',
+    });
+    expect(await spend()).toEqual([
+      expect.objectContaining({
+        pass: 'taxonomy',
+        providerId: 'pi-ai',
+        model: 'anthropic/claude-opus-4-8',
+        modelLabel: 'Claude Opus 4.8 (Anthropic API)',
+        price: { input: 5, output: 25 },
+      }),
+      expect.objectContaining({
+        pass: 'filing',
+        model: 'openrouter/acme/wordy-1',
+        modelLabel: 'Wordy 1',
+        price: { input: 0.5, output: 1.5 },
+      }),
+    ]);
+  });
+
+  it('drops the taxonomy pass once a tree exists, since an incremental sync never runs it', async () => {
+    writeSettings(db, { categorizer: 'claude-cli', taxonomyProvider: 'pi-ai', assignmentProvider: 'claude-cli' });
+    expect((await spend()).map((p) => p.pass)).toEqual(['taxonomy']);
+    db.getOrCreateCategory('AI', null, new Date().toISOString());
+    expect(await spend()).toEqual([]);
+  });
+
+  it("names Jev filing, and its paid LLM fallback when a tree is being extended", async () => {
+    writeSettings(db, { categorizer: 'typesafe', taxonomyProvider: 'claude-cli', assignmentProvider: 'pi-ai' });
+    expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([['filing', 'typesafe']]);
+    db.getOrCreateCategory('AI', null, new Date().toISOString());
+    expect((await spend()).map((p) => [p.pass, p.providerId])).toEqual([
+      ['filing', 'typesafe'],
+      ['filing-fallback', 'pi-ai'],
+    ]);
   });
 });

@@ -53,6 +53,8 @@ import { SyncRunner, type SyncJob } from './sync';
 import { RankRunner } from './rank';
 import type { RankWiring } from './rank-job';
 import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
+import type { PaidPass, RoleSpend } from './paid-spend';
+import { SummaryFailureBackoff } from './summary-backoff';
 
 /** Directory holding the built static viewer assets (relative to this file). */
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -90,6 +92,26 @@ export interface ServerOptions {
    * text so the viewer never has to guess at a fix.
    */
   summaryUnavailableReason?: string;
+  /**
+   * How the summary role is billed (security review 2, #20), reported by
+   * `/api/summary-status` so the viewer can mark Summarize as paid at the
+   * point of use. Undefined (a test-built server) reports nothing, which the
+   * viewer reads as "not billed per token".
+   */
+  summarySpend?: RoleSpend;
+  /**
+   * How long a failed summary suppresses automatic re-generation
+   * (`SummaryFailureBackoff`). Tests pass a clock-free short window; the
+   * default is `SUMMARY_FAILURE_BACKOFF_MS`.
+   */
+  summaryFailureBackoff?: SummaryFailureBackoff;
+  /**
+   * The passes of the next sync that will be billed per token (security
+   * review 2, #20) - `createSyncSpend`. A non-empty answer makes
+   * `POST /api/sync` refuse without `{ confirm: true }`. Undefined (a
+   * test-built server) means nothing is paid, so a sync starts as before.
+   */
+  syncSpend?: () => Promise<PaidPass[]>;
   /**
    * The work one in-app sync performs (issue #71). Undefined leaves the Sync
    * button disabled with {@link SYNC_UNAVAILABLE_MESSAGE} - which is what a
@@ -180,6 +202,10 @@ export const RANK_CONFIRM_MESSAGE =
 /** Shown when ONE bookmark is ranked without the explicit paid confirmation. */
 export const RANK_ONE_CONFIRM_MESSAGE =
   'Ranking is PAID per token. Send { "confirm": true } to authorize scoring this bookmark.';
+
+/** Shown when a sync with a per-token pass is started without the explicit paid confirmation. */
+export const SYNC_CONFIRM_MESSAGE =
+  'This sync includes a pass billed per token. Send { "confirm": true } to authorize it.';
 
 /** Shown when "Connect X" is pressed on a viewer with no login wiring. */
 export const X_LOGIN_UNAVAILABLE_MESSAGE =
@@ -430,6 +456,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   const articleFetcher = opts.articleFetcher ?? new HttpArticleFetcher();
   const summaryGenerator = opts.summaryGenerator;
   const unavailableReason = opts.summaryUnavailableReason ?? SUMMARY_UNAVAILABLE_MESSAGE;
+  const summaryBackoff = opts.summaryFailureBackoff ?? new SummaryFailureBackoff();
 
   /**
    * The cached extraction for a bookmark's article link, fetching and caching
@@ -459,11 +486,14 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       // redacted at the adapter boundary, so it tells the owner what to fix
       // instead of a generic failure they cannot act on.
       const detail = err instanceof Error ? err.message.slice(0, MAX_ERROR_CHARS) : '';
-      return reply
-        .code(502)
-        .send({ error: detail || 'Could not generate a summary. Please try again.' });
+      const error = detail || 'Could not generate a summary. Please try again.';
+      // The call may already have been billed (a response cut off at its
+      // output limit is paid for in full), so it is not repeated on its own.
+      summaryBackoff.record(id, error);
+      return reply.code(502).send({ error, retry: 'manual' });
     }
 
+    summaryBackoff.clear(id);
     const record: SummaryRecord = {
       bookmarkId: id,
       summary: summaryText,
@@ -484,6 +514,11 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   const rankRunner = ranking ? new RankRunner(ranking.job) : undefined;
   const catalog: SettingsCatalog = buildSettingsCatalog();
   const xLoginStatus: XLoginStatus = { state: 'idle', error: null };
+
+  /** The next sync's per-token passes; empty when the viewer has no way to tell. */
+  async function paidSyncPasses(): Promise<PaidPass[]> {
+    return opts.syncSpend ? opts.syncSpend() : [];
+  }
 
   /** A credential's presence and source - never its value (`AGENTS.md`). */
   function credentialStatus(key: string): CredentialStatus {
@@ -588,6 +623,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         reason: syncRunner ? undefined : SYNC_UNAVAILABLE_MESSAGE,
         lastSyncedAt: db.getLastSyncedAt() ?? null,
         status: syncRunner ? syncRunner.status() : null,
+        // What the next sync will bill per token, so the Sync control can
+        // confirm it up front (security review 2, #20). A local read.
+        paidPasses: syncRunner ? await paidSyncPasses() : [],
       },
       // How much of the library the opt-in ranking pass has scored (issue #62),
       // so the Settings panel can say whether sorting by score will actually
@@ -651,13 +689,26 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // GET /api/sync for progress, so a run that takes minutes never blocks a
   // request or the UI. 409 when one is already running, with that run's
   // progress so the client can simply attach to it.
-  app.post('/api/sync', async (_req, reply) => {
+  //
+  // A sync whose passes include a per-token model (a pi-ai pass, or Jev
+  // filing) is a paid run, so it carries the ranking run's gate (security
+  // review 2, #20): `{ confirm: true }` is REQUIRED, and the paid passes are
+  // re-derived here, at the moment of authorization, from the settings the
+  // run will actually use - a stale browser cannot start one unconfirmed. A
+  // sync with nothing billed per token needs no body at all, as before.
+  app.post<{ Body?: { confirm?: unknown } }>('/api/sync', async (req, reply) => {
     if (!syncRunner) return reply.code(503).send({ error: SYNC_UNAVAILABLE_MESSAGE });
     // The other half of the "never race a ranking run" rule enforced by
     // POST /api/rank: an ingest must not store bookmarks under a run that has
     // already chosen which ones it is paying to score.
     if (rankRunner?.isRunning()) {
       return reply.code(409).send({ error: 'A ranking run is in progress. Wait for it to finish, then sync.' });
+    }
+    if (!syncRunner.isRunning()) {
+      const paidPasses = await paidSyncPasses();
+      if (paidPasses.length > 0 && (req.body ?? {}).confirm !== true) {
+        return reply.code(400).send({ error: SYNC_CONFIRM_MESSAGE, confirmRequired: true, paidPasses });
+      }
     }
     const { started, status } = syncRunner.start();
     if (!started) {
@@ -1254,8 +1305,15 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // gracefully on its own if called anyway. A provider that is available but
   // whose call then fails keeps the button enabled and reports the failure in
   // the modal, so a retry is possible.
+  //
+  // It also says how a NEW summary is billed (security review 2, #20): the
+  // summary role's provider, model, billing and - when its catalog states it -
+  // price, so a per-token summary is marked as paid on the button itself
+  // rather than only in the console that started the viewer.
   app.get('/api/summary-status', async () =>
-    summaryGenerator ? { available: true } : { available: false, reason: unavailableReason },
+    summaryGenerator
+      ? { available: true, ...(opts.summarySpend ? { spend: opts.summarySpend } : {}) }
+      : { available: false, reason: unavailableReason },
   );
 
   // The on-demand LLM summary for a bookmark: served from cache once
@@ -1270,8 +1328,25 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // article, calls the model (which may bill per token) and writes a row, and a
   // cross-site `<img>` can issue a GET but not a POST that survives the Origin
   // guard (security review finding 6).
-  app.post<{ Params: { id: string } }>('/api/bookmarks/:id/summary', async (req, reply) => {
-    const id = Number.parseInt(req.params.id, 10);
+  //
+  // A failed generation is NOT repeated by a later request (security review 2,
+  // #19): while `summaryBackoff` holds the failure, this answers 429 with it
+  // instead of calling the model again. The owner's explicit "Try again" is
+  // the retry route below, which is the only path past it.
+  app.post<{ Params: { id: string } }>('/api/bookmarks/:id/summary', async (req, reply) =>
+    serveSummary(req.params.id, reply, { manualRetry: false }),
+  );
+
+  // The owner's deliberate retry of a failed summary: the one request that
+  // bypasses the back-off. A POST like the one above, so the Origin guard
+  // refuses it from any other site - a page the owner visits can never make it
+  // on their behalf.
+  app.post<{ Params: { id: string } }>('/api/bookmarks/:id/summary/retry', async (req, reply) =>
+    serveSummary(req.params.id, reply, { manualRetry: true }),
+  );
+
+  async function serveSummary(rawId: string, reply: FastifyReply, opt: { manualRetry: boolean }) {
+    const id = Number.parseInt(rawId, 10);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
 
     const bookmark = db.getBookmarkById(id);
@@ -1282,6 +1357,22 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
 
     if (!summaryGenerator) {
       return reply.code(503).send({ error: unavailableReason });
+    }
+
+    if (opt.manualRetry) {
+      summaryBackoff.clear(id);
+    } else {
+      const failure = summaryBackoff.active(id);
+      if (failure) {
+        return reply
+          .code(429)
+          .header('Retry-After', String(Math.ceil(failure.retryAfterMs / 1000)))
+          .send({
+            error: failure.error,
+            retry: 'manual',
+            failedAt: new Date(failure.failedAt).toISOString(),
+          });
+      }
     }
 
     // An X-native Article (hosted or quoted) brings its own body from the X
@@ -1339,7 +1430,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     }
 
     return generateSummary(id, input, reply);
-  });
+  }
 
   // The structured, labeled content of one bookmark - for a content-scoring/
   // ranking tool that needs each part (the post itself, a quoted post, a

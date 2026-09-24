@@ -2346,6 +2346,19 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   width: 1rem;
   height: 1rem;
 }
+/* A NEW summary on a per-token model is marked at the button (security
+   review 2, #20). The "paid" coin color the ranking confirmation already
+   uses, carried by the WORD - never by the color alone - with the price in
+   the button's accessible name and tooltip. */
+.summarize-link .paid-tag {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--color-favorite-soft);
+  color: var(--color-favorite);
+  font-size: var(--text-small);
+  font-weight: 600;
+  line-height: 1.4;
+}
 /* The ranking score (issue #62): a quiet rating that reveals the rubric
    breakdown behind it. The gauge icon plus the number carry the meaning - the
    chip never signals by color alone - and its `aria-label` is the whole
@@ -2898,6 +2911,14 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 .reader-fallback-msg {
   margin: 0;
   max-width: 32rem;
+}
+/* Under a failed summary: why it is not retried on its own, and - when the
+   summary role is billed per token - that trying again is a second charge
+   (security review 2, #19). */
+.reader-fallback-note {
+  margin: 0;
+  max-width: 32rem;
+  font-size: var(--text-small);
 }
 
 @media (max-width: 640px) {
@@ -3953,6 +3974,32 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 .rank-cost-text {
   min-width: 0;
   font-weight: 600;
+}
+/* The paid-sync confirmation's passes (security review 2, #20): what each
+   pass is, then which model runs it and at what price. */
+.paid-pass-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.paid-pass {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.paid-pass-label {
+  font-weight: 600;
+}
+.paid-pass-detail {
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
 }
 
 /* ---- Reset library (destructive, local only) + guided first run ---------- */
