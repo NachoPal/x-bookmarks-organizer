@@ -9,8 +9,8 @@
  * verbatim - there is no separate progress vocabulary to keep in step with
  * what the job actually does.
  *
- * `SyncRunner` (`./sync`) and `RankRunner` (`./rank`) are the two instances;
- * each binds the summary type it produces and the sentence shown when a
+ * `SyncRunner` (`./sync`), `RankRunner` (`./rank`) and `FindRunner`
+ * (`./find-job`) are the instances; each binds the summary type it produces and the sentence shown when a
  * failure carries no message of its own.
  */
 
@@ -93,8 +93,12 @@ export class JobRunner<TSummary> {
    *
    * The promise is deliberately not returned: nothing awaits the job, which is
    * what keeps the UI unblocked.
+   *
+   * `job` replaces the constructor's job for THIS run only - for a runner
+   * whose work takes an argument (which category a find is for), where the
+   * one-at-a-time slot is shared but each run's work differs.
    */
-  start(): { started: boolean; status: JobStatus<TSummary> } {
+  start(job: Job<TSummary> = this.job): { started: boolean; status: JobStatus<TSummary> } {
     if (this.state === 'running') return { started: false, status: this.status() };
 
     this.state = 'running';
@@ -104,13 +108,13 @@ export class JobRunner<TSummary> {
     this.summary = null;
     this.error = null;
 
-    void this.run();
+    void this.run(job);
     return { started: true, status: this.status() };
   }
 
-  private async run(): Promise<void> {
+  private async run(job: Job<TSummary>): Promise<void> {
     try {
-      this.summary = await this.job((message) => this.log(message));
+      this.summary = await job((message) => this.log(message));
       this.state = 'done';
     } catch (err) {
       // The message is the credential chain's or the provider adapter's own

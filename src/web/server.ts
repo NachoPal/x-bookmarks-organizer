@@ -51,6 +51,7 @@ import {
 } from '../rank/presets';
 import { SyncRunner, type SyncJob } from './sync';
 import { RankRunner } from './rank';
+import { FindRunner, type FindWiring } from './find-job';
 import type { RankWiring } from './rank-job';
 import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 import type { PaidPass, RoleSpend } from './paid-spend';
@@ -144,6 +145,12 @@ export interface ServerOptions {
    */
   ranking?: RankWiring;
   /**
+   * "Find bookmarks for this category": the filing model's description (free
+   * to read) and the run itself. Undefined answers the find routes with 503,
+   * which is what a test-built `buildServer(db)` gets.
+   */
+  findBookmarks?: FindWiring;
+  /**
    * The process's `XBOOKMARKS_RANKER_INTERESTS`, which augments the BUILT-IN
    * rubric preset only (`src/rank/rubric.ts`). The viewer needs it to resolve
    * the ACTIVE preset's version tag - the one every score read below is scoped
@@ -186,6 +193,12 @@ export interface ServerOptions {
 /** Shown when the model picker asks a viewer with no model browser for a list. */
 export const MODELS_UNAVAILABLE_MESSAGE =
   'Browsing the model catalog is not available in this viewer. Start it with `node dist/index.js serve`.';
+
+/** Why "Find bookmarks" cannot run in a viewer built without its wiring. */
+const FIND_UNAVAILABLE_MESSAGE = 'Finding bookmarks is unavailable in this viewer.';
+const FIND_RUNNING_MESSAGE = 'Bookmarks are being found for a category. Wait for it to finish.';
+const FIND_CONFIRM_MESSAGE =
+  'The filing model is billed per token. Send { "confirm": true } to find bookmarks for this category.';
 
 /** Shown when the Sync button is pressed on a viewer with no ingest wiring. */
 export const SYNC_UNAVAILABLE_MESSAGE =
@@ -512,6 +525,10 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // twice for the same bookmarks.
   const ranking = opts.ranking;
   const rankRunner = ranking ? new RankRunner(ranking.job) : undefined;
+  // Finding bookmarks for a category reads the whole library and writes
+  // category links, so it too takes a single slot and never races a sync.
+  const findWiring = opts.findBookmarks;
+  const findRunner = findWiring ? new FindRunner() : undefined;
   const catalog: SettingsCatalog = buildSettingsCatalog();
   const xLoginStatus: XLoginStatus = { state: 'idle', error: null };
 
@@ -635,6 +652,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       // how many bookmarks a run would score, and the current run's progress.
       // `blocker` and `pending` are both free to compute: no API call, no spend.
       ranking: rankingState(),
+      // The current (or last) "Find bookmarks" run, so a reload picks up one
+      // still running in the shared progress strip.
+      find: { available: !!findRunner, status: findRunner ? findRunner.status() : null },
     };
   });
 
@@ -703,6 +723,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     // already chosen which ones it is paying to score.
     if (rankRunner?.isRunning()) {
       return reply.code(409).send({ error: 'A ranking run is in progress. Wait for it to finish, then sync.' });
+    }
+    if (findRunner?.isRunning()) {
+      return reply.code(409).send({ error: FIND_RUNNING_MESSAGE });
     }
     if (!syncRunner.isRunning()) {
       const paidPasses = await paidSyncPasses();
@@ -1020,9 +1043,13 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (rankRunner?.isRunning()) {
       return reply.code(409).send({ error: 'A ranking run is in progress. Wait for it to finish, then reset.' });
     }
+    if (findRunner?.isRunning()) {
+      return reply.code(409).send({ error: FIND_RUNNING_MESSAGE });
+    }
     db.resetLibrary();
     syncRunner?.clear();
     rankRunner?.clear();
+    findRunner?.clear();
     return { ok: true, bookmarkCount: db.getBookmarkCount() };
   });
 
@@ -1078,8 +1105,117 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (rankRunner?.isRunning()) {
       return 'A ranking run is in progress. Wait for it to finish, then edit your categories.';
     }
+    if (findRunner?.isRunning()) return FIND_RUNNING_MESSAGE;
     return null;
   };
+
+  /** A category id from the route, or undefined when it is not an integer. */
+  const categoryIdParam = (raw: string): number | undefined => {
+    const id = Number.parseInt(raw, 10);
+    return Number.isInteger(id) ? id : undefined;
+  };
+
+  // Mark a category as the owner's own, or hand it back to the passes. An
+  // owner category is kept exactly as it is by every sync and recategorize;
+  // a category made in this editor starts as the owner's, and one that
+  // predates the column (every row of an existing library) starts generated.
+  app.put<{ Params: { id: string }; Body?: { origin?: unknown } }>(
+    '/api/categories/:id/origin',
+    async (req, reply) => {
+      const blocked = categoryWriteBlocker();
+      if (blocked) return reply.code(409).send({ error: blocked });
+      const id = categoryIdParam(req.params.id);
+      if (id === undefined) return reply.code(400).send({ error: 'invalid category id' });
+      const origin = req.body?.origin;
+      if (origin !== 'user' && origin !== 'generated') {
+        return reply.code(400).send({ error: 'Body must be { "origin": "user" } or { "origin": "generated" }.' });
+      }
+      if (!db.setCategoryOrigin(id, origin)) return reply.code(404).send({ error: 'category not found' });
+      return { category: db.getCategoryById(id), tree: buildCategoryTree(db) };
+    },
+  );
+
+  // ---- "Find bookmarks for this category" --------------------------------
+  // Runs the filing model over the stored bookmarks NOT already in the
+  // category and ADDS the matches to it - never removing a link. What the
+  // confirmation states (how many it checks, which model, how that is billed)
+  // is read here first; nothing below this preview spends anything until the
+  // POST, and a per-token model makes that POST demand `{ confirm: true }`.
+
+  app.get<{ Params: { id: string } }>('/api/categories/:id/find-bookmarks', async (req, reply) => {
+    const id = categoryIdParam(req.params.id);
+    if (id === undefined) return reply.code(400).send({ error: 'invalid category id' });
+    const category = db.getCategoryById(id);
+    if (!category) return reply.code(404).send({ error: 'category not found' });
+    const candidates = db.getBookmarksOutsideCategory(id).length;
+    if (!findWiring || !findRunner) {
+      return { category, candidates, available: false, reason: FIND_UNAVAILABLE_MESSAGE, status: null };
+    }
+    const model = await findWiring.describe();
+    return {
+      category,
+      candidates,
+      available: model.available,
+      ...(model.reason ? { reason: model.reason } : {}),
+      spend: model.spend ?? null,
+      ...(model.warning ? { warning: model.warning } : {}),
+      status: findRunner.status(),
+    };
+  });
+
+  app.post<{ Params: { id: string }; Body?: { confirm?: unknown } }>(
+    '/api/categories/:id/find-bookmarks',
+    async (req, reply) => {
+      if (!findWiring || !findRunner) return reply.code(503).send({ error: FIND_UNAVAILABLE_MESSAGE });
+      const id = categoryIdParam(req.params.id);
+      if (id === undefined) return reply.code(400).send({ error: 'invalid category id' });
+      if (!db.getCategoryById(id)) return reply.code(404).send({ error: 'category not found' });
+      if (syncRunner?.isRunning()) {
+        return reply.code(409).send({ error: 'A sync is running. Wait for it to finish, then find bookmarks.' });
+      }
+      if (rankRunner?.isRunning()) {
+        return reply.code(409).send({ error: 'A ranking run is in progress. Wait for it to finish, then find bookmarks.' });
+      }
+      if (findRunner.isRunning()) {
+        return reply.code(409).send({ error: FIND_RUNNING_MESSAGE, status: findRunner.status() });
+      }
+      // Re-read at the moment of authorization, so a model switched to a paid
+      // one after the dialog opened can never start unconfirmed.
+      const model = await findWiring.describe();
+      if (!model.available) return reply.code(503).send({ error: model.reason ?? FIND_UNAVAILABLE_MESSAGE });
+      if (model.spend?.billing === 'per-token' && (req.body ?? {}).confirm !== true) {
+        return reply.code(400).send({ error: FIND_CONFIRM_MESSAGE, confirmRequired: true, spend: model.spend });
+      }
+      const { started, status } = findRunner.start(findWiring.job(id));
+      if (!started) return reply.code(409).send({ error: FIND_RUNNING_MESSAGE, status });
+      return reply.code(202).send({ status });
+    },
+  );
+
+  // The current (or last) find's progress, polled while one runs.
+  app.get('/api/find-bookmarks', async () => ({
+    available: !!findRunner,
+    status: findRunner ? findRunner.status() : null,
+  }));
+
+  // Undo a find: remove exactly the links it added (the ids its summary
+  // listed), and never a link that would leave a post filed nowhere.
+  app.post<{ Params: { id: string }; Body?: { bookmarkIds?: unknown } }>(
+    '/api/categories/:id/find-bookmarks/undo',
+    async (req, reply) => {
+      const blocked = categoryWriteBlocker();
+      if (blocked) return reply.code(409).send({ error: blocked });
+      const id = categoryIdParam(req.params.id);
+      if (id === undefined) return reply.code(400).send({ error: 'invalid category id' });
+      const ids = req.body?.bookmarkIds;
+      if (!Array.isArray(ids) || !ids.every((i) => Number.isInteger(i))) {
+        return reply.code(400).send({ error: 'Body must be { "bookmarkIds": [<bookmark id>, …] }.' });
+      }
+      if (!db.getCategoryById(id)) return reply.code(404).send({ error: 'category not found' });
+      const removed = db.removeBookmarksFromCategory(id, ids as number[]);
+      return { removed: removed.length, tree: buildCategoryTree(db) };
+    },
+  );
 
   // Create a category: a root when `parentId` is absent/null, otherwise a
   // child one level under it. A name already taken by a sibling is a 409 (the

@@ -33,6 +33,13 @@ function bookmarkLine(
 }
 
 /**
+ * The rule both assignment prompts carry about the owner's own categories,
+ * which the rendered tree marks with `[owner]` (`renderTreeForPrompt`).
+ */
+const OWNER_RULE =
+  'Categories marked [owner] were created by the person by hand, because they want every bookmark that fits to be filed there. Whenever a bookmark fits an [owner] category (or a node inside one), file it there, in preference to a similar category elsewhere. The [owner] marker is not part of the name: never write it in a path.';
+
+/**
  * Build the assignment prompt. The tree is FIXED (designed by the holistic
  * taxonomy pass): the model files bookmarks into it and must not invent new
  * categories. Returns strict JSON only.
@@ -54,6 +61,7 @@ ${treeText}
 - Copy each node's exact name and give its full path from a root node, e.g. ["AI","Harnesses"] means the node "Harnesses" under "AI".
 - Place a bookmark at the MOST SPECIFIC node that fits. A bookmark may belong to several branches at once (multi-category) - list one path per branch.
 - Do NOT invent new categories or emit paths that are not in the tree. A path may never be longer than ${maxDepth} levels.
+- ${OWNER_RULE}
 - Every bookmark must get at least one category. If truly nothing in the tree fits, use ["Uncategorized"].
 
 # Bookmarks to categorize
@@ -88,7 +96,8 @@ ${treeText}
 # Rules
 - Assign each bookmark to one or more categories, by topic.
 - STRONGLY prefer existing nodes: reuse a node from the tree above whenever one reasonably fits. Copy its exact name and give its full path from a root node, e.g. ["AI","Harnesses"].
-- Only create a NEW category when NOTHING in the existing tree fits. Keep new nodes consistent with the existing structure (place them under a fitting existing parent when possible) and use specific, descriptive labels.
+- Only create a NEW category when NOTHING in the existing tree fits. Keep new nodes consistent with the existing structure (place them under a fitting existing parent when possible) and use specific, descriptive labels. Never create a category that means the same thing as an existing one.
+- ${OWNER_RULE} A new sub-category inside an [owner] category is fine when the bookmark fits it but nothing inside it yet.
 - Place a bookmark at the MOST SPECIFIC node that fits. A bookmark may belong to several branches at once (multi-category) - list one path per branch.
 - A path may never be longer than ${maxDepth} levels.
 - Every bookmark must get at least one category. If truly nothing fits and no sensible new node applies, use ["Uncategorized"].

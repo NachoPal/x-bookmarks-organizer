@@ -1,14 +1,42 @@
 import type { Database } from '../db/database';
 import type { CategoryNode, CategoryTreeNode, TaxonomyNode } from '../types';
+import { OWNER_MARKER, findOwnerAnchor, findOwnerSibling, stripOwnerMarker } from './owner-categories';
 
 /**
- * Materialize a designed taxonomy into `categories` rows, creating each node
- * (get-or-create, so it merges cleanly with any pre-existing tree). Depth is
- * capped at `maxDepth`; branches deeper than that are truncated. Idempotent.
+ * The node a designed/filed name lands on under `parentId`, WITHOUT creating
+ * anything: the existing sibling of that name, else an owner category the
+ * name near-duplicates - a sibling ("LLM" beside the owner's "LLMs"), an
+ * owner ROOT minted again somewhere deeper ("Food > Cooking" when "Cooking"
+ * is the owner's top-level category), or, for the first segment of a path,
+ * the one owner category of that name wherever it sits (the model re-rooted
+ * it). A deeper name is NOT redirected to a deeper owner category: "Python >
+ * Tools" is not the owner's "Rust > Tools". Undefined means a new node is
+ * genuinely needed.
+ */
+export function findMergeTarget(
+  db: Database,
+  name: string,
+  parentId: number | null,
+  atTop: boolean,
+): CategoryNode | undefined {
+  const exact = db.findCategory(name, parentId) ?? findOwnerSibling(db, name, parentId);
+  if (exact) return exact;
+  const anchor = findOwnerAnchor(db, name);
+  return anchor && (atTop || anchor.parentId === null) ? anchor : undefined;
+}
+
+/**
+ * Materialize a designed taxonomy into `categories` rows, MERGING into the
+ * existing tree rather than duplicating it: a designed node that already
+ * exists (by name under the same parent, or as the owner's own category it
+ * near-duplicates - see {@link findMergeTarget}) is reused, and only a
+ * genuinely new node is created. Depth is capped at `maxDepth`; branches
+ * deeper than that are truncated. Idempotent.
  *
  * Each node's one-line `description` (issue #61) is carried through to the row;
  * `getOrCreateCategory` only ever fills a missing one in, so re-materializing
- * never clears a description a previous pass wrote.
+ * never clears a description a previous pass wrote - and never touches an
+ * owner category's at all.
  */
 export function materializeTaxonomy(
   db: Database,
@@ -19,13 +47,29 @@ export function materializeTaxonomy(
   const walk = (nodes: TaxonomyNode[], parentId: number | null, depth: number) => {
     if (depth >= maxDepth) return;
     for (const node of nodes) {
-      const name = node.name.trim();
+      const name = stripOwnerMarker(node.name);
       if (!name) continue;
-      const created = db.getOrCreateCategory(name, parentId, when, node.description);
-      walk(node.children ?? [], created.id, depth + 1);
+      const existing = findMergeTarget(db, name, parentId, depth === 0);
+      const target =
+        existing && existing.origin === 'user'
+          ? existing
+          : db.getOrCreateCategory(existing?.name ?? name, existing ? existing.parentId : parentId, when, node.description);
+      walk(node.children ?? [], target.id, depth + 1);
     }
   };
   walk(taxonomy, null, 0);
+}
+
+/**
+ * The part of the tree a recategorize keeps: every owner category and the
+ * ancestors that hold it in place, with every other node pruned. What the
+ * anchored taxonomy design is shown as "Existing categories" - computed
+ * BEFORE anything is cleared, so a failed design never loses the tree.
+ */
+export function pruneToProtected(roots: CategoryTreeNode[], keep: Set<number>): CategoryTreeNode[] {
+  const prune = (nodes: CategoryTreeNode[]): CategoryTreeNode[] =>
+    nodes.filter((n) => keep.has(n.id)).map((n) => ({ ...n, children: prune(n.children) }));
+  return prune(roots);
 }
 
 /**
@@ -103,6 +147,7 @@ export function assembleTree(
       parentId: c.parentId,
       name: c.name,
       description: c.description ?? null,
+      origin: c.origin ?? 'generated',
       path: [],
       total: 0,
       unread: 0,
@@ -161,6 +206,10 @@ const MAX_RENDERED_DESCRIPTION_CHARS = 120;
  * when it has one, which is what tells the `extend` prompt how siblings differ
  * instead of leaving the model to guess from bare labels. Nodes designed before
  * descriptions existed simply render as before.
+ *
+ * An owner category carries the {@link OWNER_MARKER} after its name, which is
+ * how every prompt knows which nodes the owner made by hand (keep them, and
+ * prefer them when a bookmark fits).
  */
 export function renderTreeForPrompt(roots: CategoryTreeNode[]): string {
   if (roots.length === 0) return '(no categories yet)';
@@ -168,7 +217,8 @@ export function renderTreeForPrompt(roots: CategoryTreeNode[]): string {
   const walk = (node: CategoryTreeNode, depth: number) => {
     const description = node.description?.replace(/\s+/g, ' ').trim();
     const suffix = description ? ` - ${description.slice(0, MAX_RENDERED_DESCRIPTION_CHARS)}` : '';
-    lines.push(`${'  '.repeat(depth)}- ${node.name}${suffix}`);
+    const marker = node.origin === 'user' ? ` ${OWNER_MARKER}` : '';
+    lines.push(`${'  '.repeat(depth)}- ${node.name}${marker}${suffix}`);
     for (const child of node.children) walk(child, depth + 1);
   };
   for (const root of roots) walk(root, 0);

@@ -13,6 +13,7 @@ import type {
   ArticleRecord,
   BookmarkScoreRecord,
   CategoryNode,
+  CategoryOrigin,
   QuotedPost,
   RawBookmark,
   StoredBookmark,
@@ -129,6 +130,7 @@ interface CategoryRow {
   /** Absent on a row written before the column existed - see `CATEGORIES_ADDED_COLUMNS`. */
   description?: string | null;
   created_at: string;
+  origin?: string | null;
 }
 
 interface ArticleRow {
@@ -219,6 +221,7 @@ function toCategoryNode(row: CategoryRow): CategoryNode {
     id: row.id,
     parentId: row.parent_id,
     name: row.name,
+    origin: row.origin === 'user' ? 'user' : 'generated',
     description: row.description ?? null,
     createdAt: row.created_at,
   };
@@ -675,17 +678,78 @@ export class Database {
     return row ? toCategoryNode(row) : undefined;
   }
 
+  /** The owner's own categories (`origin = 'user'`), by id. */
+  getUserCategories(): CategoryNode[] {
+    const rows = this.db
+      .prepare("SELECT * FROM categories WHERE origin = 'user' ORDER BY id")
+      .all() as CategoryRow[];
+    return rows.map(toCategoryNode);
+  }
+
+  /** Whether any category the passes made exists - what decides a first run. */
+  hasGeneratedCategories(): boolean {
+    return !!this.db.prepare("SELECT 1 FROM categories WHERE origin = 'generated' LIMIT 1").get();
+  }
+
   /**
-   * Delete every category and category link, leaving bookmarks (and their read
-   * state/dates) untouched. Used by re-categorization before it rebuilds the
-   * taxonomy from scratch.
+   * The ids a recategorize must keep: every `user` category plus each of its
+   * ancestors. An ancestor is kept even when it is `generated`, because
+   * `parent_id` is `ON DELETE CASCADE` - deleting it would take the owner's
+   * category with it, and re-creating it would MOVE the owner's category.
    */
-  clearCategories(): void {
+  getProtectedCategoryIds(): Set<number> {
+    const rows = this.db
+      .prepare(
+        `WITH RECURSIVE kept(id) AS (
+           SELECT id FROM categories WHERE origin = 'user'
+           UNION
+           SELECT c.parent_id FROM categories c JOIN kept k ON c.id = k.id
+            WHERE c.parent_id IS NOT NULL
+         )
+         SELECT id FROM kept`,
+      )
+      .all() as { id: number }[];
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /**
+   * Clear the generated taxonomy before a recategorize rebuilds it, leaving
+   * bookmarks (and their read state/dates) untouched.
+   *
+   * The owner's categories are the exception, and this is where that is
+   * enforced rather than in any prompt: every `user` category survives with
+   * its name, place, description and posts, together with the ancestors that
+   * hold it in place ({@link getProtectedCategoryIds}). Every other category
+   * is deleted, and every category link is dropped EXCEPT a link into a
+   * `user` category - the rebuild re-files everything else, and a post the
+   * owner's category already holds stays there. A kept generated ancestor
+   * loses its links like any other generated node; the rebuild may file into
+   * it again.
+   */
+  clearGeneratedCategories(): void {
     const tx = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM bookmark_categories').run();
-      this.db.prepare('DELETE FROM categories').run();
+      const keep = [...this.getProtectedCategoryIds()];
+      const placeholders = keep.map(() => '?').join(',');
+      this.db
+        .prepare(
+          `DELETE FROM bookmark_categories
+            WHERE category_id NOT IN (SELECT id FROM categories WHERE origin = 'user')`,
+        )
+        .run();
+      this.db
+        .prepare(keep.length > 0 ? `DELETE FROM categories WHERE id NOT IN (${placeholders})` : 'DELETE FROM categories')
+        .run(...keep);
     });
     tx();
+  }
+
+  /**
+   * Mark a category as the owner's own, or hand it back to the passes. The
+   * editor's toggle - the only way an existing (migrated) row becomes
+   * protected. Returns false when the id is unknown.
+   */
+  setCategoryOrigin(id: number, origin: CategoryOrigin): boolean {
+    return this.db.prepare('UPDATE categories SET origin = ? WHERE id = ?').run(origin, id).changes > 0;
   }
 
   /**
@@ -697,7 +761,11 @@ export class Database {
    * whose description is still null gains one when a later design pass supplies
    * it, but a node that already has one keeps it, so an ad-hoc `extend` node
    * created without a description is upgraded on the next `recategorize` while
-   * a real description is never overwritten with nothing.
+   * a real description is never overwritten with nothing. A `user` category's
+   * description is never touched at all: it is the owner's, and a pass merging
+   * into it must leave it exactly as it found it.
+   *
+   * A row this creates is always `generated` - the passes are its only callers.
    */
   getOrCreateCategory(
     name: string,
@@ -716,7 +784,7 @@ export class Database {
             .prepare('SELECT * FROM categories WHERE parent_id = ? AND name = ? COLLATE NOCASE')
             .get(parentId, trimmed) as CategoryRow | undefined);
     if (existing) {
-      if (desc && !existing.description) {
+      if (desc && !existing.description && existing.origin !== 'user') {
         this.db.prepare('UPDATE categories SET description = ? WHERE id = ?').run(desc, existing.id);
         return toCategoryNode({ ...existing, description: desc });
       }
@@ -730,6 +798,7 @@ export class Database {
       id: Number(info.lastInsertRowid),
       parentId,
       name: trimmed,
+      origin: 'generated',
       description: desc,
       createdAt: when,
     };
@@ -746,6 +815,9 @@ export class Database {
    *
    * The CALLER validates that `parentId` names a real category (an unknown
    * parent is a bad request, not a missing row).
+   *
+   * A category made here is the owner's (`origin = 'user'`), so every later
+   * sync and recategorize keeps it exactly as it is.
    */
   createCategory(
     name: string,
@@ -756,12 +828,15 @@ export class Database {
     if (!trimmed) return undefined;
     if (this.findCategory(trimmed, parentId)) return undefined;
     const info = this.db
-      .prepare('INSERT INTO categories (parent_id, name, description, created_at) VALUES (?, ?, NULL, ?)')
+      .prepare(
+        "INSERT INTO categories (parent_id, name, description, created_at, origin) VALUES (?, ?, NULL, ?, 'user')",
+      )
       .run(parentId, trimmed, when);
     return {
       id: Number(info.lastInsertRowid),
       parentId,
       name: trimmed,
+      origin: 'user',
       description: null,
       createdAt: when,
     };
@@ -896,6 +971,69 @@ export class Database {
   /** The single-target move; see `setBookmarkCategories`. */
   setBookmarkCategory(bookmarkId: number, categoryId: number): boolean {
     return this.setBookmarkCategories(bookmarkId, [categoryId]);
+  }
+
+  /**
+   * Stored bookmarks NOT filed anywhere in `categoryId`'s subtree, newest-
+   * ingested first - what "Find bookmarks for this category" checks. A post
+   * the subtree already holds needs no second look.
+   */
+  getBookmarksOutsideCategory(categoryId: number): StoredBookmark[] {
+    const subtree = this.getCategorySubtreeIds(categoryId);
+    if (subtree.length === 0) return [];
+    const placeholders = subtree.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM bookmarks b
+          WHERE NOT EXISTS (
+            SELECT 1 FROM bookmark_categories bc
+             WHERE bc.bookmark_id = b.id AND bc.category_id IN (${placeholders})
+          )
+          ORDER BY b.ingested_at DESC, b.id DESC`,
+      )
+      .all(...subtree) as BookmarkRow[];
+    return rows.map(toStoredBookmark);
+  }
+
+  /**
+   * ADD `categoryId` to each bookmark's categories, never removing any link -
+   * the find action's write. Returns the ids actually linked (a bookmark that
+   * already had the link, or no longer exists, is left out), in one
+   * transaction so a crash never half-applies a batch.
+   */
+  addBookmarksToCategory(categoryId: number, bookmarkIds: number[]): number[] {
+    const tx = this.db.transaction((ids: number[]) => {
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO bookmark_categories (bookmark_id, category_id)
+         SELECT id, ? FROM bookmarks WHERE id = ?`,
+      );
+      const added: number[] = [];
+      for (const id of ids) if (insert.run(categoryId, id).changes > 0) added.push(id);
+      return added;
+    });
+    return tx(bookmarkIds);
+  }
+
+  /**
+   * Undo {@link addBookmarksToCategory}: drop exactly those links again. A
+   * link is kept when removing it would leave the post filed nowhere (it was
+   * re-filed into only this category since), because a post in no category is
+   * invisible in the viewer. Returns the ids actually unlinked.
+   */
+  removeBookmarksFromCategory(categoryId: number, bookmarkIds: number[]): number[] {
+    const tx = this.db.transaction((ids: number[]) => {
+      const others = this.db.prepare(
+        'SELECT 1 FROM bookmark_categories WHERE bookmark_id = ? AND category_id <> ? LIMIT 1',
+      );
+      const remove = this.db.prepare('DELETE FROM bookmark_categories WHERE bookmark_id = ? AND category_id = ?');
+      const removed: number[] = [];
+      for (const id of ids) {
+        if (!others.get(id, categoryId)) continue;
+        if (remove.run(id, categoryId).changes > 0) removed.push(id);
+      }
+      return removed;
+    });
+    return tx(bookmarkIds);
   }
 
   // --- Atomic batch write ------------------------------------------------

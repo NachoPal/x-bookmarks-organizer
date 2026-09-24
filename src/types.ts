@@ -129,10 +129,19 @@ export interface ArticleLinkMetadata {
 }
 
 /** A category tree node as stored. */
+/**
+ * Who made a category: the owner by hand (`user`, in the category editor) or
+ * the taxonomy/assignment passes (`generated`). A `user` category is the
+ * owner's and no automated pass may delete, rename, move or re-describe it.
+ */
+export type CategoryOrigin = 'user' | 'generated';
+
 export interface CategoryNode {
   id: number;
   parentId: number | null;
   name: string;
+  /** See {@link CategoryOrigin}. */
+  origin: CategoryOrigin;
   /**
    * One-line gloss emitted by the taxonomy-design pass, written to separate
    * this node from its siblings (issue #61). Null for any node designed before
@@ -152,6 +161,8 @@ export interface CategoryTreeNode {
   name: string;
   /** See {@link CategoryNode.description}. Null when the node has none. */
   description?: string | null;
+  /** See {@link CategoryOrigin}. */
+  origin: CategoryOrigin;
   /** Full path from the root, e.g. ["AI", "Harnesses"]. */
   path: string[];
   /** Bookmarks in this node and all descendants. */

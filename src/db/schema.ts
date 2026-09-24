@@ -13,7 +13,11 @@
  *   tree - and is what separates ambiguous siblings from each other for both
  *   the `extend` prompt and the TypeSafe categorizer's `Choice.criteria`.
  *   NULL for any node designed before this column existed, which every
- *   consumer must tolerate.
+ *   consumer must tolerate. `origin` is who made the node: `user` rows are
+ *   the owner's and are PROTECTED - no sync, filing pass or recategorize may
+ *   delete, rename, move or re-describe one (see `Database.clearGeneratedCategories`
+ *   and `getOrCreateCategory`); the passes may only file posts into them and
+ *   create generated nodes inside them.
  * - `bookmark_categories` is the many-to-many join (a bookmark may live in
  *   several branches at once).
  * - `run_state` holds the incremental cursor/marker and the persisted X OAuth
@@ -99,6 +103,7 @@ CREATE TABLE IF NOT EXISTS categories (
   name        TEXT NOT NULL,
   description TEXT,
   created_at  TEXT NOT NULL,
+  origin      TEXT NOT NULL DEFAULT 'generated' CHECK (origin IN ('user', 'generated')),
   UNIQUE(parent_id, name)
 );
 
@@ -257,13 +262,21 @@ export const ARTICLE_LINK_METADATA_ADDED_COLUMNS: { name: string; ddl: string }[
  */
 /**
  * Columns added to `categories` after its original release: `description`, the
- * one-line gloss the taxonomy pass now emits per node (issue #61). Same
+ * one-line gloss the taxonomy pass now emits per node (issue #61), and
+ * `origin` - who made the node: `user` (the owner, in the category editor) or
+ * `generated` (the taxonomy/assignment passes). There is no historical record
+ * of which rows were hand-made, so an existing row migrates as `generated`;
+ * the owner can mark one as theirs in the editor. Same
  * `PRAGMA table_info` guard as {@link ARTICLE_LINK_METADATA_ADDED_COLUMNS}, so
  * an existing database gains the column without losing data and re-opening an
  * already-migrated one is a no-op.
  */
 export const CATEGORIES_ADDED_COLUMNS: { name: string; ddl: string }[] = [
   { name: 'description', ddl: 'ALTER TABLE categories ADD COLUMN description TEXT' },
+  {
+    name: 'origin',
+    ddl: "ALTER TABLE categories ADD COLUMN origin TEXT NOT NULL DEFAULT 'generated' CHECK (origin IN ('user', 'generated'))",
+  },
 ];
 
 export const BOOKMARKS_ADDED_COLUMNS: { name: string; ddl: string }[] = [
