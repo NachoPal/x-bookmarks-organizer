@@ -636,8 +636,8 @@ describe('POST /api/reset', () => {
     const roots = db.getAllCategories().filter((c) => c.parentId === null);
     const order = await app.inject({
       method: 'PUT',
-      url: '/api/categories/root-order',
-      payload: { ids: [...roots.map((c) => c.id)].reverse() },
+      url: `/api/categories/${roots[roots.length - 1].id}/position`,
+      payload: { parentId: null, index: 0 },
     });
     expect(order.statusCode).toBe(200);
     const storedOrder = db.getState(ROOT_ORDER_KEY);

@@ -456,6 +456,7 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
   const modelBrowser = createModelBrowser();
   const app = await startServer(db, config.webPort, '127.0.0.1', {
     pageSize: config.pageSize,
+    maxCategoryDepth: config.maxCategoryDepth,
     summaryGenerator,
     summaryUnavailableReason: available ? undefined : health.detail,
     // How a new summary is billed, so a per-token one is marked as paid on the

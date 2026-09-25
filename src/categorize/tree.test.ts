@@ -3,6 +3,7 @@ import {
   assembleTree,
   buildCategoryTree,
   materializeTaxonomy,
+  orderSiblings,
   readRootOrder,
   pruneToProtected,
   renderTreeForPrompt,
@@ -222,6 +223,37 @@ describe('root order (issue #82)', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe('sibling order at every level (orderSiblings)', () => {
+  it('puts placed children first by position, then the never-placed ones by name', () => {
+    const roots = assembleTree(
+      [
+        { id: 1, parentId: null, name: 'AI', createdAt: '' },
+        { id: 2, parentId: 1, name: 'Zeta', position: 0, createdAt: '' },
+        { id: 3, parentId: 1, name: 'Alpha', position: 1, createdAt: '' },
+        { id: 4, parentId: 1, name: 'New B', createdAt: '' },
+        { id: 5, parentId: 1, name: 'New A', position: null, createdAt: '' },
+      ],
+      new Map(),
+    );
+    expect(roots[0].children.map((c) => c.name)).toEqual(['Zeta', 'Alpha', 'New A', 'New B']);
+  });
+
+  it('ranks a root by its position, else by its index in the saved root names', () => {
+    const nodes = [
+      { name: 'B', position: null },
+      { name: 'A', position: 1 },
+      { name: 'C', position: null },
+      { name: 'D', position: null },
+    ];
+    expect(orderSiblings(nodes, (n) => n.position, ['B', 'A', 'C']).map((n) => n.name)).toEqual([
+      'B',
+      'A',
+      'C',
+      'D',
+    ]);
   });
 });
 

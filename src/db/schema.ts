@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS categories (
   description TEXT,
   created_at  TEXT NOT NULL,
   origin      TEXT NOT NULL DEFAULT 'generated' CHECK (origin IN ('user', 'generated')),
+  position    INTEGER,
   UNIQUE(parent_id, name)
 );
 
@@ -266,7 +267,11 @@ export const ARTICLE_LINK_METADATA_ADDED_COLUMNS: { name: string; ddl: string }[
  * `origin` - who made the node: `user` (the owner, in the category editor) or
  * `generated` (the taxonomy/assignment passes). There is no historical record
  * of which rows were hand-made, so an existing row migrates as `generated`;
- * the owner can mark one as theirs in the editor. Same
+ * the owner can mark one as theirs in the editor. `position` is the owner's
+ * order among siblings (drag and drop, at any level): NULL means "never
+ * ordered", which is every existing row and every row a sync creates - those
+ * follow the ordered siblings, by name (`orderSiblings` in
+ * `src/categorize/tree.ts`). Same
  * `PRAGMA table_info` guard as {@link ARTICLE_LINK_METADATA_ADDED_COLUMNS}, so
  * an existing database gains the column without losing data and re-opening an
  * already-migrated one is a no-op.
@@ -277,6 +282,7 @@ export const CATEGORIES_ADDED_COLUMNS: { name: string; ddl: string }[] = [
     name: 'origin',
     ddl: "ALTER TABLE categories ADD COLUMN origin TEXT NOT NULL DEFAULT 'generated' CHECK (origin IN ('user', 'generated'))",
   },
+  { name: 'position', ddl: 'ALTER TABLE categories ADD COLUMN position INTEGER' },
 ];
 
 export const BOOKMARKS_ADDED_COLUMNS: { name: string; ddl: string }[] = [

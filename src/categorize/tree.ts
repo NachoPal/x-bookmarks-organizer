@@ -88,9 +88,9 @@ export function pruneToProtected(roots: CategoryTreeNode[], keep: Set<number>): 
 
 /**
  * Build the full category tree with counts rolled up so that each node's
- * `total`/`unread` include all of its descendants. Roots follow the owner's
- * saved order (issue #82), then any unsaved root by name; children are
- * always sorted by name.
+ * `total`/`unread` include all of its descendants. Siblings at every level
+ * follow the owner's saved order, then any never-ordered one by name
+ * ({@link orderSiblings}).
  */
 export function buildCategoryTree(db: Database): CategoryTreeNode[] {
   const categories = db.getAllCategories();
@@ -98,13 +98,19 @@ export function buildCategoryTree(db: Database): CategoryTreeNode[] {
   return assembleTree(categories, membership, readRootOrder(db));
 }
 
-/** `run_state` key holding the owner's root order, as a JSON array of names. */
+/**
+ * `run_state` key holding the ROOT level's order as a JSON array of names
+ * (issue #82). Since sibling order moved into `categories.position` it is a
+ * mirror, kept for one reason: identity by NAME. A `recategorize` clears and
+ * re-creates every generated row, so a position does not survive it but a
+ * root's name does - a re-created root with a remembered name goes back where
+ * the owner put it. Every write that changes the root level rewrites both
+ * together (`moveCategory`), so a root's position and its index here agree.
+ */
 export const ROOT_ORDER_KEY = 'root_order';
 
 /**
- * The saved root order, as names. Identity is the NAME, not the id: a
- * `recategorize` clears and re-creates every `categories` row, so ids do not
- * survive it but a root's name does (a renamed root is a new root and simply
+ * The saved root order, as names (a renamed root is a new root and simply
  * falls to the end). Tolerant of a missing or unreadable blob.
  */
 export function readRootOrder(db: Database): string[] {
@@ -123,22 +129,34 @@ export function writeRootOrder(db: Database, names: string[]): void {
 }
 
 /**
- * Order roots by a saved name list (case-insensitive, matching how sibling
- * names merge); roots absent from it follow, alphabetically. Never drops or
- * duplicates a root, and names in the list that no longer exist are ignored.
+ * THE sibling order, at every level: a node the owner placed (its `position`
+ * - or, for a ROOT with none, its index in the name-keyed root order, which
+ * is what survives a `recategorize`) comes first, in that order; every
+ * never-placed node follows, alphabetically. That is where a category a sync
+ * creates lands: after the owner's arrangement, never inside it. Never drops
+ * or duplicates a node, and saved names that no longer exist are ignored.
+ * `positionOf` reads a node's stored position; pass `rootNames` only for the
+ * root level.
  */
-export function orderRoots(roots: CategoryTreeNode[], savedNames: string[]): CategoryTreeNode[] {
-  const position = new Map<string, number>();
-  savedNames.forEach((n, i) => {
+export function orderSiblings<T extends { name: string }>(
+  nodes: T[],
+  positionOf: (node: T) => number | null | undefined,
+  rootNames: string[] = [],
+): T[] {
+  const byName = new Map<string, number>();
+  rootNames.forEach((n, i) => {
     const key = n.toLowerCase();
-    if (!position.has(key)) position.set(key, i);
+    if (!byName.has(key)) byName.set(key, i);
   });
-  const byName = (a: CategoryTreeNode, b: CategoryTreeNode) => a.name.localeCompare(b.name);
-  const saved = roots
-    .filter((r) => position.has(r.name.toLowerCase()))
-    .sort((a, b) => position.get(a.name.toLowerCase())! - position.get(b.name.toLowerCase())!);
-  const rest = roots.filter((r) => !position.has(r.name.toLowerCase())).sort(byName);
-  return [...saved, ...rest];
+  const rank = (n: T): number | undefined => positionOf(n) ?? byName.get(n.name.toLowerCase());
+  return [...nodes].sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
+    if (ra !== undefined && rb === undefined) return -1;
+    if (ra === undefined && rb !== undefined) return 1;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 /**
@@ -155,6 +173,8 @@ export function assembleTree(
   rootOrder: string[] = [],
 ): CategoryTreeNode[] {
   const nodes = new Map<number, CategoryTreeNode>();
+  const positions = new Map(categories.map((c) => [c.id, c.position ?? null]));
+  const positionOf = (n: CategoryTreeNode) => positions.get(n.id);
   for (const c of categories) {
     nodes.set(c.id, {
       id: c.id,
@@ -181,13 +201,11 @@ export function assembleTree(
     }
   }
 
-  const byName = (a: CategoryTreeNode, b: CategoryTreeNode) => a.name.localeCompare(b.name);
-
   // Compute paths and rolled-up counts via post-order traversal, unioning
   // bookmark ids so each distinct bookmark is counted once per subtree.
   const visit = (node: CategoryTreeNode, parentPath: string[]): { total: Set<number>; unread: Set<number> } => {
     node.path = [...parentPath, node.name];
-    node.children.sort(byName);
+    node.children = orderSiblings(node.children, positionOf);
     const total = new Set<number>();
     const unread = new Set<number>();
     for (const b of directMembership.get(node.id) ?? []) {
@@ -204,7 +222,7 @@ export function assembleTree(
     return { total, unread };
   };
 
-  const ordered = orderRoots(roots, rootOrder);
+  const ordered = orderSiblings(roots, positionOf, rootOrder);
   for (const root of ordered) visit(root, []);
   return ordered;
 }

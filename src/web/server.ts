@@ -7,7 +7,8 @@ import type {
   BookmarkSortOrder,
   Database,
 } from '../db/database';
-import { buildCategoryTree, writeRootOrder } from '../categorize/tree';
+import { moveCategory } from '../categorize/move';
+import { buildCategoryTree } from '../categorize/tree';
 import { extractArticleLink } from '../articles/extract-link';
 import { articleRecordFromResult, HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
 import {
@@ -31,7 +32,7 @@ import {
   writeSettings,
   type AppSettings,
 } from '../settings/settings';
-import { TYPESAFE_API_KEY } from '../config';
+import { DEFAULT_MAX_DEPTH, TYPESAFE_API_KEY } from '../config';
 import type { CredentialStore, DotenvExposure } from '../creds/resolve';
 import {
   listPresets,
@@ -197,6 +198,12 @@ export interface ServerOptions {
    * `cmdServe` wires the real provider's `check()`.
    */
   claudeCliCheck?: () => Promise<Health>;
+  /**
+   * `XBOOKMARKS_MAX_DEPTH`: how deep a category move may take the tree. Served
+   * on `/api/tree` so the drag can mark a too-deep drop before it is made.
+   * Defaults to the config default.
+   */
+  maxCategoryDepth?: number;
 }
 
 /** Shown when the model picker asks a viewer with no model browser for a list. */
@@ -475,6 +482,8 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   const app = Fastify({ logger: false });
   installLocalOriginGuard(app);
   const pageSize = opts.pageSize && opts.pageSize > 0 ? opts.pageSize : DEFAULT_PAGE_SIZE;
+  const maxCategoryDepth =
+    opts.maxCategoryDepth && opts.maxCategoryDepth > 0 ? opts.maxCategoryDepth : DEFAULT_MAX_DEPTH;
   const articleFetcher = opts.articleFetcher ?? new HttpArticleFetcher();
   const summaryGenerator = opts.summaryGenerator;
   const unavailableReason = opts.summaryUnavailableReason ?? SUMMARY_UNAVAILABLE_MESSAGE;
@@ -1073,38 +1082,6 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
 
   app.register(fastifyStatic, { root: PUBLIC_DIR });
 
-  // The category tree with rolled-up total/unread counts per node.
-  // Save the owner's order of the ROOT categories (issue #82). The body is the
-  // complete list of root ids in the wanted order; a child id, an unknown id, a
-  // duplicate or an incomplete list is refused, so a stale client can never
-  // silently drop or bury a root. Stored by NAME (see `readRootOrder`).
-  app.put<{ Body?: unknown }>('/api/categories/root-order', async (req, reply) => {
-    const ids = (req.body as { ids?: unknown } | undefined)?.ids;
-    if (!Array.isArray(ids) || !ids.every((i) => Number.isInteger(i))) {
-      return reply.code(400).send({ error: 'Body must be { "ids": [root category ids] }.' });
-    }
-    const all = db.getAllCategories();
-    const byId = new Map(all.map((c) => [c.id, c]));
-    const roots = all.filter((c) => c.parentId === null);
-    const seen = new Set<number>();
-    for (const id of ids as number[]) {
-      const c = byId.get(id);
-      if (!c) return reply.code(400).send({ error: `Unknown category id ${id}.` });
-      if (c.parentId !== null) {
-        return reply.code(400).send({ error: `Category ${id} is not a root category; only roots can be reordered.` });
-      }
-      if (seen.has(id)) return reply.code(400).send({ error: `Category id ${id} appears twice.` });
-      seen.add(id);
-    }
-    if (seen.size !== roots.length) {
-      return reply.code(409).send({
-        error: 'The category list changed (a sync may have run). Reload and try again.',
-      });
-    }
-    writeRootOrder(db, (ids as number[]).map((id) => byId.get(id)!.name));
-    return { tree: buildCategoryTree(db) };
-  });
-
   // ---- the category editor (issue #101) ----------------------------------
   // Manual add/remove of categories. Both routes need nothing but `db`, so
   // they are fully live on a `buildServer(db)` with no sync/rank wiring - but
@@ -1150,6 +1127,34 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       }
       if (!db.setCategoryOrigin(id, origin)) return reply.code(404).send({ error: 'category not found' });
       return { category: db.getCategoryById(id), tree: buildCategoryTree(db) };
+    },
+  );
+
+  // Move a category (issue: drag and drop at any level): reorder it among its
+  // siblings, or re-parent it - subtree, bookmark links and `origin` included -
+  // under another category or to the root. ONE route for both, validated and
+  // applied in one transaction by `moveCategory`; a cycle, a move past the
+  // configured depth, or a sibling name clash is refused with a sentence the
+  // viewer shows as it is. An owner action, so the owner-category protections
+  // (which only restrict the automated passes) never block it.
+  app.put<{ Params: { id: string }; Body?: { parentId?: unknown; index?: unknown } }>(
+    '/api/categories/:id/position',
+    async (req, reply) => {
+      const blocked = categoryWriteBlocker();
+      if (blocked) return reply.code(409).send({ error: blocked });
+      const id = categoryIdParam(req.params.id);
+      if (id === undefined) return reply.code(400).send({ error: 'invalid category id' });
+      const body = req.body ?? {};
+      const parentId = body.parentId ?? null;
+      if (parentId !== null && !Number.isInteger(parentId)) {
+        return reply.code(400).send({ error: 'parentId must be a category id, or null for the top level.' });
+      }
+      if (!Number.isInteger(body.index)) {
+        return reply.code(400).send({ error: 'Body must be { "parentId": id | null, "index": n }.' });
+      }
+      const plan = moveCategory(db, { id, parentId: parentId as number | null, index: body.index as number }, maxCategoryDepth);
+      if (!plan.ok) return reply.code(plan.status).send({ error: plan.error, problem: plan.problem });
+      return { category: db.getCategoryById(id), changed: plan.changed, tree: buildCategoryTree(db), maxDepth: maxCategoryDepth };
     },
   );
 
@@ -1302,7 +1307,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     return { removed, tree: buildCategoryTree(db), bookmarkCount: db.getBookmarkCount() };
   });
 
-  app.get('/api/tree', async () => ({ tree: buildCategoryTree(db) }));
+  app.get('/api/tree', async () => ({ tree: buildCategoryTree(db), maxDepth: maxCategoryDepth }));
 
   // When bookmarks were last successfully synced with X, or null if never.
   app.get('/api/sync-status', async () => ({ lastSyncedAt: db.getLastSyncedAt() ?? null }));
