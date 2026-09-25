@@ -328,6 +328,60 @@ bookmarks by learning value" below):
 node dist/index.js rank --dry-run
 ```
 
+## Ask an AI assistant about your bookmarks (MCP)
+
+The app can serve a read-only [MCP](https://modelcontextprotocol.io) endpoint, so the AI tool you
+already use - Claude Code, Codex, or any client that speaks MCP over HTTP - can search and read your
+bookmarks from its own chat: "is there a post in my bookmarks about prompt caching?" answered with
+links, without going through the categories.
+
+It is part of the running viewer, at `http://127.0.0.1:<port>/mcp` (port 5173 unless you set
+`XBOOKMARKS_WEB_PORT`), so **the tools only appear while the app is running**. It is **off by
+default**. To turn it on:
+
+1. Open **Settings** (the gear) > **AI assistants (MCP)** and switch on **Allow AI assistants**.
+2. **Copy the token now.** It is shown once; the app stores only a hash of it. Lost it? Press
+   **Regenerate token** - the old one stops working at once. Switching the endpoint off and on again
+   keeps the current token.
+3. Pick your tool under **Connect from** and copy the setup, which already carries the real URL:
+
+   ```bash
+   # Claude Code (--scope user: every project; leave it out for the current project only)
+   claude mcp add --transport http --scope user xbookmarks http://127.0.0.1:5173/mcp \
+     --header "Authorization: Bearer <your-token>"
+   ```
+
+   ```toml
+   # Codex: ~/.codex/config.toml, with XBOOKMARKS_MCP_TOKEN exported in your shell profile
+   [mcp_servers.xbookmarks]
+   url = "http://127.0.0.1:5173/mcp"
+   bearer_token_env_var = "XBOOKMARKS_MCP_TOKEN"
+   ```
+
+   ```json
+   { "mcpServers": { "xbookmarks": { "type": "http", "url": "http://127.0.0.1:5173/mcp",
+       "headers": { "Authorization": "Bearer <your-token>" } } } }
+   ```
+
+   Keep the token in a user-level config: a project-scoped file (Claude Code's `--scope project`,
+   a repository's `.mcp.json`) is usually committed.
+
+The tools are **read-only** - nothing an assistant does can change your library:
+
+| Tool | What it answers |
+| --- | --- |
+| `search_bookmarks` | Full-text search over post text, authors, quoted posts, linked article titles and text, X Articles and saved summaries, best match first, with a highlighted snippet. Filters: category (id or path, sub-categories included), posted after/before, read/unread/favorite; paged (default 10, max 50). |
+| `get_bookmark` | One post in full: text, author, date, URL, categories, quoted post, linked article text (capped) and saved summary. |
+| `list_categories` | The category tree with descriptions and counts. |
+| `list_category_bookmarks` | A category's bookmarks, paged. |
+| `library_stats` | Counts and when the library last synced. |
+
+Every answer carries the post's URL so the chat can link it. Post, article and summary text is
+someone else's writing, and the tools tell the assistant to treat it as data, never as
+instructions. No setting, credential or token is reachable through any tool. Every request needs
+`Authorization: Bearer <token>`; a browser page cannot reach the endpoint (the same Host, Origin and
+`Sec-Fetch-Site` checks that protect the app's own API apply).
+
 ## Structured bookmark content (for a ranking/scoring tool)
 
 The viewer exposes each bookmark's full content in a structured, labeled shape - meant for a

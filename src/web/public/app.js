@@ -8490,6 +8490,139 @@
     });
   }
 
+  // ---- AI assistants (MCP) ----------------------------------------------
+  // The switch, the one-time token and the copyable config for the read-only
+  // MCP endpoint (`src/mcp/`). Words and snippets are `mcp-settings.js`; this
+  // is only the markup's wiring. The plaintext token is held in THIS variable
+  // alone - never stored - so it is gone on reload, exactly as the panel says.
+
+  function initMcpSettings() {
+    const helpers = window.XBOMcpSettings;
+    const toggleBtn = document.getElementById("mcp-toggle");
+    if (!helpers || !toggleBtn) return;
+    const statusEl = document.getElementById("mcp-status");
+    const errorEl = document.getElementById("mcp-error");
+    const detailsEl = document.getElementById("mcp-details");
+    const tokenBoxEl = document.getElementById("mcp-token");
+    const tokenValueEl = document.getElementById("mcp-token-value");
+    const tokenCopyBtn = document.getElementById("mcp-token-copy");
+    const clientSelect = document.getElementById("mcp-client");
+    const clientNoteEl = document.getElementById("mcp-client-note");
+    const snippetEl = document.getElementById("mcp-snippet");
+    const lostTokenEl = document.getElementById("mcp-lost-token");
+    const snippetCopyBtn = document.getElementById("mcp-snippet-copy");
+    const regenerateBtn = document.getElementById("mcp-regenerate");
+    let state = null;
+    let token = null;
+
+    clientSelect.replaceChildren(
+      ...helpers.CLIENTS.map((client) => {
+        const option = document.createElement("option");
+        option.value = client.id;
+        option.textContent = client.label;
+        return option;
+      }),
+    );
+
+    function showError(message) {
+      errorEl.textContent = message || "";
+      errorEl.hidden = !message;
+    }
+
+    function render() {
+      const enabled = !!(state && state.enabled);
+      toggleBtn.setAttribute("aria-checked", String(enabled));
+      statusEl.textContent = state ? helpers.statusText(state) : "Checking...";
+      detailsEl.hidden = !enabled;
+      tokenBoxEl.hidden = !token;
+      tokenValueEl.textContent = token || "";
+      const client = helpers.clientById(clientSelect.value);
+      snippetEl.textContent = state ? helpers.snippet(client.id, state.url, token) : "";
+      clientNoteEl.textContent = client.note;
+      lostTokenEl.textContent = helpers.LOST_TOKEN_TEXT;
+      lostTokenEl.hidden = !!token;
+    }
+
+    async function request(url, init) {
+      const res = await fetch(url, init);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "The server could not update the AI assistant settings.");
+      return body;
+    }
+
+    function adopt(body) {
+      if (body.token) token = body.token;
+      state = body;
+      render();
+    }
+
+    async function load() {
+      try {
+        adopt(await request("/api/mcp"));
+      } catch (err) {
+        statusEl.textContent = "";
+        showError(err.message);
+      }
+    }
+
+    async function copy(text, btn) {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast("Copied to clipboard.");
+      } catch {
+        // No clipboard permission (or no secure context): the text is
+        // `user-select: all`, so one click selects it for a manual copy.
+        showToast("Could not copy automatically - select the text and copy it.");
+      }
+      btn.focus();
+    }
+
+    toggleBtn.addEventListener("click", async () => {
+      const next = toggleBtn.getAttribute("aria-checked") !== "true";
+      toggleBtn.disabled = true;
+      toggleBtn.setAttribute("aria-busy", "true");
+      showError("");
+      try {
+        adopt(
+          await request("/api/mcp", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: next }),
+          }),
+        );
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        toggleBtn.disabled = false;
+        toggleBtn.removeAttribute("aria-busy");
+        toggleBtn.focus();
+      }
+    });
+
+    regenerateBtn.addEventListener("click", async () => {
+      regenerateBtn.classList.add("is-loading");
+      regenerateBtn.disabled = true;
+      showError("");
+      try {
+        adopt(await request("/api/mcp/token", { method: "POST" }));
+        showToast("New token generated. The old one no longer works.");
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        regenerateBtn.classList.remove("is-loading");
+        regenerateBtn.disabled = false;
+        (token ? tokenCopyBtn : regenerateBtn).focus();
+      }
+    });
+
+    clientSelect.addEventListener("change", render);
+    tokenCopyBtn.addEventListener("click", () => copy(token || "", tokenCopyBtn));
+    snippetCopyBtn.addEventListener("click", () => copy(snippetEl.textContent, snippetCopyBtn));
+
+    render();
+    void load();
+  }
+
   // ---- first-run setup ---------------------------------------------------
 
   const setupBackdropEl = document.getElementById("setup-backdrop");
@@ -9132,6 +9265,7 @@
   initSync();
   initSyncConfirm();
   initCategorizationSettings();
+  initMcpSettings();
   initSetup();
   initReset();
   initRanking();

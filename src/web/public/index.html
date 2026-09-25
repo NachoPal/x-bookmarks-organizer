@@ -462,6 +462,74 @@
                   <span id="settings-save-status" class="settings-save-status" role="status"></span>
                 </div>
               </div>
+
+              <!-- The read-only MCP endpoint at /mcp (src/mcp/). Off by
+                   default; app.js fills it from GET /api/mcp, and the token
+                   appears only in the response that generated it. -->
+              <div
+                id="mcp-settings"
+                class="settings-group settings-group-divided"
+                role="group"
+                aria-labelledby="mcp-settings-label"
+              >
+                <span class="settings-label" id="mcp-settings-label">AI assistants (MCP)</span>
+                <p class="settings-hint">
+                  Let an AI tool you already use, like Claude Code or Codex, search and read your
+                  bookmarks from its own chat. Read-only, and only while this app is running.
+                </p>
+                <button
+                  id="mcp-toggle"
+                  class="switch-row"
+                  type="button"
+                  role="switch"
+                  aria-checked="false"
+                  aria-describedby="mcp-status"
+                >
+                  <span>Allow AI assistants</span>
+                  <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                </button>
+                <p id="mcp-status" class="settings-hint" role="status"></p>
+                <p id="mcp-error" class="settings-note" role="alert" hidden></p>
+
+                <div id="mcp-details" class="mcp-details" hidden>
+                  <div id="mcp-token" class="mcp-token" hidden>
+                    <p class="mcp-token-title">
+                      <span class="mcp-token-icon" aria-hidden="true"></span>
+                      Copy your token now
+                    </p>
+                    <p class="settings-hint">
+                      It is shown only this once and is gone when you reload the page. Only a
+                      hash of it is stored.
+                    </p>
+                    <code id="mcp-token-value" class="mcp-code"></code>
+                    <button id="mcp-token-copy" class="btn btn-secondary" type="button">Copy token</button>
+                  </div>
+
+                  <div class="field">
+                    <label class="field-label" for="mcp-client">Connect from</label>
+                    <div class="select-shell">
+                      <select id="mcp-client" class="field-select" aria-describedby="mcp-client-note"></select>
+                    </div>
+                    <p id="mcp-client-note" class="field-hint"></p>
+                  </div>
+                  <pre id="mcp-snippet" class="mcp-code mcp-snippet" aria-label="Configuration to copy"></pre>
+                  <p id="mcp-lost-token" class="settings-hint" hidden></p>
+                  <div class="mcp-actions">
+                    <button id="mcp-snippet-copy" class="btn btn-secondary" type="button">Copy setup</button>
+                    <button
+                      id="mcp-regenerate"
+                      class="btn btn-secondary"
+                      type="button"
+                      aria-describedby="mcp-regenerate-hint"
+                    >
+                      Regenerate token
+                    </button>
+                  </div>
+                  <p id="mcp-regenerate-hint" class="settings-hint">
+                    Regenerating stops the old token working at once; update your assistants with the new one.
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1220,6 +1288,7 @@
     <script src="missing-credentials.js" defer></script>
     <script src="category-editor.js" defer></script>
     <script src="rubric-editor.js" defer></script>
+    <script src="mcp-settings.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>
