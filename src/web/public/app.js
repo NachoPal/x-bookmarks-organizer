@@ -845,8 +845,8 @@
 
   // ---- top-bar popovers: ranking + sync + settings (issues #37, #71, #89) ---
   // Icon buttons in the bar's right region, each opening a panel anchored
-  // under it, in the bar's own order. Settings holds post size, order and
-  // categorization; Sync holds the last-synced time and the Sync button;
+  // under it, in the bar's own order. Settings is a drill-down menu (post
+  // size, categorization, AI assistants - issue #142); Sync holds the last-synced time and the Sync button;
   // Ranking - to the LEFT of sync - holds "Rank now" and the run's progress,
   // which used to sit inside the sync panel and does not belong to syncing.
   // Opening one closes the others.
@@ -860,27 +860,138 @@
     return !p.panel.hidden;
   }
 
-  /** Drops a revealed MCP token (issue #141); `initMcpSettings` replaces it, closing Settings calls it. */
+  /** Drops a revealed MCP token (issue #141); `initMcpSettings` replaces it, leaving its page or Settings calls it. */
   let forgetMcpToken = () => {};
+
+  /**
+   * What closing Settings has always done to the state it holds: drop the
+   * categorization form's unsaved edits and a revealed MCP token. Leaving a
+   * sub-page back to the root does exactly the same (issue #142), so a
+   * section never carries a half-made edit or a token the owner walked away
+   * from.
+   */
+  function releaseSettingsState() {
+    discardSettingsEdits();
+    forgetMcpToken();
+  }
 
   function setPopoverOpen(p, open, opts) {
     const options = opts || {};
     if (open) popovers.forEach((o) => o !== p && isPopoverOpen(o) && setPopoverOpen(o, false, { returnFocus: false }));
     p.panel.hidden = !open;
-    if (!open && p.name === "settings") {
-      discardSettingsEdits();
-      forgetMcpToken();
+    if (p.name === "settings") {
+      // Settings always opens at its root, and closing it from a sub-page
+      // returns there for the next open - nothing about the menu persists.
+      resetSettingsNav();
+      if (!open) releaseSettingsState();
     }
     p.toggle.setAttribute("aria-expanded", String(open));
     p.toggle.setAttribute("aria-label", `${open ? "Close" : "Open"} ${p.name}`);
 
     if (open) {
       const first =
-        p.panel.querySelector(".seg-input:checked") || p.panel.querySelector("button:not(:disabled), input");
+        p.panel.querySelector(".settings-row") ||
+        p.panel.querySelector(".seg-input:checked") ||
+        p.panel.querySelector("button:not(:disabled), input");
       if (first) first.focus();
     } else if (options.returnFocus !== false) {
       p.toggle.focus();
     }
+  }
+
+  // ---- Settings drill-down (issue #142) ----------------------------------
+  // The panel is a two-level menu: the root lists one row per section, and a
+  // row slides into that section's sub-page, whose top-left Back (or Escape)
+  // slides back out. Only ONE view is ever un-hidden, so Tab never reaches a
+  // control on a page that is off screen. Focus moves to the sub-page's
+  // heading on the way in and back to the row it came from on the way out.
+  // The slide is a CSS animation keyed on `data-enter` (transform + opacity;
+  // the reduced-motion block in styles.css turns it into a fade).
+  const settingsRootEl = document.getElementById("settings-root");
+  let settingsSubpage = null;
+  let settingsOriginRow = null;
+
+  function settingsSubpages() {
+    return Array.from(document.querySelectorAll(".settings-subpage"));
+  }
+
+  function isSettingsSubpageOpen() {
+    return settingsSubpage !== null;
+  }
+
+  function playSettingsEnter(view, direction) {
+    view.removeAttribute("data-enter");
+    // Restart the animation: without a style flush in between, removing and
+    // re-adding the same value is a no-op and the second visit would not move.
+    void view.offsetWidth;
+    view.setAttribute("data-enter", direction);
+  }
+
+  /** Root visible, every sub-page hidden, no animation - how Settings opens. */
+  function resetSettingsNav() {
+    settingsSubpages().forEach((page) => {
+      page.hidden = true;
+      page.removeAttribute("data-enter");
+    });
+    if (settingsRootEl) {
+      settingsRootEl.hidden = false;
+      settingsRootEl.removeAttribute("data-enter");
+    }
+    settingsSubpage = null;
+    settingsOriginRow = null;
+  }
+
+  function openSettingsSection(row) {
+    const page = document.getElementById(`settings-section-${row.dataset.settingsSection}`);
+    if (!page || !settingsRootEl) return;
+    settingsOriginRow = row;
+    settingsSubpage = page;
+    settingsRootEl.hidden = true;
+    page.hidden = false;
+    playSettingsEnter(page, "forward");
+    const panel = page.closest(".settings-panel");
+    if (panel) panel.scrollTop = 0;
+    const heading = page.querySelector(".settings-subpage-title");
+    if (heading) heading.focus({ preventScroll: true });
+  }
+
+  function closeSettingsSection() {
+    if (!settingsSubpage || !settingsRootEl) return;
+    const row = settingsOriginRow;
+    releaseSettingsState();
+    settingsSubpage.hidden = true;
+    settingsSubpage.removeAttribute("data-enter");
+    settingsSubpage = null;
+    settingsOriginRow = null;
+    settingsRootEl.hidden = false;
+    playSettingsEnter(settingsRootEl, "back");
+    const panel = settingsRootEl.closest(".settings-panel");
+    if (panel) panel.scrollTop = 0;
+    const target = row || settingsRootEl.querySelector(".settings-row");
+    if (target) target.focus({ preventScroll: true });
+  }
+
+  function initSettingsNav() {
+    if (!settingsRootEl) return;
+    settingsRootEl.querySelectorAll(".settings-row").forEach((row) => {
+      row.addEventListener("click", () => openSettingsSection(row));
+    });
+    document.querySelectorAll("[data-settings-back]").forEach((btn) => {
+      btn.addEventListener("click", closeSettingsSection);
+    });
+    // The animation is an entrance only; clearing it afterwards keeps a
+    // finished view free of a transform (and of re-running on re-show).
+    [settingsRootEl, ...settingsSubpages()].forEach((view) => {
+      view.addEventListener("animationend", (e) => {
+        if (e.target === view) view.removeAttribute("data-enter");
+      });
+    });
+  }
+
+  /** A root row's trailing value ("Small", "On"), so the menu reads at a glance. */
+  function setSettingsRowValue(section, text) {
+    const el = document.getElementById(`settings-row-value-${section}`);
+    if (el) el.textContent = text;
   }
 
   function initSettingsPanel() {
@@ -888,6 +999,14 @@
 
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape" || isSetupOpen() || isRankOpen() || isSyncConfirmOpen()) return;
+      // Inside a Settings sub-page, Escape is Back: one level at a time, so a
+      // second Escape at the root is what closes the panel.
+      const settings = popovers.find((p) => p.name === "settings");
+      if (settings && isPopoverOpen(settings) && isSettingsSubpageOpen()) {
+        e.preventDefault();
+        closeSettingsSection();
+        return;
+      }
       popovers.forEach((p) => isPopoverOpen(p) && setPopoverOpen(p, false));
     });
     // A click anywhere outside dismisses it; inside it (or on its icon,
@@ -915,6 +1034,8 @@
       "--post-scale",
       String(window.XBOPostScale.scaleFor(id)),
     );
+    const step = window.XBOPostScale.POST_SCALES.find((s) => s.id === id);
+    if (step) setSettingsRowValue("post-size", step.label);
     if (!postScaleEl) return;
     postScaleEl.querySelectorAll(".seg-input").forEach((input) => {
       input.checked = input.value === id;
@@ -8536,9 +8657,9 @@
   // endpoint (`src/mcp/`). Words and snippets are `mcp-settings.js`; this is
   // only the markup's wiring. The plaintext token is shown ONCE (issue #141):
   // it lives in `token` alone - never in storage, never in a snippet - only
-  // the response that generated it sets it, and "Done", closing Settings or
-  // any later server answer clears it for good. After that only the masked
-  // hint (`tokenLine`) says which token is live.
+  // the response that generated it sets it, and "Done", Back, closing
+  // Settings or any later server answer clears it for good. After that only
+  // the masked hint (`tokenLine`) says which token is live.
 
   function initMcpSettings() {
     const helpers = window.XBOMcpSettings;
@@ -8579,6 +8700,7 @@
       const enabled = !!(state && state.enabled);
       toggleBtn.setAttribute("aria-checked", String(enabled));
       statusEl.textContent = state ? helpers.statusText(state) : "Checking...";
+      setSettingsRowValue("mcp", state ? (enabled ? "On" : "Off") : "");
       detailsEl.hidden = !enabled;
       const line = helpers.tokenLineParts(state);
       tokenHintEl.replaceChildren();
@@ -9708,6 +9830,7 @@
   initCrumbMenu();
   initScoreDetail();
   initSettingsPanel();
+  initSettingsNav();
   initPostScale();
   initSortOrder();
   initThemeToggle();

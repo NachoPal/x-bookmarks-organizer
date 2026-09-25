@@ -442,128 +442,192 @@
               aria-labelledby="settings-panel-title"
               hidden
             >
-              <h2 id="settings-panel-title" class="settings-panel-title">Settings</h2>
-              <!-- Security finding #8: the server's warning that .env is
-                   readable by other users, filled in by app.js from
-                   /api/setup. Hidden (and empty) whenever there is none. -->
-              <div id="settings-dotenv-warning" class="creds-alert dotenv-warning" hidden></div>
-
-              <div class="settings-group">
-                <span class="settings-label" id="post-scale-label">Post size</span>
-                <div
-                  id="post-scale"
-                  class="segmented settings-segmented"
-                  role="radiogroup"
-                  aria-labelledby="post-scale-label"
-                >
-                  <label class="seg">
-                    <input class="seg-input" type="radio" name="post-scale" value="small" checked />
-                    <span class="seg-label">Small</span>
-                  </label>
-                  <label class="seg">
-                    <input class="seg-input" type="radio" name="post-scale" value="medium" />
-                    <span class="seg-label">Medium</span>
-                  </label>
-                  <label class="seg">
-                    <input class="seg-input" type="radio" name="post-scale" value="large" />
-                    <span class="seg-label">Large</span>
-                  </label>
-                </div>
-                <p class="settings-hint">Resizes the post cards, embedded X post included.</p>
-              </div>
-
-              <div class="settings-group">
-                <span class="settings-label" id="settings-categorization-label">Categorization</span>
-                <p class="settings-hint">A sync works in two phases: first it designs the category tree (or adds what new bookmarks need), then it files each new bookmark into it.</p>
-                <div
-                  id="settings-categorization"
-                  class="field-stack"
-                  aria-labelledby="settings-categorization-label"
-                ></div>
-                <p id="settings-categorization-note" class="settings-note" hidden></p>
-                <div class="settings-actions">
-                  <button id="settings-save" class="btn btn-primary panel-action" type="button">
-                    Save
-                  </button>
-                  <span id="settings-save-status" class="settings-save-status" role="status"></span>
-                </div>
-              </div>
-
-              <!-- The MCP endpoint at /mcp (src/mcp/). Off by default; app.js
-                   fills it from GET /api/mcp. The token appears only in the
-                   response that generated it; the snippets always carry a
-                   placeholder instead. -->
-              <div
-                id="mcp-settings"
-                class="settings-group settings-group-divided"
-                role="group"
-                aria-labelledby="mcp-settings-label"
-              >
-                <span class="settings-label" id="mcp-settings-label">AI assistants (MCP)</span>
-                <p class="settings-hint">
-                  Let an AI tool you already use, like Claude Code or Codex, search and read your
-                  bookmarks from its own chat. Read-only, and only while this app is running.
-                </p>
-                <button
-                  id="mcp-toggle"
-                  class="switch-row"
-                  type="button"
-                  role="switch"
-                  aria-checked="false"
-                  aria-describedby="mcp-status"
-                >
-                  <span>Allow AI assistants</span>
-                  <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-                </button>
-                <p id="mcp-status" class="settings-hint" role="status"></p>
-                <p id="mcp-error" class="settings-note" role="alert" hidden></p>
-
-                <div id="mcp-details" class="mcp-details" hidden>
-                  <p id="mcp-token-hint" class="settings-hint"></p>
-                  <!-- The one-time reveal (issue #141): only the response that
-                       generated a token fills it, and closing Settings, "Done"
-                       or a reload removes it for good. -->
-                  <div id="mcp-token" class="mcp-token" role="region" aria-labelledby="mcp-token-title" hidden>
-                    <p class="mcp-token-title" id="mcp-token-title">
-                      <span class="mcp-token-icon" aria-hidden="true"></span>
-                      Copy your token now
-                    </p>
-                    <p class="settings-hint">
-                      You won't see it again: once you close Settings or reload, only a masked hint
-                      remains. Only a hash of it is stored. Lost it? Regenerate a new one.
-                    </p>
-                    <code id="mcp-token-value" class="mcp-code"></code>
-                    <div class="mcp-actions">
-                      <button id="mcp-token-copy" class="btn btn-secondary" type="button">Copy token</button>
-                      <button id="mcp-token-done" class="btn btn-secondary" type="button">Done</button>
-                    </div>
-                  </div>
-
-                  <div class="field">
-                    <label class="field-label" for="mcp-client">Connect from</label>
-                    <div class="select-shell">
-                      <select id="mcp-client" class="field-select" aria-describedby="mcp-client-note"></select>
-                    </div>
-                    <p id="mcp-client-note" class="field-hint"></p>
-                  </div>
-                  <pre id="mcp-snippet" class="mcp-code mcp-snippet" aria-label="Configuration to copy"></pre>
-                  <p id="mcp-placeholder-note" class="settings-hint"></p>
-                  <div class="mcp-actions">
-                    <button id="mcp-snippet-copy" class="btn btn-secondary" type="button">Copy setup</button>
-                    <button
-                      id="mcp-regenerate"
-                      class="btn btn-secondary"
-                      type="button"
-                      aria-describedby="mcp-regenerate-hint"
-                    >
-                      Regenerate token
+              <!-- Issue #142: a drill-down menu. The root lists one row per
+                   section; a row slides into that section's sub-page, whose
+                   top-left Back (or Escape) returns to the root. Settings
+                   always opens at the root. Wiring: `initSettingsNav`. -->
+              <div id="settings-root" class="settings-view">
+                <h2 id="settings-panel-title" class="settings-panel-title">Settings</h2>
+                <!-- Security finding #8: the server's warning that .env is
+                     readable by other users, filled in by app.js from
+                     /api/setup. Hidden (and empty) whenever there is none. -->
+                <div id="settings-dotenv-warning" class="creds-alert dotenv-warning" hidden></div>
+                <ul class="settings-menu">
+                  <li>
+                    <button class="settings-row" type="button" data-settings-section="post-size">
+                      <span class="settings-row-label">Post size</span>
+                      <span id="settings-row-value-post-size" class="settings-row-value"></span>
+                      <svg class="settings-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="9 6 15 12 9 18" /></svg>
                     </button>
-                  </div>
-                  <p id="mcp-regenerate-hint" class="settings-hint">
-                    Regenerating stops the old token working at once; update your assistants with the new one.
-                  </p>
-                </div>
+                  </li>
+                  <li>
+                    <button class="settings-row" type="button" data-settings-section="categorization">
+                      <span class="settings-row-label">Categorization</span>
+                      <svg class="settings-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="9 6 15 12 9 18" /></svg>
+                    </button>
+                  </li>
+                  <li>
+                    <button class="settings-row" type="button" data-settings-section="mcp">
+                      <span class="settings-row-label">AI assistants (MCP)</span>
+                      <span id="settings-row-value-mcp" class="settings-row-value"></span>
+                      <svg class="settings-row-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="9 6 15 12 9 18" /></svg>
+                    </button>
+                  </li>
+                </ul>
               </div>
+
+              <section
+                id="settings-section-post-size"
+                class="settings-view settings-subpage"
+                aria-labelledby="settings-title-post-size"
+                hidden
+              >
+                <div class="settings-subpage-header">
+                  <button class="icon-btn settings-back" type="button" data-settings-back aria-label="Back to Settings">
+                    <svg class="icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="15 6 9 12 15 18" /></svg>
+                  </button>
+                  <h3 id="settings-title-post-size" class="settings-subpage-title" tabindex="-1">Post size</h3>
+                </div>
+                <div class="settings-group">
+                  <div
+                    id="post-scale"
+                    class="segmented settings-segmented"
+                    role="radiogroup"
+                    aria-labelledby="settings-title-post-size"
+                  >
+                    <label class="seg">
+                      <input class="seg-input" type="radio" name="post-scale" value="small" checked />
+                      <span class="seg-label">Small</span>
+                    </label>
+                    <label class="seg">
+                      <input class="seg-input" type="radio" name="post-scale" value="medium" />
+                      <span class="seg-label">Medium</span>
+                    </label>
+                    <label class="seg">
+                      <input class="seg-input" type="radio" name="post-scale" value="large" />
+                      <span class="seg-label">Large</span>
+                    </label>
+                  </div>
+                  <p class="settings-hint">Resizes the post cards, embedded X post included.</p>
+                </div>
+              </section>
+
+              <section
+                id="settings-section-categorization"
+                class="settings-view settings-subpage"
+                aria-labelledby="settings-title-categorization"
+                hidden
+              >
+                <div class="settings-subpage-header">
+                  <button class="icon-btn settings-back" type="button" data-settings-back aria-label="Back to Settings">
+                    <svg class="icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="15 6 9 12 15 18" /></svg>
+                  </button>
+                  <h3 id="settings-title-categorization" class="settings-subpage-title" tabindex="-1">Categorization</h3>
+                </div>
+                <div class="settings-group">
+                  <p class="settings-hint">A sync works in two phases: first it designs the category tree (or adds what new bookmarks need), then it files each new bookmark into it.</p>
+                  <div
+                    id="settings-categorization"
+                    class="field-stack"
+                    aria-labelledby="settings-title-categorization"
+                  ></div>
+                  <p id="settings-categorization-note" class="settings-note" hidden></p>
+                  <div class="settings-actions">
+                    <button id="settings-save" class="btn btn-primary panel-action" type="button">
+                      Save
+                    </button>
+                    <span id="settings-save-status" class="settings-save-status" role="status"></span>
+                  </div>
+                </div>
+              </section>
+
+              <section
+                id="settings-section-mcp"
+                class="settings-view settings-subpage"
+                aria-labelledby="settings-title-mcp"
+                hidden
+              >
+                <div class="settings-subpage-header">
+                  <button class="icon-btn settings-back" type="button" data-settings-back aria-label="Back to Settings">
+                    <svg class="icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="15 6 9 12 15 18" /></svg>
+                  </button>
+                  <h3 id="settings-title-mcp" class="settings-subpage-title" tabindex="-1">AI assistants (MCP)</h3>
+                </div>
+                <!-- The MCP endpoint at /mcp (src/mcp/). Off by default; app.js
+                     fills it from GET /api/mcp. The token appears only in the
+                     response that generated it; the snippets always carry a
+                     placeholder instead. -->
+                <div
+                  id="mcp-settings"
+                  class="settings-group"
+                  role="group"
+                  aria-labelledby="settings-title-mcp"
+                >
+                  <p class="settings-hint">
+                    Let an AI tool you already use, like Claude Code or Codex, search and read your
+                    bookmarks from its own chat. Read-only, and only while this app is running.
+                  </p>
+                  <button
+                    id="mcp-toggle"
+                    class="switch-row"
+                    type="button"
+                    role="switch"
+                    aria-checked="false"
+                    aria-describedby="mcp-status"
+                  >
+                    <span>Allow AI assistants</span>
+                    <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                  </button>
+                  <p id="mcp-status" class="settings-hint" role="status"></p>
+                  <p id="mcp-error" class="settings-note" role="alert" hidden></p>
+
+                  <div id="mcp-details" class="mcp-details" hidden>
+                    <p id="mcp-token-hint" class="settings-hint"></p>
+                    <!-- The one-time reveal (issue #141): only the response that
+                         generated a token fills it, and "Done", Back, closing
+                         Settings or a reload removes it for good. -->
+                    <div id="mcp-token" class="mcp-token" role="region" aria-labelledby="mcp-token-title" hidden>
+                      <p class="mcp-token-title" id="mcp-token-title">
+                        <span class="mcp-token-icon" aria-hidden="true"></span>
+                        Copy your token now
+                      </p>
+                      <p class="settings-hint">
+                        You won't see it again: once you go back, close Settings or reload, only a
+                        masked hint remains. Only a hash of it is stored. Lost it? Regenerate a new one.
+                      </p>
+                      <code id="mcp-token-value" class="mcp-code"></code>
+                      <div class="mcp-actions">
+                        <button id="mcp-token-copy" class="btn btn-secondary" type="button">Copy token</button>
+                        <button id="mcp-token-done" class="btn btn-secondary" type="button">Done</button>
+                      </div>
+                    </div>
+
+                    <div class="field">
+                      <label class="field-label" for="mcp-client">Connect from</label>
+                      <div class="select-shell">
+                        <select id="mcp-client" class="field-select" aria-describedby="mcp-client-note"></select>
+                      </div>
+                      <p id="mcp-client-note" class="field-hint"></p>
+                    </div>
+                    <pre id="mcp-snippet" class="mcp-code mcp-snippet" aria-label="Configuration to copy"></pre>
+                    <p id="mcp-placeholder-note" class="settings-hint"></p>
+                    <div class="mcp-actions">
+                      <button id="mcp-snippet-copy" class="btn btn-secondary" type="button">Copy setup</button>
+                      <button
+                        id="mcp-regenerate"
+                        class="btn btn-secondary"
+                        type="button"
+                        aria-describedby="mcp-regenerate-hint"
+                      >
+                        Regenerate token
+                      </button>
+                    </div>
+                    <p id="mcp-regenerate-hint" class="settings-hint">
+                      Regenerating stops the old token working at once; update your assistants with the new one.
+                    </p>
+                  </div>
+                </div>
+              </section>
             </div>
           </div>
         </div>
