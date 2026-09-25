@@ -19,6 +19,7 @@ const {
   MIN_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
 } = require("./sidebar-width.js");
+const { readPage, PAGE_KEY, PAGES } = require("./sidebar-nav.js");
 
 /** The inline script's source, straight out of the shipped page. */
 function prebootSource(): string {
@@ -164,6 +165,13 @@ describe("pre-paint state application (issue #104)", () => {
       expect(readWidth(storageOver(stored))).toBeNull();
       expect(runPreboot(stored).cssProps["--sidebar-width"]).toBeUndefined();
     }
+  });
+
+  it("opens the sidebar on the stored drill-down page, exactly as the module reads it", () => {
+    for (const stored of [...PAGES.map((p: string) => ({ [PAGE_KEY]: p })), {}, { [PAGE_KEY]: "settings" }]) {
+      expect(runPreboot(stored).bodyAttrs["data-sidebar-page"]).toBe(readPage(storageOver(stored)));
+    }
+    expect(runPreboot({}, { throwing: true }).bodyAttrs["data-sidebar-page"]).toBe("root");
   });
 
   it("falls back to the defaults, without throwing, when storage is blocked", () => {

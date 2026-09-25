@@ -1,8 +1,8 @@
 "use strict";
 
 /**
- * Pure, DOM-free half of the "From your assistant" section: the result lists
- * an AI assistant sends with the MCP tool `show_in_app`. app.js owns the
+ * Pure, DOM-free half of the sidebar's "Lists" page: the result lists an AI
+ * assistant sends with the MCP tool `show_in_app`. app.js owns the
  * markup; this owns the words, the ordering and the guarded persistence, in
  * the same style as view-persist.js / sidebar-state.js.
  *
@@ -10,7 +10,6 @@
  * them as `textContent`. Nothing here builds markup from them.
  */
 (function (root) {
-  const COLLAPSED_KEY = "xbo:assistant-lists-collapsed";
   const OPEN_LIST_KEY = "xbo:assistant-list";
   /** How long the "your assistant sent…" toast stays: long enough to reach for Open. */
   const ARRIVAL_TOAST_MS = 12000;
@@ -82,22 +81,6 @@
     return lists.filter((l) => !pendingIds.has(l.id));
   }
 
-  function readCollapsed(storage) {
-    try {
-      return storage.getItem(COLLAPSED_KEY) === "1";
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function writeCollapsed(storage, collapsed) {
-    try {
-      storage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
-    } catch (_) {
-      /* private mode / blocked storage: ignore */
-    }
-  }
-
   /** The list open when the page was left, or null. */
   function readOpenList(storage) {
     try {
@@ -129,8 +112,6 @@
     upsert,
     sorted,
     visible,
-    readCollapsed,
-    writeCollapsed,
     readOpenList,
     writeOpenList,
   };

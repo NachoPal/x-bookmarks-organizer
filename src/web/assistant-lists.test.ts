@@ -139,6 +139,46 @@ describe('assistant result lists in the viewer', () => {
     expect(body.bookmarks.map((b) => b.postId)).toEqual(['2']);
   });
 
+  it('marks a list viewed on its first open only, and streams that as a change', async () => {
+    const stream = await openStream(`${base}${ASSISTANT_LIST_EVENTS_PATH}`);
+    try {
+      const { listId } = await showInApp({ postIds: ['1'], title: 'Unopened' });
+      expect((await stream.next()).event).toBe('created');
+      const index = async () =>
+        ((await (await fetch(`${base}/api/assistant-lists`)).json()) as { lists: { viewed: boolean }[] }).lists;
+      expect((await index())[0]!.viewed).toBe(false);
+      // Reading the list is not viewing it: a GET never writes.
+      await fetch(`${base}/api/assistant-lists/${listId}`);
+      expect((await index())[0]!.viewed).toBe(false);
+
+      const res = await fetch(`${base}/api/assistant-lists/${listId}/viewed`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { list: object }).list).toMatchObject({ id: listId, viewed: true });
+      expect((await index())[0]!.viewed).toBe(true);
+      expect((await stream.next()).event).toBe('changed');
+
+      // A repeat open changes nothing, so it announces nothing: the next
+      // event on the stream is the following list, not a second `changed`.
+      expect((await fetch(`${base}/api/assistant-lists/${listId}/viewed`, { method: 'POST' })).status).toBe(200);
+      await showInApp({ postIds: ['2'], title: 'Next' });
+      expect((await stream.next()).event).toBe('created');
+    } finally {
+      stream.close();
+    }
+    expect((await fetch(`${base}/api/assistant-lists/999/viewed`, { method: 'POST' })).status).toBe(404);
+    expect((await fetch(`${base}/api/assistant-lists/abc/viewed`, { method: 'POST' })).status).toBe(400);
+  });
+
+  it('refuses a cross-origin page marking a list viewed', async () => {
+    const list = db.createAssistantList({ title: 'A', note: null, bookmarkIds: [id('1')] });
+    const res = await fetch(`${base}/api/assistant-lists/${list.id}/viewed`, {
+      method: 'POST',
+      headers: { origin: 'https://evil.example' },
+    });
+    expect(res.status).toBe(403);
+    expect(db.getAssistantList(list.id)!.viewed).toBe(false);
+  });
+
   it('streams a list to the open app the moment show_in_app creates it, and a delete as a change', async () => {
     const stream = await openStream(`${base}${ASSISTANT_LIST_EVENTS_PATH}`);
     expect(stream.res.headers.get('content-type')).toMatch(/^text\/event-stream/);

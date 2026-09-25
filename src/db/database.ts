@@ -4,6 +4,7 @@ import BetterSqlite3 from 'better-sqlite3';
 import {
   ARTICLE_LINK_METADATA_ADDED_COLUMNS,
   ARTICLES_ADDED_COLUMNS,
+  ASSISTANT_LISTS_ADDED_COLUMNS,
   BOOKMARK_SCORES_REKEY_SQL,
   BOOKMARKS_ADDED_COLUMNS,
   CATEGORIES_ADDED_COLUMNS,
@@ -163,6 +164,8 @@ export interface AssistantList {
   note: string | null;
   createdAt: string;
   count: number;
+  /** Whether the owner has opened it in the viewer yet (`assistant_lists.viewed_at`). */
+  viewed: boolean;
 }
 
 /** Library-wide counts for the MCP server's `library_stats`. */
@@ -174,6 +177,23 @@ export interface LibraryStats {
   categories: number;
   oldestPostAt: string | null;
   newestPostAt: string | null;
+}
+
+const ASSISTANT_LIST_SELECT = `SELECT l.id, l.title, l.note, l.created_at, l.viewed_at,
+       (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count
+  FROM assistant_lists l`;
+
+interface AssistantListRow {
+  id: number;
+  title: string;
+  note: string | null;
+  created_at: string;
+  viewed_at: string | null;
+  count: number;
+}
+
+function toAssistantList(r: AssistantListRow): AssistantList {
+  return { id: r.id, title: r.title, note: r.note, createdAt: r.created_at, count: r.count, viewed: r.viewed_at !== null };
 }
 
 interface BookmarkRow {
@@ -454,6 +474,9 @@ export class Database {
     this.addMissingColumns('bookmarks', BOOKMARKS_ADDED_COLUMNS);
     this.addMissingColumns('categories', CATEGORIES_ADDED_COLUMNS);
     this.addMissingColumns('articles', ARTICLES_ADDED_COLUMNS);
+    if (this.addMissingColumns('assistant_lists', ASSISTANT_LISTS_ADDED_COLUMNS).includes('viewed_at')) {
+      this.db.prepare('UPDATE assistant_lists SET viewed_at = created_at').run();
+    }
     this.rekeyBookmarkScores();
     this.backfillArticleText();
     this.ensureSearchIndex();
@@ -530,13 +553,18 @@ export class Database {
     }
   }
 
-  private addMissingColumns(table: string, columns: { name: string; ddl: string }[]): void {
+  /** Returns the names of the columns it had to add. */
+  private addMissingColumns(table: string, columns: { name: string; ddl: string }[]): string[] {
     const existing = new Set(
       (this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name),
     );
+    const added: string[] = [];
     for (const { name, ddl } of columns) {
-      if (!existing.has(name)) this.db.exec(ddl);
+      if (existing.has(name)) continue;
+      this.db.exec(ddl);
+      added.push(name);
     }
+    return added;
   }
 
   close(): void {
@@ -1507,25 +1535,27 @@ export class Database {
   /** Every list, newest first, each with how many of its posts still exist. */
   getAssistantLists(): AssistantList[] {
     const rows = this.db
-      .prepare(
-        `SELECT l.id, l.title, l.note, l.created_at,
-                (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count
-         FROM assistant_lists l
-         ORDER BY l.created_at DESC, l.id DESC`,
-      )
-      .all() as { id: number; title: string; note: string | null; created_at: string; count: number }[];
-    return rows.map((r) => ({ id: r.id, title: r.title, note: r.note, createdAt: r.created_at, count: r.count }));
+      .prepare(`${ASSISTANT_LIST_SELECT} ORDER BY l.created_at DESC, l.id DESC`)
+      .all() as AssistantListRow[];
+    return rows.map(toAssistantList);
   }
 
   getAssistantList(id: number): AssistantList | undefined {
-    const row = this.db
-      .prepare(
-        `SELECT l.id, l.title, l.note, l.created_at,
-                (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count
-         FROM assistant_lists l WHERE l.id = ?`,
-      )
-      .get(id) as { id: number; title: string; note: string | null; created_at: string; count: number } | undefined;
-    return row ? { id: row.id, title: row.title, note: row.note, createdAt: row.created_at, count: row.count } : undefined;
+    const row = this.db.prepare(`${ASSISTANT_LIST_SELECT} WHERE l.id = ?`).get(id) as AssistantListRow | undefined;
+    return row ? toAssistantList(row) : undefined;
+  }
+
+  /**
+   * Record that the owner opened a list. Only the FIRST open is stamped, so
+   * the answer says whether anything changed: `undefined` for an unknown id,
+   * `false` for a list already viewed.
+   */
+  markAssistantListViewed(id: number, when: string = new Date().toISOString()): boolean | undefined {
+    const changed = this.db
+      .prepare('UPDATE assistant_lists SET viewed_at = ? WHERE id = ? AND viewed_at IS NULL')
+      .run(when, id).changes;
+    if (changed > 0) return true;
+    return this.getAssistantList(id) ? false : undefined;
   }
 
   countAssistantLists(): number {

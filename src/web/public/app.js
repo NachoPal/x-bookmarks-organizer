@@ -86,6 +86,9 @@
   // read-state toggle or delete can walk straight to a category's ancestors
   // and patch counts in place, without touching the rest of the sidebar DOM.
   let categoryIndex = new Map();
+  /** Whether `categoryIndex` holds a loaded tree yet (the menu says "Loading…" until then). */
+  let treeLoaded = false;
+  let treeLoadFailed = false;
   // The selected tab in the bar under the top bar: the three read-state
   // views plus the owner's starred set (issues #65/#63).
   let activeFilter = "all"; // "all" | "unread" | "read" | "favorite"
@@ -636,7 +639,7 @@
 
     const visible = !collapsed;
     toggleBtn.setAttribute("aria-expanded", String(visible));
-    toggleBtn.setAttribute("aria-label", visible ? "Hide categories" : "Show categories");
+    toggleBtn.setAttribute("aria-label", visible ? "Hide sidebar" : "Show sidebar");
     // A closed drawer is off-screen but still in the DOM; `inert` keeps it
     // out of the tab order so keyboard focus never disappears into it.
     // (The scrim's visibility is pure CSS, so it can fade both ways.)
@@ -646,13 +649,7 @@
     if (options.silent || options.moveFocus === false) return;
 
     if (visible) {
-      // An open assistant list is where the owner is: start on its row.
-      const firstNode =
-        sidebarEl.querySelector(
-          '#assistant-lists:not([hidden]) > #assistant-lists-body:not([hidden]) .assistant-list-item[aria-current="true"]',
-        ) ||
-        treeEl.querySelector(".tree-node") ||
-        searchInput;
+      const firstNode = sidebarPageFocusTarget();
       if (firstNode) firstNode.focus();
     } else if (options.returnFocus !== false) {
       toggleBtn.focus();
@@ -666,6 +663,8 @@
     // The empty-state prompts (landing card + top-bar title) open the same
     // animated sidebar as the menu toggle.
     const openFromPrompt = () => {
+      // "Select a category" means the Categories page, whichever one was open.
+      showSidebarPage("categories", { animate: !isCollapsed() && "forward" });
       if (isCollapsed()) setCollapsed(false);
       else {
         const first = treeEl.querySelector(".tree-node") || searchInput;
@@ -689,6 +688,7 @@
     // field - one search, reachable from the top bar.
     if (searchOpenBtn && searchInput) {
       searchOpenBtn.addEventListener("click", () => {
+        showSidebarPage("categories", { animate: !isCollapsed() && "forward" });
         setCollapsed(false, { moveFocus: false });
         searchInput.focus();
         searchInput.select();
@@ -706,8 +706,134 @@
       if (isCatEditorOpen() || isCatDeleteOpen() || isCatFindOpen() || isMovePickerOpen() || isRubricOpen()) return;
       // And the two paid confirmations, which own Escape the same way.
       if (isRankOpen() || isSyncConfirmOpen()) return;
+      // Inside a sidebar page, Escape is Back - one level at a time, so a
+      // second Escape on the menu is what closes the sidebar. Only with focus
+      // in the sidebar: from the posts, Escape still just closes it.
+      if (sidebarPage !== "root" && sidebarEl.contains(document.activeElement)) {
+        e.preventDefault();
+        showSidebarPage("root", { animate: "back", focus: "row" });
+        return;
+      }
       setCollapsed(true);
     });
+  }
+
+  // ---- sidebar drill-down: the menu, Categories, Lists -------------------
+  // The sidebar is a two-level menu, like Settings (#142) but in the
+  // sidebar's own larger idiom: the menu holds one row per section (with an
+  // icon, a one-line summary and, for Lists, the count of lists never
+  // opened), and a row slides into its page, whose top-left Back (or Escape)
+  // slides back out. Only ONE view is un-hidden, so Tab never reaches a
+  // control on a page that is off screen. Focus goes to the page's heading on
+  // the way in and back to the row it came from on the way out. The page is
+  // persisted (sidebar-nav.js) and applied before the first paint by the
+  // preboot script as `body[data-sidebar-page]`, which the CSS reads.
+  const sidebarViews = sidebarEl ? Array.from(sidebarEl.querySelectorAll(".sidebar-view")) : [];
+  /** Where each page was scrolled to, so coming back to the tree lands where it was left. */
+  const sidebarPageScroll = new Map();
+  let sidebarPage = "root";
+
+  function sidebarNav() {
+    return window.XBOSidebarNav;
+  }
+
+  function sidebarView(page) {
+    return sidebarViews.find((view) => view.dataset.sidebarView === page) || null;
+  }
+
+  function playSidebarEnter(view, direction) {
+    view.removeAttribute("data-enter");
+    // Restart the animation: without a style flush in between, removing and
+    // re-adding the same value is a no-op and the second visit would not move.
+    void view.offsetWidth;
+    view.setAttribute("data-enter", direction);
+  }
+
+  /**
+   * Show one page. `animate` is the direction it enters from ("forward" |
+   * "back"; falsy = no motion), `focus` is "heading" (the page's title) or
+   * "row" (the menu row of the page being left), and `persist: false`
+   * leaves the stored page alone (a card drag borrowing the tree).
+   */
+  function showSidebarPage(page, opts) {
+    const options = opts || {};
+    const nav = sidebarNav();
+    if (!nav || !nav.isPage(page) || sidebarViews.length === 0) return;
+    const from = sidebarPage;
+    const scroller = sidebarEl.querySelector(".sidebar-inner");
+    if (scroller && from !== page) sidebarPageScroll.set(from, scroller.scrollTop);
+    sidebarPage = page;
+    bodyEl.setAttribute("data-sidebar-page", page);
+    for (const view of sidebarViews) {
+      view.hidden = view.dataset.sidebarView !== page;
+      if (view.hidden) view.removeAttribute("data-enter");
+    }
+    if (options.persist !== false) nav.writePage(window.localStorage, page);
+    if (from === page) return;
+    if (scroller) scroller.scrollTop = sidebarPageScroll.get(page) || 0;
+    const view = sidebarView(page);
+    if (options.animate && view) playSidebarEnter(view, options.animate);
+    if (options.focus === "heading" && view) {
+      const heading = view.querySelector(".sidebar-page-title");
+      if (heading) heading.focus({ preventScroll: true });
+    } else if (options.focus === "row") {
+      const row = sidebarEl.querySelector(`.sidebar-home-row[data-sidebar-page="${from}"]`);
+      if (row) row.focus({ preventScroll: true });
+    }
+  }
+
+  /** What takes focus when the sidebar opens: where the owner is on the open page. */
+  function sidebarPageFocusTarget() {
+    if (sidebarPage === "root") return sidebarEl.querySelector(".sidebar-home-row");
+    if (sidebarPage === "lists") {
+      return (
+        sidebarEl.querySelector('.assistant-list-item[aria-current="true"]') ||
+        sidebarEl.querySelector(".assistant-list-item") ||
+        document.getElementById("sidebar-title-lists")
+      );
+    }
+    return treeEl.querySelector(".tree-node") || searchInput;
+  }
+
+  /** The menu rows' summaries and every unviewed-lists badge, from the current state. */
+  function renderSidebarHome() {
+    const nav = sidebarNav();
+    if (!nav) return;
+    const catMeta = document.getElementById("sidebar-home-meta-categories");
+    if (catMeta) catMeta.textContent = nav.categoriesMeta(treeLoaded ? categoryIndex.size : null, treeLoadFailed);
+    const shown = window.XBOAssistantLists ? assistantApi().visible(assistantLists, pendingListDeletes) : [];
+    const unviewed = nav.unviewedCount(shown);
+    const listsMeta = document.getElementById("sidebar-home-meta-lists");
+    if (listsMeta) listsMeta.textContent = nav.listsMeta(shown.length);
+    const listsRow = document.getElementById("sidebar-home-lists");
+    if (listsRow) listsRow.setAttribute("aria-label", nav.listsRowLabel(shown.length, unviewed));
+    sidebarEl.querySelectorAll("[data-unviewed-badge]").forEach((badge) => {
+      badge.hidden = unviewed === 0;
+      badge.textContent = unviewed > 99 ? "99+" : String(unviewed);
+    });
+    const catBack = sidebarEl.querySelector("#sidebar-page-categories [data-sidebar-back]");
+    if (catBack) catBack.setAttribute("aria-label", nav.backLabel(unviewed));
+  }
+
+  function initSidebarNav() {
+    if (!sidebarNav() || sidebarViews.length === 0) return;
+    showSidebarPage(sidebarNav().readPage(window.localStorage), { persist: false });
+    sidebarEl.querySelectorAll(".sidebar-home-row").forEach((row) => {
+      row.addEventListener("click", () =>
+        showSidebarPage(row.dataset.sidebarPage, { animate: "forward", focus: "heading" }),
+      );
+    });
+    sidebarEl.querySelectorAll("[data-sidebar-back]").forEach((btn) => {
+      btn.addEventListener("click", () => showSidebarPage("root", { animate: "back", focus: "row" }));
+    });
+    // The animation is an entrance only; clearing it afterwards keeps a
+    // finished view free of a transform (and of re-running on re-show).
+    sidebarViews.forEach((view) => {
+      view.addEventListener("animationend", (e) => {
+        if (e.target === view) view.removeAttribute("data-enter");
+      });
+    });
+    renderSidebarHome();
   }
 
   // ---- resizing the sidebar (issue #99) ----------------------------------
@@ -1535,12 +1661,16 @@
       data = await getJSON("/api/tree");
     } catch (_err) {
       stateMessage(treeEl, "error", "Could not load categories. Is the server running?");
+      treeLoadFailed = !treeLoaded;
+      renderSidebarHome();
       return;
     }
     treeRoots = data.tree || [];
     if (Number.isFinite(data.maxDepth)) treeMaxDepth = data.maxDepth;
     categoryIndex = window.XBOTreeCounts ? window.XBOTreeCounts.buildCategoryIndex(treeRoots) : new Map();
+    treeLoaded = true;
     renderTree();
+    renderSidebarHome();
   }
 
   /**
@@ -4303,6 +4433,12 @@
       // behind the picker modal on a phone (issue #100). `moveFocus: false`
       // because focus belongs to the pointer for the rest of the gesture.
       if (isCollapsed()) setCollapsed(false, { moveFocus: false });
+      // The tree is on the Categories page: borrow it for the gesture and
+      // hand the owner's page back afterwards (never persisted).
+      if (sidebarPage !== "categories") {
+        drag.returnPage = sidebarPage;
+        showSidebarPage("categories", { persist: false });
+      }
       card.classList.add("is-moving");
       document.body.classList.add("is-card-dragging");
       if (moveGhostEl) moveGhostEl.hidden = false;
@@ -4343,6 +4479,7 @@
       card.classList.remove("is-moving");
       document.body.classList.remove("is-card-dragging");
       if (moveGhostEl) moveGhostEl.hidden = true;
+      if (drag.returnPage) showSidebarPage(drag.returnPage, { persist: false });
       const outcome = cardGesture().gestureOutcome({
         started: drag.started,
         cancelled,
@@ -9445,25 +9582,25 @@
     });
   }
 
-  // ---- "From your assistant": result lists sent over MCP -----------------
+  // ---- Lists: result lists sent over MCP ----------------------------------
   // An AI assistant connected to the MCP endpoint can hand the owner a set of
   // posts with `show_in_app` (e.g. "find my bookmarks about eval harnesses").
-  // Each arrives as a named list in the sidebar section below the heading
-  // "From your assistant", newest first; opening one shows its posts as
-  // ordinary pooled cards (read, favorite, summary, move and delete all work
-  // as anywhere else) in the order the assistant gave. A list is only a VIEW:
-  // deleting it never deletes a post. It arrives LIVE through a same-origin
-  // event stream and is announced with a toast whose Open action is the only
-  // thing that changes the view - the owner's current view is never yanked.
+  // Each arrives as a named list on the sidebar's Lists page, newest first;
+  // opening one shows its posts as ordinary pooled cards (read, favorite,
+  // summary, move and delete all work as anywhere else) in the order the
+  // assistant gave. A list is only a VIEW: deleting it never deletes a post.
+  // It arrives LIVE through a same-origin event stream and is announced with
+  // a toast whose Open action is the only thing that changes the view - the
+  // owner's current view is never yanked. Whether a list has been opened is
+  // the server's (`viewed`), so the menu's count agrees across tabs and
+  // reloads; the stream's `changed` event carries a view made in another tab.
   //
   // Titles and notes are an assistant's words: they only ever reach the DOM
   // as `textContent` (`el(…, text)` and direct assignment), never as markup.
 
-  const assistantSectionEl = document.getElementById("assistant-lists");
-  const assistantToggleBtn = document.getElementById("assistant-lists-toggle");
-  const assistantCountEl = document.getElementById("assistant-lists-count");
   const assistantClearBtn = document.getElementById("assistant-lists-clear");
   const assistantItemsEl = document.getElementById("assistant-lists-body");
+  const assistantStateEl = document.getElementById("assistant-lists-state");
   const assistantHeaderEl = document.getElementById("assistant-list-header");
   const assistantNoteEl = document.getElementById("assistant-list-note");
   const assistantMetaEl = document.getElementById("assistant-list-meta");
@@ -9473,9 +9610,8 @@
   let assistantLists = [];
   /** Lists whose delete is waiting out its undo window: hidden, not yet gone. */
   const pendingListDeletes = new Set();
-  /** Lists that arrived live in this tab and have not been opened yet. */
-  const unseenListIds = new Set();
-  let assistantListsLoaded = false;
+  /** "loading" until the first read answers, then "ready" - or "error" if it never did. */
+  let assistantListsState = "loading";
 
   function assistantApi() {
     return window.XBOAssistantLists;
@@ -9483,20 +9619,20 @@
 
   /** Re-read the index from the server; a list that went away leaves the view. */
   async function loadAssistantLists() {
-    if (!assistantSectionEl || !window.XBOAssistantLists) return;
+    if (!assistantItemsEl || !window.XBOAssistantLists) return;
     let data;
     try {
       data = await getJSON("/api/assistant-lists");
     } catch (_err) {
-      return; // the section keeps what it showed; the next event or reload retries
+      // The page keeps what it showed; the next event or reload retries.
+      if (assistantListsState !== "ready") {
+        assistantListsState = "error";
+        renderAssistantLists();
+      }
+      return;
     }
-    const known = new Set(assistantLists.map((l) => l.id));
+    assistantListsState = "ready";
     assistantLists = assistantApi().sorted(Array.isArray(data.lists) ? data.lists : []);
-    // After a reconnect, anything that arrived while the stream was down is new to this tab.
-    if (assistantListsLoaded) {
-      for (const list of assistantLists) if (!known.has(list.id)) unseenListIds.add(list.id);
-    }
-    assistantListsLoaded = true;
     if (activeList) {
       const fresh = assistantLists.find((l) => l.id === activeList.id);
       if (fresh) {
@@ -9511,18 +9647,49 @@
     renderAssistantLists();
   }
 
+  /** The page's loading / error / empty line; empty when there are rows to show. */
+  function renderAssistantListsState(count) {
+    if (assistantListsState === "loading") {
+      stateMessage(assistantStateEl, "loading", "Loading lists…");
+      return;
+    }
+    if (assistantListsState === "error" && count === 0) {
+      const box = el("div", "state state-error assistant-lists-note");
+      box.setAttribute("role", "status");
+      const retry = el("button", "btn btn-secondary", "Try again");
+      retry.type = "button";
+      retry.addEventListener("click", () => {
+        assistantListsState = "loading";
+        renderAssistantLists();
+        void loadAssistantLists();
+      });
+      box.append(el("p", "state-body", "Couldn't load your lists."), retry);
+      assistantStateEl.replaceChildren(box);
+      return;
+    }
+    if (count === 0) {
+      const box = el("div", "state state-empty assistant-lists-note");
+      box.append(
+        el("p", "state-title", "No lists yet"),
+        el(
+          "p",
+          "state-body",
+          "When an AI assistant shows you posts, they arrive here as a list. Connect one in Settings, under AI assistants (MCP).",
+        ),
+      );
+      assistantStateEl.replaceChildren(box);
+      return;
+    }
+    assistantStateEl.replaceChildren();
+  }
+
   function renderAssistantLists() {
-    if (!assistantSectionEl || !window.XBOAssistantLists) return;
+    if (!assistantItemsEl || !window.XBOAssistantLists) return;
     const api = assistantApi();
     const shown = api.visible(assistantLists, pendingListDeletes);
-    assistantSectionEl.hidden = shown.length === 0;
-    assistantCountEl.replaceChildren(
-      document.createTextNode(String(shown.length)),
-      el("span", "visually-hidden", shown.length === 1 ? " list" : " lists"),
-    );
-    const collapsed = api.readCollapsed(window.localStorage);
-    assistantToggleBtn.setAttribute("aria-expanded", String(!collapsed));
-    assistantItemsEl.hidden = collapsed;
+    assistantClearBtn.hidden = shown.length === 0;
+    renderAssistantListsState(shown.length);
+    assistantItemsEl.hidden = shown.length === 0;
 
     // Keep the keyboard on the same row across a re-render (a live arrival
     // or a count refresh must not throw focus to <body>).
@@ -9537,7 +9704,7 @@
       const btn = el("button", "assistant-list-item");
       btn.type = "button";
       btn.dataset.listId = String(list.id);
-      const isNew = unseenListIds.has(list.id);
+      const isNew = !list.viewed;
       if (activeList && activeList.id === list.id) btn.setAttribute("aria-current", "true");
       btn.setAttribute("aria-label", api.itemLabel(list, now, isNew));
       const top = el("span", "assistant-list-top");
@@ -9554,6 +9721,7 @@
       const again = assistantItemsEl.querySelector(`[data-list-id="${focusedId}"]`);
       if (again) again.focus();
     }
+    renderSidebarHome();
   }
 
   function renderListHeader() {
@@ -9601,6 +9769,19 @@
   }
 
   /**
+   * Record that the owner has seen a list: at once here (the "New" marker and
+   * the menu's count drop as it opens), and on the server, whose `changed`
+   * event then carries it to every other open tab. A failed write only means
+   * the list reads as new again after the next index read.
+   */
+  function markListViewed(id) {
+    const list = assistantLists.find((l) => l.id === id);
+    if (!list || list.viewed) return;
+    assistantLists = assistantApi().upsert(assistantLists, { ...list, viewed: true });
+    fetch(`/api/assistant-lists/${id}/viewed`, { method: "POST" }).catch(() => {});
+  }
+
+  /**
    * Open a list: its posts become the view, as pooled cards (a post already on
    * screen elsewhere keeps its mounted embed). `refresh` re-reads the list in
    * place - after a sync, a rank run or a category delete reset the pool.
@@ -9616,11 +9797,11 @@
       selectedButton = null;
     }
     selectedCategoryId = null;
-    activeList = list;
-    unseenListIds.delete(id);
+    markListViewed(id);
+    activeList = assistantLists.find((l) => l.id === id);
     assistantApi().writeOpenList(window.localStorage, id);
     renderAssistantLists();
-    renderListTitle(list);
+    renderListTitle(activeList);
     renderListHeader();
     updateToolbarVisibility(); // no tabs, no sort: the list is its own order
     if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
@@ -9659,8 +9840,9 @@
     }
     if (seq !== requestSeq || !activeList || activeList.id !== id) return;
 
-    activeList = data.list;
-    assistantLists = assistantApi().upsert(assistantLists, data.list);
+    // Open is viewed, whatever the read raced with the POST above.
+    activeList = { ...data.list, viewed: true };
+    assistantLists = assistantApi().upsert(assistantLists, activeList);
     renderAssistantLists();
     renderListTitle(activeList);
     renderListHeader();
@@ -9712,7 +9894,9 @@
     // section): hand the keyboard to the nearest thing still on screen.
     if (!hadFocus || !hadFocus.isConnected || hadFocus.closest("[hidden]")) {
       const next =
-        (!assistantSectionEl.hidden && assistantToggleBtn) || titleEl.querySelector("button") || toggleBtn;
+        (sidebarPage === "lists" && !isCollapsed() && document.getElementById("sidebar-title-lists")) ||
+        titleEl.querySelector("button") ||
+        toggleBtn;
       if (next) next.focus();
     }
 
@@ -9756,21 +9940,23 @@
     }, UNDO_WINDOW_MS);
   }
 
-  /** A list the stream just announced: into the section, and a toast to open it. */
+  /** A list the stream just announced: onto the Lists page, and a toast to open it. */
   function receiveAssistantList(list) {
     if (!list || !Number.isInteger(list.id) || typeof list.title !== "string") return;
     const known = assistantLists.some((l) => l.id === list.id);
     assistantLists = assistantApi().upsert(assistantLists, list);
-    if (known) {
-      renderAssistantLists();
-      return;
-    }
-    unseenListIds.add(list.id);
     renderAssistantLists();
+    if (known) return;
     showToast(assistantApi().arrivalMessage(list), {
       duration: assistantApi().ARRIVAL_TOAST_MS,
-      actions: [{ label: "Open", onClick: () => void openAssistantList(list.id) }],
+      actions: [{ label: "Open", onClick: () => openListFromToast(list.id) }],
     });
+  }
+
+  /** The arrival toast's Open: the sidebar goes to Lists (where the list now is), and the list opens. */
+  function openListFromToast(id) {
+    showSidebarPage("lists", { animate: !isCollapsed() && sidebarPage !== "lists" && "forward" });
+    void openAssistantList(id);
   }
 
   /**
@@ -9802,21 +9988,17 @@
   }
 
   function initAssistantLists() {
-    if (!assistantSectionEl || !window.XBOAssistantLists) return;
-    assistantToggleBtn.addEventListener("click", () => {
-      const collapsed = !assistantApi().readCollapsed(window.localStorage);
-      assistantApi().writeCollapsed(window.localStorage, collapsed);
-      renderAssistantLists();
-    });
+    if (!assistantItemsEl || !window.XBOAssistantLists) return;
     assistantClearBtn.addEventListener("click", () => {
       deleteAssistantLists(assistantApi().visible(assistantLists, pendingListDeletes));
     });
     assistantDeleteBtn.addEventListener("click", () => {
       if (activeList) deleteAssistantLists([activeList]);
     });
+    renderAssistantLists(); // the loading state, until the first read answers
     // "5 min ago" should not still say so an hour later.
     window.setInterval(() => {
-      if (!assistantSectionEl.hidden) renderAssistantLists();
+      if (sidebarPage === "lists") renderAssistantLists();
       if (activeList) renderListHeader();
     }, 60_000);
     void loadAssistantLists();
@@ -9825,6 +10007,7 @@
 
   // ---- init --------------------------------------------------------------
   initSidebar();
+  initSidebarNav();
   initSidebarResizer();
   initScrollTop();
   initCrumbMenu();

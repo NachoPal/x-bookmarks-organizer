@@ -89,12 +89,8 @@ describe("XBOAssistantLists", () => {
     expect(lists.visible(index, new Set([1])).map((l: { id: number }) => l.id)).toEqual([2]);
   });
 
-  it("persists the section's collapsed state and the open list, guarded", () => {
+  it("persists the open list, guarded", () => {
     const storage = fakeStorage();
-    expect(lists.readCollapsed(storage)).toBe(false);
-    lists.writeCollapsed(storage, true);
-    expect(lists.readCollapsed(storage)).toBe(true);
-
     expect(lists.readOpenList(storage)).toBeNull();
     lists.writeOpenList(storage, 42);
     expect(lists.readOpenList(storage)).toBe(42);
@@ -103,9 +99,7 @@ describe("XBOAssistantLists", () => {
     storage.setItem("xbo:assistant-list", "nope");
     expect(lists.readOpenList(storage)).toBeNull();
 
-    expect(lists.readCollapsed(throwing)).toBe(false);
     expect(lists.readOpenList(throwing)).toBeNull();
-    expect(() => lists.writeCollapsed(throwing, true)).not.toThrow();
     expect(() => lists.writeOpenList(throwing, 1)).not.toThrow();
   });
 });
