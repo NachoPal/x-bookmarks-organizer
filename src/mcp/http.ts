@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Database } from '../db/database';
 import { readMcpAccess, regenerateMcpToken, setMcpEnabled, verifyMcpToken } from './access';
-import { createMcpServer } from './tools';
+import { createMcpServer, type McpServerOptions } from './tools';
 import { PACKAGE_ROOT } from '../paths';
 
 /** Where the endpoint lives on the viewer. */
@@ -38,7 +38,8 @@ function endpointUrl(app: FastifyInstance, req: FastifyRequest): string {
 }
 
 /**
- * Serve the read-only MCP endpoint at {@link MCP_PATH}, plus the Settings
+ * Serve the MCP endpoint at {@link MCP_PATH} (reads, plus `show_in_app`, which
+ * only creates a result list - `opts.onListCreated` hears about it), plus the Settings
  * panel's routes that switch it on and issue its token.
  *
  * Order of refusals on `/mcp`, each before any tool code runs: the viewer's
@@ -52,23 +53,32 @@ function endpointUrl(app: FastifyInstance, req: FastifyRequest): string {
  * stream to open, so GET and DELETE answer 405, as the Streamable HTTP spec
  * allows for a server without one.
  */
-export function installMcpEndpoint(app: FastifyInstance, db: Database): void {
-  const gate = async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!readMcpAccess(db).enabled) return jsonRpcError(reply, 404, MCP_DISABLED_MESSAGE);
+export function installMcpEndpoint(app: FastifyInstance, db: Database, opts: McpServerOptions = {}): void {
+  /**
+   * Answer the refusal and return true when the request may not proceed.
+   * A plain boolean on purpose: a Fastify `reply` is a thenable, so returning
+   * it from an async gate and awaiting that resolved to `undefined` - the
+   * refusal was sent, yet the handler carried on and ran the tool anyway.
+   */
+  const refused = (req: FastifyRequest, reply: FastifyReply): boolean => {
+    if (!readMcpAccess(db).enabled) {
+      jsonRpcError(reply, 404, MCP_DISABLED_MESSAGE);
+      return true;
+    }
     const header = req.headers.authorization ?? '';
     const token = /^Bearer\s+(\S+)\s*$/i.exec(header)?.[1] ?? '';
     if (!verifyMcpToken(db, token)) {
       reply.header('WWW-Authenticate', 'Bearer realm="x-bookmarks-organizer"');
-      return jsonRpcError(reply, 401, MCP_UNAUTHORIZED_MESSAGE);
+      jsonRpcError(reply, 401, MCP_UNAUTHORIZED_MESSAGE);
+      return true;
     }
-    return undefined;
+    return false;
   };
 
   app.post(MCP_PATH, async (req, reply) => {
-    const refused = await gate(req, reply);
-    if (refused) return refused;
+    if (refused(req, reply)) return reply;
 
-    const server = createMcpServer(db, VERSION);
+    const server = createMcpServer(db, VERSION, opts);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.hijack();
     reply.raw.on('close', () => {
@@ -87,8 +97,7 @@ export function installMcpEndpoint(app: FastifyInstance, db: Database): void {
   });
 
   const notAllowed = async (req: FastifyRequest, reply: FastifyReply) => {
-    const refused = await gate(req, reply);
-    if (refused) return refused;
+    if (refused(req, reply)) return reply;
     reply.header('Allow', 'POST');
     return jsonRpcError(reply, 405, 'Method not allowed: this server is stateless and answers POST only.');
   };

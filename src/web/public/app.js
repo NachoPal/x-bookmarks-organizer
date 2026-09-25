@@ -122,6 +122,10 @@
   // flight (or failed) - guards saveCurrentViewToCache against caching a
   // loading placeholder or error state as if it were real content.
   let viewReady = false;
+  // The assistant result list on screen (MCP `show_in_app`), or null. While
+  // one is open no category is selected: the list IS the view, in the order
+  // the assistant gave, with no tabs, sort or paging (it holds at most 100).
+  let activeList = null;
 
   // ---- client-side view cache + per-post card pool (issues #33, #67) -----
   // Rendered cards are pooled PER POST, not per view: a post loaded under any
@@ -547,11 +551,23 @@
     // animation. Decide it here instead, before the first frame, so the
     // drawer simply starts closed. `silent` so the owner's own preference is
     // untouched: a load with nothing to restore still opens it.
-    if (saved && saved.categoryId != null && drawerQuery.matches && !isCollapsed()) {
+    const savedListId = window.XBOAssistantLists
+      ? window.XBOAssistantLists.readOpenList(window.localStorage)
+      : null;
+    const reopensView = (saved && saved.categoryId != null) || savedListId != null;
+    if (reopensView && drawerQuery.matches && !isCollapsed()) {
       setCollapsed(true, { silent: true, moveFocus: false });
     }
     await loadTree();
     try {
+      if (savedListId != null) {
+        await loadAssistantLists();
+        if (assistantLists.some((l) => l.id === savedListId)) {
+          await openAssistantList(savedListId);
+          return;
+        }
+        window.XBOAssistantLists.writeOpenList(window.localStorage, null);
+      }
       if (saved && selectedCategoryId == null) {
         activeFilter = saved.filter;
         renderFilterTabs();
@@ -630,7 +646,13 @@
     if (options.silent || options.moveFocus === false) return;
 
     if (visible) {
-      const firstNode = treeEl.querySelector(".tree-node") || searchInput;
+      // An open assistant list is where the owner is: start on its row.
+      const firstNode =
+        sidebarEl.querySelector(
+          '#assistant-lists:not([hidden]) > #assistant-lists-body:not([hidden]) .assistant-list-item[aria-current="true"]',
+        ) ||
+        treeEl.querySelector(".tree-node") ||
+        searchInput;
       if (firstNode) firstNode.focus();
     } else if (options.returnFocus !== false) {
       toggleBtn.focus();
@@ -2035,6 +2057,7 @@
   // ---- bookmarks ---------------------------------------------------------
 
   async function selectCategory(node, button) {
+    leaveAssistantList();
     if (selectedButton) selectedButton.removeAttribute("aria-current");
     button.setAttribute("aria-current", "true");
     selectedButton = button;
@@ -2249,6 +2272,7 @@
 
   /** How many bookmarks match the active tab in this category. */
   function filteredTotal() {
+    if (activeList) return currentViewBookmarks.length;
     return tabCounts()[activeFilter];
   }
 
@@ -2316,6 +2340,7 @@
   }
 
   function emptyFilterMessage() {
+    if (activeList) return window.XBOAssistantLists.EMPTY_LIST_MESSAGE;
     if (activeFilter === "unread") return "No unread bookmarks in this category.";
     if (activeFilter === "read") return "No read bookmarks in this category yet.";
     if (activeFilter === "favorite") {
@@ -3555,8 +3580,9 @@
       patchCardControls(bm, card); // the pooled card is reused by other tabs
       // Only the two read-state tabs' membership turns on this toggle - a
       // post is not un-starred by being read, so the Favorites tab keeps it.
+      // An assistant list has no tabs: every post in it stays, read or not.
       const dropsOut =
-        (activeFilter === "unread" && bm.read) || (activeFilter === "read" && !bm.read);
+        !activeList && ((activeFilter === "unread" && bm.read) || (activeFilter === "read" && !bm.read));
       renderCountLine();
       // Direction-aware (#99): towards Read on the way in, back towards
       // Unread on the way out.
@@ -3596,7 +3622,7 @@
         applyFavoriteButtonState(starBtn, bm.favorite);
       }
       renderCountLine();
-      if (activeFilter === "favorite" && !bm.favorite) {
+      if (!activeList && activeFilter === "favorite" && !bm.favorite) {
         // Unstarred while the Favorites tab is open: it leaves this view the
         // same way a read post leaves Unread, animation and bookkeeping alike.
         dropCardFromView(bm, card);
@@ -3735,6 +3761,8 @@
           // (and their ancestors) in place - not a full tree reload.
           updateSidebarCounts(bm, -1, wasUnread ? -1 : 0);
           purgeFromCache(bm);
+          // The server took the post out of every assistant list with it.
+          void loadAssistantLists();
         } else if (res.status !== 404) {
           throw new Error(`Request failed (${res.status})`);
         }
@@ -5229,6 +5257,8 @@
     for (const id of removedIds) catEditor.expanded.delete(id);
     await loadTree();
     await fetchSetup();
+    // Posts a delete orphaned went with it - out of any list on screen too.
+    if (activeList) await refreshOpenList();
     if (keepId != null) {
       const stillThere = categoryIndex.get(keepId);
       const button = treeEl.querySelector(`[data-category-id="${keepId}"]`);
@@ -7153,6 +7183,10 @@
     await loadTree();
     await fetchSetup();
     await refreshRubricState();
+    if (activeList) {
+      await refreshOpenList();
+      return;
+    }
     if (keepId == null) return;
     const node = categoryIndex.get(keepId);
     const button = treeEl.querySelector(`[data-category-id="${keepId}"]`);
@@ -7615,6 +7649,7 @@
     await fetchSetup();
     await refreshRubricState();
     if (selectedCategoryId != null) await fetchAndRenderFirstPage({ sameCategory: true });
+    else if (activeList) await refreshOpenList();
   }
 
   function initRanking() {
@@ -9217,6 +9252,10 @@
     viewCaches = new Map();
     cacheOrder = [];
     resetPool();
+    // A reset takes every assistant list with the bookmarks.
+    leaveAssistantList();
+    assistantLists = [];
+    renderAssistantLists();
     selectedCategoryId = null;
     renderEmptyTitle();
     persistSelection();
@@ -9248,6 +9287,384 @@
     });
   }
 
+  // ---- "From your assistant": result lists sent over MCP -----------------
+  // An AI assistant connected to the MCP endpoint can hand the owner a set of
+  // posts with `show_in_app` (e.g. "find my bookmarks about eval harnesses").
+  // Each arrives as a named list in the sidebar section below the heading
+  // "From your assistant", newest first; opening one shows its posts as
+  // ordinary pooled cards (read, favorite, summary, move and delete all work
+  // as anywhere else) in the order the assistant gave. A list is only a VIEW:
+  // deleting it never deletes a post. It arrives LIVE through a same-origin
+  // event stream and is announced with a toast whose Open action is the only
+  // thing that changes the view - the owner's current view is never yanked.
+  //
+  // Titles and notes are an assistant's words: they only ever reach the DOM
+  // as `textContent` (`el(…, text)` and direct assignment), never as markup.
+
+  const assistantSectionEl = document.getElementById("assistant-lists");
+  const assistantToggleBtn = document.getElementById("assistant-lists-toggle");
+  const assistantCountEl = document.getElementById("assistant-lists-count");
+  const assistantClearBtn = document.getElementById("assistant-lists-clear");
+  const assistantItemsEl = document.getElementById("assistant-lists-body");
+  const assistantHeaderEl = document.getElementById("assistant-list-header");
+  const assistantNoteEl = document.getElementById("assistant-list-note");
+  const assistantMetaEl = document.getElementById("assistant-list-meta");
+  const assistantDeleteBtn = document.getElementById("assistant-list-delete");
+
+  /** Newest first, as the server sent them (plus live arrivals folded in). */
+  let assistantLists = [];
+  /** Lists whose delete is waiting out its undo window: hidden, not yet gone. */
+  const pendingListDeletes = new Set();
+  /** Lists that arrived live in this tab and have not been opened yet. */
+  const unseenListIds = new Set();
+  let assistantListsLoaded = false;
+
+  function assistantApi() {
+    return window.XBOAssistantLists;
+  }
+
+  /** Re-read the index from the server; a list that went away leaves the view. */
+  async function loadAssistantLists() {
+    if (!assistantSectionEl || !window.XBOAssistantLists) return;
+    let data;
+    try {
+      data = await getJSON("/api/assistant-lists");
+    } catch (_err) {
+      return; // the section keeps what it showed; the next event or reload retries
+    }
+    const known = new Set(assistantLists.map((l) => l.id));
+    assistantLists = assistantApi().sorted(Array.isArray(data.lists) ? data.lists : []);
+    // After a reconnect, anything that arrived while the stream was down is new to this tab.
+    if (assistantListsLoaded) {
+      for (const list of assistantLists) if (!known.has(list.id)) unseenListIds.add(list.id);
+    }
+    assistantListsLoaded = true;
+    if (activeList) {
+      const fresh = assistantLists.find((l) => l.id === activeList.id);
+      if (fresh) {
+        activeList = fresh;
+        renderListHeader();
+      } else if (!pendingListDeletes.has(activeList.id)) {
+        // Deleted somewhere else (another tab): nothing left to show.
+        leaveAssistantList();
+        showNothingSelected();
+      }
+    }
+    renderAssistantLists();
+  }
+
+  function renderAssistantLists() {
+    if (!assistantSectionEl || !window.XBOAssistantLists) return;
+    const api = assistantApi();
+    const shown = api.visible(assistantLists, pendingListDeletes);
+    assistantSectionEl.hidden = shown.length === 0;
+    assistantCountEl.replaceChildren(
+      document.createTextNode(String(shown.length)),
+      el("span", "visually-hidden", shown.length === 1 ? " list" : " lists"),
+    );
+    const collapsed = api.readCollapsed(window.localStorage);
+    assistantToggleBtn.setAttribute("aria-expanded", String(!collapsed));
+    assistantItemsEl.hidden = collapsed;
+
+    // Keep the keyboard on the same row across a re-render (a live arrival
+    // or a count refresh must not throw focus to <body>).
+    const focused = document.activeElement;
+    const focusedId =
+      focused && focused.classList && focused.classList.contains("assistant-list-item")
+        ? Number(focused.dataset.listId)
+        : null;
+    const now = Date.now();
+    const rows = shown.map((list) => {
+      const li = el("li");
+      const btn = el("button", "assistant-list-item");
+      btn.type = "button";
+      btn.dataset.listId = String(list.id);
+      const isNew = unseenListIds.has(list.id);
+      if (activeList && activeList.id === list.id) btn.setAttribute("aria-current", "true");
+      btn.setAttribute("aria-label", api.itemLabel(list, now, isNew));
+      const top = el("span", "assistant-list-top");
+      top.appendChild(el("span", "assistant-list-title", list.title));
+      if (isNew) top.appendChild(el("span", "assistant-list-new", "New"));
+      btn.append(top, el("span", "assistant-list-meta", api.itemMeta(list, now)));
+      btn.title = list.title;
+      btn.addEventListener("click", () => void openAssistantList(list.id));
+      li.appendChild(btn);
+      return li;
+    });
+    assistantItemsEl.replaceChildren(...rows);
+    if (focusedId != null) {
+      const again = assistantItemsEl.querySelector(`[data-list-id="${focusedId}"]`);
+      if (again) again.focus();
+    }
+  }
+
+  function renderListHeader() {
+    if (!assistantHeaderEl) return;
+    if (!activeList) {
+      assistantHeaderEl.hidden = true;
+      return;
+    }
+    assistantHeaderEl.hidden = false;
+    assistantNoteEl.textContent = activeList.note || "";
+    assistantNoteEl.hidden = !activeList.note;
+    assistantMetaEl.textContent = assistantApi().headerMeta(activeList, Date.now());
+  }
+
+  /**
+   * The top bar's title for an open list: its name alone. Where it came from
+   * is the pane header's eyebrow, so the bar does not spend a capped crumb on
+   * it - the name is the part that has to survive the one line.
+   */
+  function renderListTitle(list) {
+    closeCrumbMenu();
+    titleEl.replaceChildren(el("span", "topbar-leaf crumb-static crumb-current", list.title));
+    titleEl.title = list.title;
+  }
+
+  /** The "Select a category" landing, for when the open list goes away. */
+  function showNothingSelected() {
+    requestSeq += 1; // drop any fetch still in flight for the view being left
+    teardownObserver();
+    currentViewBookmarks = [];
+    ensureViewHost();
+    paintViewCards();
+    renderEmptyTitle();
+    renderSelectPrompt();
+  }
+
+  /** Close the list view's own state (the caller decides what shows next). */
+  function leaveAssistantList() {
+    if (!activeList) return false;
+    activeList = null;
+    if (window.XBOAssistantLists) assistantApi().writeOpenList(window.localStorage, null);
+    renderListHeader();
+    renderAssistantLists();
+    return true;
+  }
+
+  /**
+   * Open a list: its posts become the view, as pooled cards (a post already on
+   * screen elsewhere keeps its mounted embed). `refresh` re-reads the list in
+   * place - after a sync, a rank run or a category delete reset the pool.
+   */
+  async function openAssistantList(id, opts) {
+    const options = opts || {};
+    const list = assistantLists.find((l) => l.id === id);
+    if (!list) return;
+    const switching = !activeList || activeList.id !== id;
+    if (selectedCategoryId != null) saveCurrentViewToCache();
+    if (selectedButton) {
+      selectedButton.removeAttribute("aria-current");
+      selectedButton = null;
+    }
+    selectedCategoryId = null;
+    activeList = list;
+    unseenListIds.delete(id);
+    assistantApi().writeOpenList(window.localStorage, id);
+    renderAssistantLists();
+    renderListTitle(list);
+    renderListHeader();
+    updateToolbarVisibility(); // no tabs, no sort: the list is its own order
+    if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
+
+    const seq = ++requestSeq;
+    teardownObserver();
+    pageLoading = false;
+    viewReady = false;
+    pageOffset = 0;
+    pageHasMore = false;
+    if (switching || !options.refresh) {
+      currentViewBookmarks = [];
+      ensureViewHost();
+      paintViewCards();
+      stateMessage(listEl, "loading", "Loading posts…");
+      if (switching) contentEl.scrollTop = 0;
+    }
+
+    let data;
+    try {
+      data = await getJSON(`/api/assistant-lists/${id}`);
+    } catch (err) {
+      if (seq !== requestSeq) return;
+      if (err.status === 404) {
+        assistantLists = assistantLists.filter((l) => l.id !== id);
+        leaveAssistantList();
+        showNothingSelected();
+        showToast("That list was deleted.");
+        return;
+      }
+      currentViewBookmarks = [];
+      ensureViewHost();
+      paintViewCards();
+      stateMessage(listEl, "error", "Could not load the posts in this list.");
+      return;
+    }
+    if (seq !== requestSeq || !activeList || activeList.id !== id) return;
+
+    activeList = data.list;
+    assistantLists = assistantApi().upsert(assistantLists, data.list);
+    renderAssistantLists();
+    renderListTitle(activeList);
+    renderListHeader();
+
+    const bookmarks = Array.isArray(data.bookmarks) ? data.bookmarks : [];
+    // A throwaway object: the card handlers adjust these, and they must never
+    // write into some category's cached counts.
+    categoryCounts = {
+      total: bookmarks.length,
+      unread: bookmarks.filter((b) => !b.read).length,
+      favorite: bookmarks.filter((b) => b.favorite).length,
+    };
+    currentViewBookmarks = [];
+    ensureViewHost();
+    viewReady = true;
+    pageOffset = bookmarks.length;
+    if (bookmarks.length === 0) {
+      paintViewCards();
+      stateMessage(listEl, "empty", assistantApi().EMPTY_LIST_MESSAGE);
+      return;
+    }
+    appendToView(bookmarks);
+    updateTail();
+  }
+
+  /** Re-read the open list in place, keeping the owner where they are. */
+  async function refreshOpenList() {
+    if (activeList) await openAssistantList(activeList.id, { refresh: true });
+  }
+
+  /**
+   * Delete lists with the same safe-delete idiom as a post: they leave the
+   * section at once and a toast offers Undo; the DELETE only goes out once
+   * the window has passed. Only these ids are sent, so a list that arrives
+   * during the window is never swept up with them.
+   */
+  function deleteAssistantLists(lists) {
+    if (lists.length === 0) return;
+    const ids = lists.map((l) => l.id);
+    const openId = activeList && ids.includes(activeList.id) ? activeList.id : null;
+    const hadFocus = document.activeElement;
+    for (const id of ids) pendingListDeletes.add(id);
+    if (openId != null) {
+      leaveAssistantList();
+      showNothingSelected();
+    }
+    renderAssistantLists();
+    // The control that was pressed may be gone (the header, or the whole
+    // section): hand the keyboard to the nearest thing still on screen.
+    if (!hadFocus || !hadFocus.isConnected || hadFocus.closest("[hidden]")) {
+      const next =
+        (!assistantSectionEl.hidden && assistantToggleBtn) || titleEl.querySelector("button") || toggleBtn;
+      if (next) next.focus();
+    }
+
+    let undone = false;
+    const message =
+      lists.length === 1 ? `Deleted the list “${lists[0].title}”.` : `Deleted ${lists.length} lists.`;
+    const toast = showToast(message, {
+      duration: 0,
+      actions: [
+        {
+          label: "Undo",
+          onClick: () => {
+            undone = true;
+            clearTimeout(timer);
+            for (const id of ids) pendingListDeletes.delete(id);
+            renderAssistantLists();
+            // Back to the list only if the owner has not gone somewhere else since.
+            if (openId != null && !activeList && selectedCategoryId == null) void openAssistantList(openId);
+          },
+        },
+      ],
+    });
+
+    const timer = setTimeout(async () => {
+      if (undone) return;
+      toast.remove();
+      try {
+        const res = await fetch("/api/assistant-lists", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids }),
+        });
+        if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        assistantLists = assistantLists.filter((l) => !ids.includes(l.id));
+      } catch (_err) {
+        showToast(lists.length === 1 ? "Couldn't delete that list. Please try again." : "Couldn't delete those lists. Please try again.");
+      } finally {
+        for (const id of ids) pendingListDeletes.delete(id);
+        renderAssistantLists();
+      }
+    }, UNDO_WINDOW_MS);
+  }
+
+  /** A list the stream just announced: into the section, and a toast to open it. */
+  function receiveAssistantList(list) {
+    if (!list || !Number.isInteger(list.id) || typeof list.title !== "string") return;
+    const known = assistantLists.some((l) => l.id === list.id);
+    assistantLists = assistantApi().upsert(assistantLists, list);
+    if (known) {
+      renderAssistantLists();
+      return;
+    }
+    unseenListIds.add(list.id);
+    renderAssistantLists();
+    showToast(assistantApi().arrivalMessage(list), {
+      duration: assistantApi().ARRIVAL_TOAST_MS,
+      actions: [{ label: "Open", onClick: () => void openAssistantList(list.id) }],
+    });
+  }
+
+  /**
+   * The live half: one same-origin `EventSource`. It reconnects by itself
+   * (a restarted server, a sleeping laptop), and every reconnect re-reads the
+   * index so a list sent while the stream was down still shows up.
+   */
+  function initAssistantListStream() {
+    if (typeof window.EventSource !== "function") return;
+    let dropped = false;
+    const source = new window.EventSource("/api/assistant-lists/events");
+    source.addEventListener("open", () => {
+      if (dropped) void loadAssistantLists();
+      dropped = false;
+    });
+    source.addEventListener("error", () => {
+      dropped = true;
+    });
+    source.addEventListener("created", (e) => {
+      let list;
+      try {
+        list = JSON.parse(e.data);
+      } catch (_) {
+        return;
+      }
+      receiveAssistantList(list);
+    });
+    source.addEventListener("changed", () => void loadAssistantLists());
+  }
+
+  function initAssistantLists() {
+    if (!assistantSectionEl || !window.XBOAssistantLists) return;
+    assistantToggleBtn.addEventListener("click", () => {
+      const collapsed = !assistantApi().readCollapsed(window.localStorage);
+      assistantApi().writeCollapsed(window.localStorage, collapsed);
+      renderAssistantLists();
+    });
+    assistantClearBtn.addEventListener("click", () => {
+      deleteAssistantLists(assistantApi().visible(assistantLists, pendingListDeletes));
+    });
+    assistantDeleteBtn.addEventListener("click", () => {
+      if (activeList) deleteAssistantLists([activeList]);
+    });
+    // "5 min ago" should not still say so an hour later.
+    window.setInterval(() => {
+      if (!assistantSectionEl.hidden) renderAssistantLists();
+      if (activeList) renderListHeader();
+    }, 60_000);
+    void loadAssistantLists();
+    initAssistantListStream();
+  }
+
   // ---- init --------------------------------------------------------------
   initSidebar();
   initSidebarResizer();
@@ -9273,6 +9690,7 @@
   initCategoryEditor();
   initRubricEditor();
   initRankRulesPicker();
+  initAssistantLists();
   // Eager, not on first popover open: the picker needs the full preset list
   // before the owner can pick anything, and the ranking panel can be opened
   // before the editor ever is.

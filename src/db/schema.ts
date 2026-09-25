@@ -78,6 +78,13 @@
  *   "scored zero" - which is why the viewer sorts unscored bookmarks last
  *   instead of first - and must scope its read to the ACTIVE preset's version
  *   rather than to any row that happens to exist.
+ * - `assistant_lists` + `assistant_list_items` are the result lists an AI
+ *   assistant sends through the MCP tool `show_in_app` (`src/mcp/tools.ts`):
+ *   a named, ordered set of bookmarks for the owner to look at in the viewer.
+ *   A list is only a VIEW - it never files, moves or deletes anything. Items
+ *   reference `bookmarks(id)` with `ON DELETE CASCADE`, so deleting a post
+ *   takes it out of every list; a list itself is kept until the owner deletes
+ *   it (no auto-pruning). `position` is the order the assistant gave.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -198,6 +205,22 @@ CREATE TABLE IF NOT EXISTS bookmark_scores (
 -- index because every such query is scoped to ONE rubric (the active preset).
 CREATE INDEX IF NOT EXISTS idx_bookmark_scores_version_score
   ON bookmark_scores(rubric_version, score);
+
+CREATE TABLE IF NOT EXISTS assistant_lists (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  title      TEXT NOT NULL,
+  note       TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS assistant_list_items (
+  list_id     INTEGER NOT NULL REFERENCES assistant_lists(id) ON DELETE CASCADE,
+  bookmark_id INTEGER NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,
+  position    INTEGER NOT NULL,
+  PRIMARY KEY (list_id, bookmark_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_list_items_bookmark ON assistant_list_items(bookmark_id);
 `;
 
 /**

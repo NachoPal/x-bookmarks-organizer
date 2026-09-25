@@ -330,10 +330,11 @@ node dist/index.js rank --dry-run
 
 ## Ask an AI assistant about your bookmarks (MCP)
 
-The app can serve a read-only [MCP](https://modelcontextprotocol.io) endpoint, so the AI tool you
+The app can serve an [MCP](https://modelcontextprotocol.io) endpoint, so the AI tool you
 already use - Claude Code, Codex, or any client that speaks MCP over HTTP - can search and read your
 bookmarks from its own chat: "is there a post in my bookmarks about prompt caching?" answered with
-links, without going through the categories.
+links, without going through the categories. It can also put what it found in front of you in the
+app ("show me my bookmarks about eval harnesses") - see `show_in_app` below.
 
 It is part of the running viewer, at `http://127.0.0.1:<port>/mcp` (port 5173 unless you set
 `XBOOKMARKS_WEB_PORT`), so **the tools only appear while the app is running**. It is **off by
@@ -366,7 +367,8 @@ default**. To turn it on:
    Keep the token in a user-level config: a project-scoped file (Claude Code's `--scope project`,
    a repository's `.mcp.json`) is usually committed.
 
-The tools are **read-only** - nothing an assistant does can change your library:
+The tools are **read-only**, with exactly one write, `show_in_app`, which only creates a result list
+to look at - nothing an assistant does can file, move, re-categorize or delete anything:
 
 | Tool | What it answers |
 | --- | --- |
@@ -375,6 +377,16 @@ The tools are **read-only** - nothing an assistant does can change your library:
 | `list_categories` | The category tree with descriptions and counts. |
 | `list_category_bookmarks` | A category's bookmarks, paged. |
 | `library_stats` | Counts and when the library last synced. |
+| `show_in_app` | The one write: opens posts in the app as a named list. Takes `postIds` (ids or post URLs, up to 100, in the order to show them), a `title` (up to 80 characters) and an optional `note` (up to 500). Posts not in the library are reported and left out; a call where none is found creates nothing. |
+
+**Lists from your assistant.** A `show_in_app` list appears in the running app at once: a toast
+("Your assistant sent 12 posts: Eval harnesses") with **Open**, and a row in the sidebar's **From
+your assistant** section (newest first, collapsible). Your current view is never switched for you.
+Opening a list shows its posts as ordinary cards - read, favorite, summary and move all work - under
+the assistant's note, with **Delete list** (and **Clear all** in the section; both offer Undo).
+Deleting a list never deletes a post; deleting a post removes it from every list. Lists stay until
+you delete them (the app holds up to 200; past that the tool asks you to make room), and a library
+reset clears them with the bookmarks. If the app was closed, the list is there on the next load.
 
 Every answer carries the post's URL so the chat can link it. Post, article and summary text is
 someone else's writing, and the tools tell the assistant to treat it as data, never as

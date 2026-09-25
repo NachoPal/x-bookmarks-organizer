@@ -58,6 +58,7 @@ import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 import type { PaidPass, RoleSpend } from './paid-spend';
 import { SummaryFailureBackoff } from './summary-backoff';
 import { installMcpEndpoint, MCP_PATH } from '../mcp/http';
+import { AssistantListEvents, installAssistantListRoutes } from './assistant-lists';
 
 /** Directory holding the built static viewer assets (relative to this file). */
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -1637,8 +1638,18 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     };
   });
 
-  // The read-only MCP endpoint for AI assistants, and its Settings routes.
-  installMcpEndpoint(app, db);
+  // Result lists an assistant sent with `show_in_app`, and the live stream that
+  // surfaces a new one in the open app right away.
+  const assistantListEvents = new AssistantListEvents();
+  installAssistantListRoutes(app, db, assistantListEvents, (bookmarks) => {
+    const rubricVersion = activeRubricVersion();
+    return toViewerBookmarks(db, bookmarks, db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id)), rubricVersion);
+  });
+
+  // The MCP endpoint for AI assistants (reads, plus `show_in_app`), and its Settings routes.
+  installMcpEndpoint(app, db, {
+    onListCreated: (list) => assistantListEvents.publish({ type: 'created', list }),
+  });
 
   return app;
 }

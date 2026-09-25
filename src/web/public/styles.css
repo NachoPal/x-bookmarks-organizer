@@ -479,6 +479,14 @@ body {
   outline: 2px solid var(--color-focus);
   outline-offset: 1px;
 }
+/* A title segment that is not a place to go (an assistant list's name): the
+   crumb's text metrics with none of the button's affordances. */
+.crumb-static {
+  padding: var(--space-1) var(--space-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* The open category: the full-strength text the bar already showed. */
 .crumb-current {
   color: var(--color-text);
@@ -1638,6 +1646,202 @@ body[data-resizing="sidebar"] {
     min-width: 0;
     padding: 0 var(--space-1);
   }
+}
+
+/* ============================================================
+   "From your assistant" - result lists sent over MCP (`show_in_app`)
+   A short section above the category tree, hidden until a list exists.
+   Rows share the tree's row idiom (padding, radius, hover overlay, the
+   accent-soft current state) so the sidebar reads as one surface; each row
+   carries two lines because a list's name is sentence-length prose, not a
+   category label.
+   ============================================================ */
+.assistant-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.assistant-lists-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.assistant-lists-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-small);
+  font-weight: 700;
+}
+.assistant-lists-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 2.25rem;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.assistant-lists-toggle:hover {
+  background: var(--tree-hover-overlay);
+  color: var(--color-text);
+}
+.assistant-lists-toggle:active {
+  background: var(--tree-active-overlay);
+}
+.assistant-lists-toggle .chev {
+  width: 1rem;
+  text-align: center;
+  font-size: 0.7rem;
+}
+.assistant-lists-toggle[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+/* Wraps rather than ellipsizing: at the narrowest sidebar the heading is
+   still the whole phrase. */
+.assistant-lists-heading-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.assistant-lists-toggle .count-total {
+  font-weight: 600;
+}
+/* A quiet text action: the section's secondary control, never its focus.
+   Doubled with `.btn` because the button base (declared further down) resets
+   `font` and the ghost variant's height. */
+.btn.assistant-lists-clear {
+  flex: 0 0 auto;
+  min-height: 2.25rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+.btn.assistant-lists-clear:hover {
+  color: var(--color-text);
+}
+.assistant-lists-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.assistant-list-item {
+  width: 100%;
+  min-height: 2.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.assistant-list-item:hover {
+  box-shadow: inset 0 0 0 999px var(--tree-hover-overlay);
+}
+.assistant-list-item:active {
+  box-shadow: inset 0 0 0 999px var(--tree-active-overlay);
+}
+.assistant-list-item[aria-current="true"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  box-shadow: none;
+}
+.assistant-list-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.assistant-list-title {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* "New" is a word, not just a dot: it must not rely on color alone. */
+.assistant-list-new {
+  flex: 0 0 auto;
+  padding: 0 var(--space-2);
+  border-radius: 999px;
+  background: var(--color-unread);
+  color: var(--color-accent-contrast);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.4rem;
+}
+.assistant-list-meta {
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+}
+.assistant-list-item[aria-current="true"] .assistant-list-meta {
+  color: var(--color-accent);
+}
+
+/* The open list's header in the content pane: its note, what it holds, and
+   Delete. As wide as the cards below it (their width is scaled by the post
+   size), so the column keeps one left edge. */
+.assistant-list-header {
+  width: 100%;
+  max-width: calc(var(--post-card-measure) * var(--post-scale));
+  margin: 0 auto var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.assistant-list-eyebrow {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-accent);
+  font-size: var(--text-small);
+  font-weight: 700;
+}
+.assistant-list-eyebrow .icon-glyph {
+  width: 1rem;
+  height: 1rem;
+}
+/* The assistant's own words, kept as the plain text they are - line breaks
+   included - in a readable measure. */
+.assistant-list-note {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--color-text);
+  line-height: var(--leading-body);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.assistant-list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+.assistant-list-meta {
+  margin: 0;
+}
+.assistant-list-delete {
+  flex: 0 0 auto;
 }
 
 /* ============================================================
