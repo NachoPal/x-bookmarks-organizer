@@ -8,7 +8,14 @@ import { Database } from '../db/database';
 import { writeSettings } from '../settings/settings';
 import { MCP_ACCESS_KEY, readMcpAccess, regenerateMcpToken, setMcpEnabled, verifyMcpToken } from './access';
 import { MCP_DISABLED_MESSAGE } from './http';
-import { ARTICLE_TEXT_CHARS, LIST_TEXT_CHARS } from './tools';
+import {
+  ARTICLE_TEXT_CHARS,
+  LIST_TEXT_CHARS,
+  MAX_ASSISTANT_LISTS,
+  SHOW_MAX_POSTS,
+  SHOW_NOTE_MAX_CHARS,
+  SHOW_TITLE_MAX_CHARS,
+} from './tools';
 import type { RawBookmark } from '../types';
 
 const WHEN = '2024-06-01T00:00:00.000Z';
@@ -106,7 +113,7 @@ describe('the MCP endpoint', () => {
     return { isError: result.isError === true, text, json: () => JSON.parse(text) };
   }
 
-  it('lists five read-only tools that warn about untrusted content', async () => {
+  it('lists five read-only tools and one non-destructive write, show_in_app', async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
@@ -115,11 +122,13 @@ describe('the MCP endpoint', () => {
       'list_categories',
       'list_category_bookmarks',
       'search_bookmarks',
+      'show_in_app',
     ]);
     for (const tool of tools) {
-      expect(tool.annotations?.readOnlyHint).toBe(true);
+      expect(tool.annotations?.readOnlyHint).toBe(tool.name !== 'show_in_app');
       expect(tool.annotations?.destructiveHint).toBe(false);
     }
+    expect(tools.find((t) => t.name === 'show_in_app')!.description).toMatch(/only creates that list/);
     for (const name of ['search_bookmarks', 'get_bookmark', 'list_category_bookmarks']) {
       expect(tools.find((t) => t.name === name)!.description).toMatch(/untrusted third-party content/);
     }
@@ -248,6 +257,111 @@ describe('the MCP endpoint', () => {
     for (const secret of [REFRESH_TOKEN, token, db.getState(MCP_ACCESS_KEY)!, 'claude-cli', 'configuredAt', 'tokenHash']) {
       expect(everything).not.toContain(secret);
     }
+  });
+
+  describe('show_in_app', () => {
+    const dumpLibrary = () =>
+      JSON.stringify([
+        db.getAllBookmarks(),
+        db.getAllCategories(),
+        [...db.getCategoryIdsForBookmarks(db.getAllBookmarks().map((b) => b.id))],
+      ]);
+
+    it('creates a named list in the order given, and touches nothing else', async () => {
+      const before = dumpLibrary();
+      const client = await connect();
+      const res = await call(client, 'show_in_app', {
+        postIds: ['3', 'https://x.com/user1/status/1', '1', 'x.com/user4/status/4?s=20'],
+        title: '  Eval \n harnesses ',
+        note: 'Posts about how to\r\nevaluate agents.',
+      });
+      await client.close();
+      expect(res.isError).toBe(false);
+      const answer = res.json();
+      expect(answer).toMatchObject({ title: 'Eval harnesses', shown: 3 });
+      expect(answer.notFound).toBeUndefined();
+      expect(answer.message).toMatch(/3 posts/);
+      const list = db.getAssistantList(answer.listId)!;
+      expect(list).toMatchObject({ title: 'Eval harnesses', note: 'Posts about how to\nevaluate agents.', count: 3 });
+      // Duplicates collapse to the first mention; URLs resolve like get_bookmark's.
+      expect(db.getAssistantListBookmarks(list.id).map((b) => b.postId)).toEqual(['3', '1', '4']);
+      expect(dumpLibrary()).toBe(before);
+    });
+
+    it('reports posts that are not in the library and leaves them out', async () => {
+      const client = await connect();
+      const answer = (await call(client, 'show_in_app', { postIds: ['2', '404', 'not-a-post'], title: 'Mixed' })).json();
+      expect(answer).toMatchObject({ shown: 1, notFound: ['404', 'not-a-post'] });
+      expect(answer.message).toMatch(/Left out 2 not in the library: 404, not-a-post/);
+      await client.close();
+    });
+
+    it('creates nothing when none of the posts is in the library', async () => {
+      const client = await connect();
+      const res = await call(client, 'show_in_app', { postIds: ['404', '405'], title: 'Nothing' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toMatch(/no list was created/);
+      expect(db.getAssistantLists()).toEqual([]);
+      await client.close();
+    });
+
+    it('enforces its caps: post count, title and note length, empty title', async () => {
+      const client = await connect();
+      const tooMany = await call(client, 'show_in_app', {
+        postIds: Array.from({ length: SHOW_MAX_POSTS + 1 }, () => '1'),
+        title: 'Too many',
+      });
+      expect(tooMany.isError).toBe(true);
+      const exactly = await call(client, 'show_in_app', {
+        postIds: Array.from({ length: SHOW_MAX_POSTS }, () => '1'),
+        title: 'At the cap',
+      });
+      expect(exactly.json()).toMatchObject({ shown: 1 });
+      expect((await call(client, 'show_in_app', { postIds: ['1'], title: 'x'.repeat(SHOW_TITLE_MAX_CHARS + 1) })).isError).toBe(true);
+      expect((await call(client, 'show_in_app', { postIds: ['1'], title: '   ' })).isError).toBe(true);
+      expect(
+        (await call(client, 'show_in_app', { postIds: ['1'], title: 'Long note', note: 'n'.repeat(SHOW_NOTE_MAX_CHARS + 1) }))
+          .isError,
+      ).toBe(true);
+      expect((await call(client, 'show_in_app', { postIds: [], title: 'Empty' })).isError).toBe(true);
+      expect(db.getAssistantLists().map((l) => l.title)).toEqual(['At the cap']);
+      await client.close();
+    });
+
+    it('refuses a new list once the app holds the maximum, and says how to make room', async () => {
+      const id = db.getBookmarkByPostId('1')!.id;
+      for (let i = 0; i < MAX_ASSISTANT_LISTS; i += 1) db.createAssistantList({ title: `L${i}`, note: null, bookmarkIds: [id] });
+      const client = await connect();
+      const res = await call(client, 'show_in_app', { postIds: ['1'], title: 'One more' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toMatch(/delete some/);
+      expect(db.countAssistantLists()).toBe(MAX_ASSISTANT_LISTS);
+      await client.close();
+    });
+
+    it('is guarded by the token: a call without it or with a wrong one writes nothing', async () => {
+      const showCall = (headers: Record<string, string>) =>
+        fetch(`${base}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'show_in_app', arguments: { postIds: ['1'], title: 'Sneaky' } },
+          }),
+        });
+      expect((await showCall({})).status).toBe(401);
+      expect((await showCall({ authorization: `Bearer ${token}x` })).status).toBe(401);
+      setMcpEnabled(db, false);
+      expect((await showCall({ authorization: `Bearer ${token}` })).status).toBe(404);
+      expect(db.getAssistantLists()).toEqual([]);
+      // The same raw call with the live token does write - so the refusals above are the guard, not a broken request.
+      setMcpEnabled(db, true);
+      const ok = await showCall({ authorization: `Bearer ${token}` });
+      expect(ok.status).toBe(200);
+      expect(db.getAssistantLists().map((l) => l.title)).toEqual(['Sneaky']);
+    });
   });
 
   describe('authentication', () => {

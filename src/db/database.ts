@@ -152,6 +152,19 @@ export interface BookmarkSearchResult {
   hits: BookmarkSearchHit[];
 }
 
+/**
+ * A result list an AI assistant sent through the MCP tool `show_in_app`: a
+ * named view of bookmarks, never a filing. `count` is how many of its posts
+ * still exist (deleting a post takes it out of every list).
+ */
+export interface AssistantList {
+  id: number;
+  title: string;
+  note: string | null;
+  createdAt: string;
+  count: number;
+}
+
 /** Library-wide counts for the MCP server's `library_stats`. */
 export interface LibraryStats {
   bookmarks: number;
@@ -1453,6 +1466,8 @@ export class Database {
         'article_link_metadata',
         'x_articles',
         'quoted_posts',
+        // Every item already went with its bookmark; an emptied list is noise.
+        'assistant_lists',
       ]) {
         this.db.prepare(`DELETE FROM ${table}`).run();
       }
@@ -1462,6 +1477,82 @@ export class Database {
         )
         .run(...RESET_CLEARED_STATE_KEYS);
     })();
+  }
+
+  // --- Assistant result lists (MCP `show_in_app`) -------------------------
+
+  /**
+   * Store a result list: `bookmarkIds` in the order given (callers dedupe and
+   * validate them). One transaction, so a list never exists half-written.
+   */
+  createAssistantList(
+    list: { title: string; note: string | null; bookmarkIds: number[] },
+    when: string = new Date().toISOString(),
+  ): AssistantList {
+    const id = this.db.transaction(() => {
+      const listId = Number(
+        this.db
+          .prepare('INSERT INTO assistant_lists (title, note, created_at) VALUES (?, ?, ?)')
+          .run(list.title, list.note, when).lastInsertRowid,
+      );
+      const insert = this.db.prepare(
+        'INSERT OR IGNORE INTO assistant_list_items (list_id, bookmark_id, position) VALUES (?, ?, ?)',
+      );
+      list.bookmarkIds.forEach((bookmarkId, position) => insert.run(listId, bookmarkId, position));
+      return listId;
+    })();
+    return this.getAssistantList(id)!;
+  }
+
+  /** Every list, newest first, each with how many of its posts still exist. */
+  getAssistantLists(): AssistantList[] {
+    const rows = this.db
+      .prepare(
+        `SELECT l.id, l.title, l.note, l.created_at,
+                (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count
+         FROM assistant_lists l
+         ORDER BY l.created_at DESC, l.id DESC`,
+      )
+      .all() as { id: number; title: string; note: string | null; created_at: string; count: number }[];
+    return rows.map((r) => ({ id: r.id, title: r.title, note: r.note, createdAt: r.created_at, count: r.count }));
+  }
+
+  getAssistantList(id: number): AssistantList | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT l.id, l.title, l.note, l.created_at,
+                (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count
+         FROM assistant_lists l WHERE l.id = ?`,
+      )
+      .get(id) as { id: number; title: string; note: string | null; created_at: string; count: number } | undefined;
+    return row ? { id: row.id, title: row.title, note: row.note, createdAt: row.created_at, count: row.count } : undefined;
+  }
+
+  countAssistantLists(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM assistant_lists').get() as { n: number }).n;
+  }
+
+  /** A list's bookmarks in the order the assistant gave them. */
+  getAssistantListBookmarks(id: number): StoredBookmark[] {
+    const rows = this.db
+      .prepare(
+        `SELECT b.* FROM assistant_list_items i
+         JOIN bookmarks b ON b.id = i.bookmark_id
+         WHERE i.list_id = ?
+         ORDER BY i.position, b.id`,
+      )
+      .all(id) as BookmarkRow[];
+    return rows.map(toStoredBookmark);
+  }
+
+  /** Delete one list (never its posts). False when the id is unknown. */
+  deleteAssistantList(id: number): boolean {
+    return this.db.prepare('DELETE FROM assistant_lists WHERE id = ?').run(id).changes > 0;
+  }
+
+  /** Delete every list (never a post); returns how many went. */
+  clearAssistantLists(): number {
+    return this.db.prepare('DELETE FROM assistant_lists').run().changes;
   }
 
   // --- Run state ---------------------------------------------------------

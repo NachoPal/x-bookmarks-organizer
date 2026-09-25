@@ -61,8 +61,34 @@
 
     <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 
-    <nav id="sidebar" class="sidebar" aria-label="Category tree">
+    <nav id="sidebar" class="sidebar" aria-label="Lists and categories">
       <div class="sidebar-inner">
+        <!-- Result lists an AI assistant sent with the MCP tool `show_in_app`.
+             Hidden until there is one; newest first; collapsible. A list is a
+             view of posts, never a filing, so it lives beside the tree rather
+             than in it. Titles are the assistant's words: app.js sets them as
+             text only. -->
+        <section id="assistant-lists" class="assistant-lists" aria-labelledby="assistant-lists-heading" hidden>
+          <div class="assistant-lists-head">
+            <h2 id="assistant-lists-heading" class="assistant-lists-heading">
+              <button
+                id="assistant-lists-toggle"
+                class="assistant-lists-toggle"
+                type="button"
+                aria-expanded="true"
+                aria-controls="assistant-lists-body"
+              >
+                <span class="chev" aria-hidden="true">▶</span>
+                <span class="assistant-lists-heading-label">From your assistant</span>
+                <span id="assistant-lists-count" class="count-total"></span>
+              </button>
+            </h2>
+            <button id="assistant-lists-clear" class="btn btn-ghost assistant-lists-clear" type="button">
+              Clear all
+            </button>
+          </div>
+          <ul id="assistant-lists-body" class="assistant-lists-items"></ul>
+        </section>
         <div class="sidebar-topbar">
           <h2 class="sidebar-heading">Categories</h2>
           <!-- Opens the category editor (issue #101). Sits to the LEFT of the
@@ -704,6 +730,30 @@
               </div>
               <p id="sort-note" class="sort-note" hidden></p>
             </div>
+            <!-- The open assistant list's header: its note, what it holds,
+                 and the one action on it. The title itself is in the top bar,
+                 where a category's is. -->
+            <header id="assistant-list-header" class="assistant-list-header" hidden>
+              <p class="assistant-list-eyebrow">
+                <svg class="icon-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path
+                    d="M12 3l1.8 4.6L18.5 9.5l-4.7 1.9L12 16l-1.8-4.6L5.5 9.5l4.7-1.9z"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+                From your assistant
+              </p>
+              <p id="assistant-list-note" class="assistant-list-note" hidden></p>
+              <div class="assistant-list-row">
+                <p id="assistant-list-meta" class="assistant-list-meta"></p>
+                <button id="assistant-list-delete" class="btn btn-secondary assistant-list-delete" type="button">
+                  Delete list
+                </button>
+              </div>
+            </header>
             <div
               id="bookmark-list"
               class="bookmark-list"
@@ -1277,6 +1327,7 @@
     <script src="move-undo.js" defer></script>
     <script src="filter-cache.js" defer></script>
     <script src="view-persist.js" defer></script>
+    <script src="assistant-lists.js" defer></script>
     <script src="sort-order.js" defer></script>
     <script src="ranking.js" defer></script>
     <script src="paid-spend.js" defer></script>

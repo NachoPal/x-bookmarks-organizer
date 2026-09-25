@@ -1532,23 +1532,40 @@ see the credential-chain constraint above.
 
 ## MCP endpoint for AI assistants (`src/mcp/`)
 
-Phase 1 (read-only) of "ask your bookmarks from the AI harness you already use" - the app has no
-chat model of its own. The endpoint is part of the viewer, `POST /mcp` (Streamable HTTP, official
+"Ask your bookmarks from the AI harness you already use" - the app has no chat model of its own. The endpoint is part of the viewer, `POST /mcp` (Streamable HTTP, official
 `@modelcontextprotocol/sdk`, pinned EXACTLY), so it exists only while `serve` runs. **Stateless**: a
 fresh `McpServer` + transport per request (`installMcpEndpoint` in `http.ts`); GET/DELETE answer 405.
 Refusal order: the viewer's Host/Origin/`Sec-Fetch-Site` guard (`installLocalOriginGuard` now covers
 `/mcp` like `/api/`), then 404 while turned off (the default), then 401 without the bearer token.
+The gate (`refused` in `http.ts`) returns a plain boolean: a Fastify `reply` is a THENABLE, so an
+async gate that returned it and was awaited resolved to `undefined` and the handler ran the tool
+after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass for a write).
 
 - **Token** (`access.ts`, `run_state` `mcp_access`): only a SHA-256 hash is stored, compared with
   `timingSafeEqual`; the plaintext exists in exactly two responses (first `PUT /api/mcp {enabled:true}`
   and `POST /api/mcp/token`) and in the page's memory until reload. Regenerate revokes; off/on keeps
   the token. Settings UI: the "AI assistants (MCP)" group in the gear panel, words and snippets in the
   pure `mcp-settings.js` (`XBOMcpSettings`), snippet URL from the port the server actually bound.
-- **Read-only contract** (`tools.ts`): every tool is a `(db, args)` read returning compact JSON with
-  bounded pages and `truncated` flags. No tool may write, and none may read `run_state` beyond
-  `getLastSyncedAt` - settings, the X refresh token, keys and the MCP token must stay unreachable
-  (`mcp.test.ts` asserts it and snapshots the DB around every tool). Descriptions mark post/article/
-  summary text as untrusted. A phase-2 write tool (`show_in_app`) is a deliberate, separate decision.
+- **Read-only contract with exactly ONE write** (`tools.ts`): every tool is a `(db, args)` read
+  returning compact JSON with bounded pages and `truncated` flags, except `show_in_app`, whose only
+  write is creating an assistant result list (`assistant_lists` + `assistant_list_items`, see
+  below) - never a filing, move, re-categorize or delete. No other tool may write, and none may read
+  `run_state` beyond `getLastSyncedAt` - settings, the X refresh token, keys and the MCP token must
+  stay unreachable (`mcp.test.ts` asserts it and snapshots the DB around every read tool).
+  Descriptions mark post/article/summary text as untrusted. Any further write tool is a deliberate,
+  separate decision.
+- **Assistant result lists** (`show_in_app`): validated against the library (unknown ids reported,
+  none found = nothing created), capped (`SHOW_MAX_POSTS`, title/note length, `MAX_ASSISTANT_LISTS`
+  - lists are never auto-pruned, the tool refuses instead). Items cascade from `bookmarks`, so a
+  deleted post leaves every list; `resetLibrary` clears the lists. Viewer side:
+  `src/web/assistant-lists.ts` (routes + an in-process `AssistantListEvents` fan-out to a
+  same-origin SSE stream, `GET /api/assistant-lists/events`, which `createMcpServer`'s
+  `onListCreated` publishes to); the client re-reads the index on every stream (re)connect. In
+  `app.js` an open list is `activeList` with `selectedCategoryId = null`: no tabs/sort/paging, the
+  card handlers read `activeList` so nothing drops out, `categoryCounts` is a throwaway object, and
+  every flow that resets the pool (sync, rank, category delete) calls `refreshOpenList`. A new such
+  flow must too. Titles/notes are an assistant's words: `textContent` only
+  (`assistant-lists-view.test.ts` pins it). Pure half: `assistant-lists.js` (`XBOAssistantLists`).
 - **Search** (`src/db/search.ts`): FTS5 table `bookmark_fts`, one row per bookmark, kept current by
   TRIGGERS on the six source tables (every trigger re-derives the affected documents from ONE SQL
   definition), so a new write path needs no index code. SQL cannot strip HTML, so
