@@ -341,15 +341,18 @@ It is part of the running viewer, at `http://127.0.0.1:<port>/mcp` (port 5173 un
 default**. To turn it on:
 
 1. Open **Settings** (the gear) > **AI assistants (MCP)** and switch on **Allow AI assistants**.
-2. **Copy the token now.** It is shown once; the app stores only a hash of it. Lost it? Press
-   **Regenerate token** - the old one stops working at once. Switching the endpoint off and on again
-   keeps the current token.
-3. Pick your tool under **Connect from** and copy the setup, which already carries the real URL:
+2. **Copy the token now.** It is shown once, and gone as soon as you press **Done**, close Settings or
+   reload; the app stores only a hash of it. Afterwards Settings shows just a masked hint
+   (`xbo_mcp_ab12…9f3c`) and the date it was created, so you can tell which token is live. Lost it?
+   Press **Regenerate token** - the old one stops working at once. Switching the endpoint off and on
+   again keeps the current token.
+3. Pick your tool under **Connect from** and copy the setup, which carries the real URL and a
+   `<YOUR_TOKEN>` placeholder (never the token itself) - replace it with the token you copied:
 
    ```bash
    # Claude Code (--scope user: every project; leave it out for the current project only)
    claude mcp add --transport http --scope user xbookmarks http://127.0.0.1:5173/mcp \
-     --header "Authorization: Bearer <your-token>"
+     --header "Authorization: Bearer <YOUR_TOKEN>"
    ```
 
    ```toml
@@ -361,7 +364,7 @@ default**. To turn it on:
 
    ```json
    { "mcpServers": { "xbookmarks": { "type": "http", "url": "http://127.0.0.1:5173/mcp",
-       "headers": { "Authorization": "Bearer <your-token>" } } } }
+       "headers": { "Authorization": "Bearer <YOUR_TOKEN>" } } } }
    ```
 
    Keep the token in a user-level config: a project-scoped file (Claude Code's `--scope project`,

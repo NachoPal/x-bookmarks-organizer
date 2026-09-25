@@ -1543,7 +1543,11 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
 
 - **Token** (`access.ts`, `run_state` `mcp_access`): only a SHA-256 hash is stored, compared with
   `timingSafeEqual`; the plaintext exists in exactly two responses (first `PUT /api/mcp {enabled:true}`
-  and `POST /api/mcp/token`) and in the page's memory until reload. Regenerate revokes; off/on keeps
+  and `POST /api/mcp/token`). The page shows it ONCE (issue #141): "Done", closing Settings
+  (`forgetMcpToken` in `setPopoverOpen`) or any later response drops it, and it is never put in
+  storage. Afterwards only `tokenHint` (`maskMcpToken`, derived and stored at generation; a
+  pre-mask row's bare last-4 is shown in the same shape) and the date identify it. Connect-from
+  snippets NEVER carry the token - always `<YOUR_TOKEN>`. Regenerate revokes; off/on keeps
   the token. Settings UI: the "AI assistants (MCP)" group in the gear panel, words and snippets in the
   pure `mcp-settings.js` (`XBOMcpSettings`), snippet URL from the port the server actually bound.
 - **Read-only contract with exactly ONE write** (`tools.ts`): every tool is a `(db, args)` read

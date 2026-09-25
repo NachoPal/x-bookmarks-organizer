@@ -6,7 +6,14 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { buildServer, CROSS_ORIGIN_MESSAGE, UNEXPECTED_HOST_MESSAGE } from '../web/server';
 import { Database } from '../db/database';
 import { writeSettings } from '../settings/settings';
-import { MCP_ACCESS_KEY, readMcpAccess, regenerateMcpToken, setMcpEnabled, verifyMcpToken } from './access';
+import {
+  MCP_ACCESS_KEY,
+  maskMcpToken,
+  readMcpAccess,
+  regenerateMcpToken,
+  setMcpEnabled,
+  verifyMcpToken,
+} from './access';
 import { MCP_DISABLED_MESSAGE } from './http';
 import {
   ARTICLE_TEXT_CHARS,
@@ -481,7 +488,8 @@ describe('the Settings routes for the MCP endpoint', () => {
     expect(on.enabled).toBe(true);
     expect(on.token).toMatch(/^xbo_mcp_/);
     expect(verifyMcpToken(db, on.token)).toBe(true);
-    expect(on.tokenHint).toBe(on.token.slice(-4));
+    expect(on.tokenHint).toBe(maskMcpToken(on.token));
+    expect(on.tokenCreatedAt).toEqual(expect.any(String));
 
     const read = (await app.inject({ method: 'GET', url: '/api/mcp' })).json();
     expect(read.token).toBeUndefined();
@@ -505,6 +513,61 @@ describe('the Settings routes for the MCP endpoint', () => {
     expect(second).not.toBe(first);
     expect(verifyMcpToken(db, first)).toBe(false);
     expect(verifyMcpToken(db, second)).toBe(true);
+  });
+
+  it('never returns the token from any /api GET after the response that generated it (issue #141)', async () => {
+    const on = (await app.inject({ method: 'PUT', url: '/api/mcp', payload: { enabled: true } })).json();
+    const regenerated = (await app.inject({ method: 'POST', url: '/api/mcp/token' })).json();
+    const toggled = (await app.inject({ method: 'PUT', url: '/api/mcp', payload: { enabled: true } })).json();
+    expect(toggled.token).toBeUndefined();
+    // Every parameter-less GET the viewer serves (the SSE stream aside): each
+    // answers something, and none of it is either token, whole or as its random part.
+    const routes = [
+      '/api/mcp',
+      '/api/setup',
+      '/api/tree',
+      '/api/content',
+      '/api/rubric',
+      '/api/sync',
+      '/api/sync-status',
+      '/api/rank',
+      '/api/summary-status',
+      '/api/find-bookmarks',
+      '/api/models',
+      '/api/assistant-lists',
+    ];
+    for (const url of routes) {
+      const res = await app.inject({ method: 'GET', url });
+      for (const token of [on.token as string, regenerated.token as string]) {
+        expect(res.body, url).not.toContain(token);
+        expect(res.body, url).not.toContain(token.slice('xbo_mcp_'.length));
+      }
+    }
+    // What IS there identifies the live token without revealing it.
+    const read = (await app.inject({ method: 'GET', url: '/api/mcp' })).json();
+    expect(read).toMatchObject({ hasToken: true, tokenHint: maskMcpToken(regenerated.token) });
+    // The stored row holds only the hash and the hint.
+    const stored = db.getState(MCP_ACCESS_KEY)!;
+    for (const token of [on.token as string, regenerated.token as string]) expect(stored).not.toContain(token.slice(8));
+  });
+
+  it('masks a token as its prefix, the first and last four of its random part, and an ellipsis', () => {
+    expect(maskMcpToken('xbo_mcp_ab12cdefghijklmnop9f3c')).toBe('xbo_mcp_ab12\u20269f3c');
+    const { token, access } = regenerateMcpToken(db);
+    expect(access.tokenHint).toMatch(/^xbo_mcp_[A-Za-z0-9_-]{4}\u2026[A-Za-z0-9_-]{4}$/);
+    expect(access.tokenHint).toBe(`${token.slice(0, 12)}\u2026${token.slice(-4)}`);
+    // 8 of the 43 random characters: far from enough to rebuild it.
+    expect(token.length - 'xbo_mcp_'.length).toBe(43);
+  });
+
+  it('keeps a token stored before hints were masked working, shown in the mask shape or by date alone', () => {
+    const { token } = regenerateMcpToken(db, WHEN);
+    const stored = JSON.parse(db.getState(MCP_ACCESS_KEY)!);
+    db.setState(MCP_ACCESS_KEY, JSON.stringify({ ...stored, tokenHint: token.slice(-4) }));
+    expect(readMcpAccess(db)).toMatchObject({ hasToken: true, tokenHint: `xbo_mcp_\u2026${token.slice(-4)}` });
+    db.setState(MCP_ACCESS_KEY, JSON.stringify({ ...stored, tokenHint: null }));
+    expect(readMcpAccess(db)).toMatchObject({ hasToken: true, tokenHint: null, tokenCreatedAt: WHEN });
+    expect(verifyMcpToken(db, token)).toBe(true);
   });
 
   it('refuses a malformed toggle', async () => {
