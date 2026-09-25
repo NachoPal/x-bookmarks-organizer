@@ -76,6 +76,47 @@
   }
 
   /**
+   * The "+" beside a category's name, which adds a sub-category to it.
+   * `depth` is the category's own depth (a root is 1). A category already at
+   * `maxDepth` cannot take a child, so its "+" stays in the row - keeping every
+   * row's controls on the same columns - but reads as unavailable and says
+   * why, in the same words `POST /api/categories` refuses with.
+   */
+  function addChildControl(name, depth, maxDepth) {
+    if (Number.isFinite(maxDepth) && depth >= maxDepth) {
+      const reason = depthLimitMessage(name, maxDepth);
+      return { allowed: false, label: `Add a sub-category to “${name}” (unavailable)`, title: reason, reason };
+    }
+    return {
+      allowed: true,
+      label: `Add a sub-category to “${name}”`,
+      title: `Add a sub-category to “${name}”`,
+      reason: null,
+    };
+  }
+
+  /**
+   * A name split before its last word (`head` keeps the trailing space), so
+   * the editor can keep that word and the "+" after it on one line. A last
+   * word too long to share a line with anything goes in `head` whole, leaving
+   * the browser free to break it rather than overflow the row.
+   */
+  function splitLastWord(name) {
+    const text = String(name == null ? "" : name);
+    const cut = text.search(/\S+\s*$/);
+    if (cut < 0) return { head: text, tail: "" };
+    const tail = text.slice(cut);
+    if (tail.length > LAST_WORD_MAX) return { head: text, tail: "" };
+    return { head: text.slice(0, cut), tail };
+  }
+  const LAST_WORD_MAX = 24;
+
+  /** Why a category at the deepest level takes no child - word for word the server's 400. */
+  function depthLimitMessage(name, maxDepth) {
+    return `Categories go at most ${maxDepth} levels deep, so “${name}” can’t take a sub-category.`;
+  }
+
+  /**
    * Whether pressing the bin on `node` must open the destructive dialog.
    *
    * "Don't ask again" may silence an ordinary delete, but NEVER a root: a root
@@ -242,6 +283,9 @@
     writeSkipConfirm,
     siblingsOf,
     validateName,
+    addChildControl,
+    depthLimitMessage,
+    splitLastWord,
     needsConfirm,
     confirmSentence,
     confirmDetail,

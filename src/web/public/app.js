@@ -1896,8 +1896,7 @@
     // Hovering INTO a collapsed row opens it, so a deep target is reachable
     // in one gesture - the revealed rows are ordinary drop targets in turn.
     if (zone === "inside" && !problem && !disclosure.open && !drag.expandTimer) {
-      const canOpen = drag.surface === "editor" || disclosure.canOpen;
-      if (!canOpen) return;
+      if (!disclosure.canOpen) return;
       drag.expandTimer = setTimeout(() => {
         drag.expandTimer = null;
         if (treeDrag !== drag) return;
@@ -2803,6 +2802,17 @@
   }
 
   /** The owner's-category glyph: outlined at rest, FILLED when pressed (CSS) - shape, not only color. */
+  function plusIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-plus");
+    svg.innerHTML =
+      '<path d="M10 4.5v11M4.5 10h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />';
+    return svg;
+  }
+
   function ownerIcon() {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 20 20");
@@ -4768,9 +4778,9 @@
   function renderCategoryEditor() {
     if (!catEditor) return;
     const list = el("ul", "cat-editor-list");
-    // The root-level add leads the list, so "a new top-level category" is the
-    // first thing the editor offers - and the one affordance an empty library
-    // still needs.
+    // The root-level add leads the list: a new top-level category has no row
+    // to carry a "+" (every other level adds through its parent's), and it is
+    // the one affordance an empty library still needs.
     list.appendChild(buildCatAddRow(null, 0));
     if (treeRoots.length === 0) {
       const empty = el("li", "ced-empty-row");
@@ -4799,15 +4809,6 @@
       row.style.setProperty("--ced-depth", String(depth));
       row.dataset.moveId = String(node.id);
 
-      const bin = el("button", "ced-bin");
-      bin.type = "button";
-      bin.dataset.categoryId = String(node.id);
-      bin.setAttribute("aria-label", `Delete “${node.name}”`);
-      bin.title = `Delete “${node.name}”`;
-      bin.appendChild(trashIcon());
-      bin.addEventListener("click", () => void requestCategoryDelete(node, bin));
-      row.appendChild(bin);
-
       const indent = el("span", "ced-indent");
       indent.setAttribute("aria-hidden", "true");
       row.appendChild(indent);
@@ -4816,31 +4817,39 @@
       // this node, and dragging it carries the node's whole subtree along.
       row.appendChild(createTreeGrip(node, "editor"));
 
-      // EVERY node gets a twisty here, including a leaf - unlike the sidebar,
-      // where one would open on nothing. Opening a leaf reveals the "+" that
-      // files a child under it, and without that a category with no children
-      // yet (every category the owner has just created) would be a dead end.
-      const twisty = el("button", "ced-twisty");
-      twisty.type = "button";
-      twisty.setAttribute("aria-expanded", String(expanded));
-      twisty.setAttribute("aria-controls", groupId);
-      twisty.setAttribute(
-        "aria-label",
-        expanded
-          ? `Collapse “${node.name}”`
-          : hasChildren
-            ? `Expand “${node.name}”`
-            : `Open “${node.name}” to add a category in it`,
-      );
-      const chev = el("span", "ced-chev", "▶");
-      chev.setAttribute("aria-hidden", "true");
-      twisty.appendChild(chev);
-      twisty.addEventListener("click", () =>
-        setCatEditorExpanded(node.id, twisty.getAttribute("aria-expanded") !== "true"),
-      );
-      row.appendChild(twisty);
+      // A leaf's twisty is an inert spacer, like the sidebar's: its "+" (below)
+      // is what files a first child under it, so there is nothing to open.
+      if (hasChildren) {
+        const twisty = el("button", "ced-twisty");
+        twisty.type = "button";
+        twisty.setAttribute("aria-expanded", String(expanded));
+        twisty.setAttribute("aria-controls", groupId);
+        twisty.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} “${node.name}”`);
+        const chev = el("span", "ced-chev", "▶");
+        chev.setAttribute("aria-hidden", "true");
+        twisty.appendChild(chev);
+        twisty.addEventListener("click", () =>
+          setCatEditorExpanded(node.id, twisty.getAttribute("aria-expanded") !== "true"),
+        );
+        row.appendChild(twisty);
+      } else {
+        const spacer = el("span", "ced-twisty is-leaf");
+        spacer.setAttribute("aria-hidden", "true");
+        row.appendChild(spacer);
+      }
 
-      row.appendChild(el("span", "ced-name", node.name));
+      // The "+" rides INSIDE the title, inline after the name, so a long
+      // name that wraps keeps it beside its last word rather than out at
+      // the edge of the wrapped block - and that last word and the "+" share
+      // a no-wrap span, so the "+" never drops onto a line by itself.
+      const title = el("span", "ced-title");
+      const { head, tail } = editor().splitLastWord(node.name);
+      const name = el("span", "ced-name", head);
+      const end = el("span", "ced-name-end", tail);
+      end.appendChild(buildCatAddChildButton(node, depth + 1));
+      name.appendChild(end);
+      title.appendChild(name);
+      row.appendChild(title);
       const count = el("span", "ced-count", String(node.total));
       count.setAttribute("aria-label", `${node.total} bookmarks`);
       row.appendChild(count);
@@ -4868,14 +4877,25 @@
       owner.appendChild(ownerIcon());
       owner.addEventListener("click", () => void toggleCategoryOrigin(node, owner));
       row.appendChild(owner);
+
+      // The bin closes the row: the destructive control sits LAST, on one
+      // vertical line down the whole tree, away from the name and the "+".
+      const bin = el("button", "ced-bin");
+      bin.type = "button";
+      bin.dataset.categoryId = String(node.id);
+      bin.setAttribute("aria-label", `Delete “${node.name}”`);
+      bin.title = `Delete “${node.name}”`;
+      bin.appendChild(trashIcon());
+      bin.addEventListener("click", () => void requestCategoryDelete(node, bin));
+      row.appendChild(bin);
       li.appendChild(row);
 
-      // The group holds this node's children AND the one "+" that files a
-      // new child under it - which is what "one add per level" means here.
+      // The group holds this node's children and, while its "+" is in use,
+      // the name form - FIRST, right under the row whose "+" opened it.
       const group = el("ul", "ced-group");
       group.id = groupId;
+      if (catEditor && catEditor.adding === node.id) group.appendChild(buildCatAddRow(node, depth + 1));
       if (hasChildren) buildCatEditorNodes(node.children, group, depth + 1);
-      group.appendChild(buildCatAddRow(node, depth + 1));
       group.hidden = !expanded;
       li.appendChild(group);
       parentList.appendChild(li);
@@ -4883,23 +4903,48 @@
   }
 
   /**
-   * The "+" for `parent` (null: a new root) - or, once it is pressed, the
-   * inline name form it becomes. One per level, and the form replaces the
-   * button in place so the owner's eye never leaves where the category lands.
+   * The "+" right after a category's name, which opens the name form for a
+   * new sub-category under it. `depth` is the category's own (a root is 1):
+   * at the deepest level it stays in place - so every row keeps its columns -
+   * but is `aria-disabled`, which unlike `disabled` keeps it focusable and its
+   * tooltip reachable, and a press states the reason instead of adding.
+   */
+  function buildCatAddChildButton(node, depth) {
+    const control = editor().addChildControl(node.name, depth, treeMaxDepth);
+    const btn = el("button", "ced-add-child");
+    btn.type = "button";
+    btn.dataset.categoryId = String(node.id);
+    btn.setAttribute("aria-label", control.label);
+    btn.title = control.title;
+    btn.appendChild(plusIcon());
+    if (!control.allowed) {
+      btn.setAttribute("aria-disabled", "true");
+      btn.addEventListener("click", () => {
+        showCatEditorError(control.reason);
+        announceCatEditor(control.reason);
+      });
+    } else {
+      btn.addEventListener("click", () => startCatAdd(node.id));
+    }
+    return btn;
+  }
+
+  /**
+   * The top-level add (`parent` null) - a button that becomes the inline name
+   * form in place - or, under a category whose "+" was pressed, that form
+   * alone, stepped in to the child level so it starts where the new row will.
    */
   function buildCatAddRow(parent, depth) {
     const parentId = parent ? parent.id : null;
     const li = el("li", "ced-add-row");
-    li.style.setProperty("--ced-depth", String(depth));
-    // The same leading columns as a category row - the bin's, then the
-    // depth - so the "+" starts exactly where the rows of the level it adds
-    // to start (their grip), not a bin's width to the left of them.
-    const lead = el("span", "ced-lead");
-    lead.setAttribute("aria-hidden", "true");
-    li.appendChild(lead);
-    const indent = el("span", "ced-indent");
-    indent.setAttribute("aria-hidden", "true");
-    li.appendChild(indent);
+    if (parent) {
+      li.style.setProperty("--ced-depth", String(depth));
+      // The same leading column as a category row - its depth - so the input
+      // lines up with the grips of the level it adds to.
+      const indent = el("span", "ced-indent");
+      indent.setAttribute("aria-hidden", "true");
+      li.appendChild(indent);
+    }
 
     if (catEditor && catEditor.adding === parentId) {
       li.appendChild(buildCatAddForm(parent));
@@ -4908,13 +4953,9 @@
 
     const btn = el("button", "ced-add");
     btn.type = "button";
-    const plus = el("span", "ced-plus", "+");
-    plus.setAttribute("aria-hidden", "true");
-    btn.appendChild(plus);
-    btn.appendChild(
-      el("span", null, parent ? `Add a category in “${parent.name}”` : "Add a top-level category"),
-    );
-    btn.addEventListener("click", () => startCatAdd(parentId));
+    btn.appendChild(plusIcon());
+    btn.appendChild(el("span", null, "Add a top-level category"));
+    btn.addEventListener("click", () => startCatAdd(null));
     li.appendChild(btn);
     return li;
   }
@@ -5010,15 +5051,7 @@
     }
     group.hidden = !open;
     twisty.setAttribute("aria-expanded", String(open));
-    const hasChildren = !!(node.children && node.children.length);
-    twisty.setAttribute(
-      "aria-label",
-      open
-        ? `Collapse “${node.name}”`
-        : hasChildren
-          ? `Expand “${node.name}”`
-          : `Open “${node.name}” to add a category in it`,
-    );
+    twisty.setAttribute("aria-label", `${open ? "Collapse" : "Expand"} “${node.name}”`);
   }
 
   function startCatAdd(parentId) {
@@ -5036,14 +5069,14 @@
     renderCategoryEditor();
     const back = parentId == null
       ? catEditorTreeEl.querySelector(".ced-add")
-      : catEditorTreeEl.querySelector(`.ced-bin[data-category-id="${parentId}"]`);
+      : catEditorTreeEl.querySelector(`.ced-add-child[data-category-id="${parentId}"]`);
     if (back) back.focus();
   }
 
-  /** Put focus back on a row's bin - the one control every row is guaranteed. */
+  /** Put focus on a row's grip - its LEADING control, beside the name, which every row has. */
   function focusCatEditorRow(id) {
-    const bin = catEditorTreeEl.querySelector(`.ced-bin[data-category-id="${id}"]`);
-    if (bin) bin.focus();
+    const grip = catEditorTreeEl.querySelector(`.ced-grip[data-grip-for="${id}"]`);
+    if (grip) grip.focus();
   }
 
   // --- add ------------------------------------------------------------------

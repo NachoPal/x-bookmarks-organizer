@@ -1024,15 +1024,15 @@
       aria-describedby="cat-editor-intro"
     >
       <div class="setup-panel cat-editor-panel">
-        <div class="setup-header">
+        <div class="setup-header cat-editor-header">
           <div class="setup-heading">
             <h2 id="cat-editor-title" class="setup-title">Edit categories</h2>
             <p id="cat-editor-intro" class="setup-step-hint">
-              Categories you add are yours: syncs file posts into them but never change them. The
-              person icon marks a category as yours; the magnifier finds stored bookmarks that fit
-              it. Drag a category's handle to move it, with everything in it, or press the handle to
-              pick a place. Deleting a category deletes its sub-categories and any post filed
-              nowhere else.
+              Categories you add are yours: syncs file posts into them but never change them. The +
+              beside a name adds a sub-category to it; the magnifier finds stored bookmarks that fit
+              a category; the person icon marks one as yours. Drag a category's handle to move it,
+              with everything in it, or press the handle to pick a place. Deleting a category
+              deletes its sub-categories and any post filed nowhere else.
             </p>
           </div>
           <div class="reader-header-actions">
@@ -1046,11 +1046,18 @@
             </button>
           </div>
         </div>
-        <div id="cat-editor-tree" class="cat-editor-tree"></div>
+        <!-- The tool itself, on its own inset surface below the header's
+             divider, so the prose above reads as the dialog's explanation and
+             this box as the thing being edited. -->
+        <section class="cat-editor-workspace" aria-label="Your categories">
+          <div id="cat-editor-tree" class="cat-editor-tree"></div>
+        </section>
         <div class="cat-editor-footer">
           <p id="cat-editor-error" class="setup-error" hidden></p>
           <div class="setup-footer">
-            <button id="cat-editor-done" class="btn btn-primary" type="button">Done</button>
+            <button id="cat-editor-done" class="btn btn-primary cat-editor-done" type="button">
+              Done
+            </button>
           </div>
         </div>
       </div>

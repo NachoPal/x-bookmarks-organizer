@@ -4592,11 +4592,10 @@ body.is-card-dragging .tree-node {
    Category editor (issue #101)
 
    The modal the owner adds and removes categories in. It reuses the move
-   picker's shell, but its tree is laid out the other way round: the BIN is a
-   fixed column at the far left of every row, so the destructive control sits
-   on one vertical line down the whole tree instead of stepping in with the
-   indentation. The depth is therefore carried by a spacer INSIDE the row
-   (`--ced-depth`), not by padding on the nested list.
+   picker's shell. The depth is carried by a spacer INSIDE the row
+   (`--ced-depth`), not by padding on the nested list, so the trailing
+   controls - the BIN last of all - sit on one vertical line down the whole
+   tree while the grip, twisty and name step in with the indentation.
    ============================================================ */
 /* Most of the viewport: the editor is where a whole tree gets rearranged by
    dragging, and a small box would make every drag a scroll. A FIXED height
@@ -4611,6 +4610,24 @@ body.is-card-dragging .tree-node {
 .cat-editor-panel .setup-step-hint {
   max-width: 72ch;
 }
+/* The header (title + what the editor does) is the dialog's explanation; a
+   divider under it and the inset workspace below it keep that prose from
+   reading as part of the tree. */
+.cat-editor-header {
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+.cat-editor-workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: var(--space-4) var(--space-5) 0;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
 .cat-editor-tree {
   /* The bin/control column and the per-level step every row and every add
      row is laid out from - one source, so they cannot fall out of line. */
@@ -4621,7 +4638,7 @@ body.is-card-dragging .tree-node {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 var(--space-5);
+  padding: var(--space-2);
 }
 .cat-editor-list,
 .ced-group {
@@ -4636,8 +4653,8 @@ body.is-card-dragging .tree-node {
   border-radius: var(--radius-sm);
 }
 .ced-row {
-  /* A drop line starts at the grip: past the padding, the bin, and the depth. */
-  --drop-line-inset: calc(3 * var(--space-1) + var(--ced-control) + var(--ced-depth, 0) * var(--ced-step));
+  /* A drop line starts at the grip: past the padding and the depth. */
+  --drop-line-inset: calc(2 * var(--space-1) + var(--ced-depth, 0) * var(--ced-step));
   display: flex;
   align-items: center;
   gap: var(--space-1);
@@ -4648,16 +4665,10 @@ body.is-card-dragging .tree-node {
 .ced-row:hover {
   background: var(--color-surface-2);
 }
-/* The row's depth, as an inert spacer after the bin column. */
+/* The row's depth, as an inert spacer leading the row. */
 .ced-indent {
   flex: 0 0 auto;
   width: calc(var(--ced-depth, 0) * var(--ced-step));
-}
-/* An add row's stand-in for the bin column, so its "+" lines up with the
-   grips of the level it adds to. */
-.ced-lead {
-  flex: 0 0 auto;
-  width: var(--ced-control);
 }
 .tree-grip.ced-grip {
   width: var(--ced-control);
@@ -4665,6 +4676,7 @@ body.is-card-dragging .tree-node {
 }
 .ced-bin,
 .ced-twisty,
+.ced-add-child,
 .ced-find,
 .ced-owner {
   flex: 0 0 auto;
@@ -4704,6 +4716,35 @@ body.is-card-dragging .tree-node {
 .ced-owner:hover {
   background: var(--color-surface-2);
   color: var(--color-text);
+}
+/* A leaf's twisty is only its column: nothing to open, nothing to aim at. */
+.ced-twisty.is-leaf {
+  pointer-events: none;
+}
+/* The "+" after a name: muted like the row's other controls at rest, the
+   accent once aimed at - it creates, so it borrows the add button's color. */
+.ced-add-child:hover,
+.ced-add-child:focus-visible {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.ced-add-child:active {
+  border-color: var(--color-accent);
+}
+/* At the deepest level: still focusable (aria-disabled, so its tooltip and a
+   press that states why stay reachable), but reads as unavailable - the
+   disabled ink AND the not-allowed cursor, never the color alone. */
+.ced-add-child[aria-disabled="true"],
+.ced-add-child[aria-disabled="true"]:hover,
+.ced-add-child[aria-disabled="true"]:active {
+  background: none;
+  border-color: transparent;
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+}
+.ced-add-child .icon-plus {
+  width: 1.05rem;
+  height: 1.05rem;
 }
 .ced-find:active,
 .ced-owner:active {
@@ -4756,14 +4797,26 @@ body.is-card-dragging .tree-node {
   width: 1.05rem;
   height: 1.05rem;
 }
-.ced-name {
-  flex: 1 1 auto;
+/* The title (name + its "+") takes only its own width, so the "+" sits right
+   after the name; the count is what pushes the trailing controls to the
+   row's end. */
+.ced-title {
+  flex: 0 1 auto;
   min-width: 0;
   padding-inline: var(--space-1);
   overflow-wrap: anywhere;
 }
+.ced-name-end {
+  white-space: nowrap;
+}
+.ced-title .ced-add-child {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: var(--space-1);
+}
 .ced-count {
   flex: 0 0 auto;
+  margin-left: auto;
   padding-inline: var(--space-1);
   color: var(--color-text-muted);
   font-size: var(--text-small);
@@ -4798,9 +4851,9 @@ body.is-card-dragging .tree-node {
   background: var(--color-accent-soft);
   border-color: var(--color-accent);
 }
-.ced-add .ced-plus {
-  font-size: 1rem;
-  line-height: 1;
+.ced-add .icon-plus {
+  width: 1rem;
+  height: 1rem;
 }
 /* The inline name form the add button becomes. */
 .ced-form {
@@ -4812,9 +4865,15 @@ body.is-card-dragging .tree-node {
   min-width: 0;
   padding: var(--space-1) 0;
 }
+/* A basis small enough that the field, Add and Cancel share one line even
+   on a phone; the field still takes whatever width is left. */
 .ced-form .search-field {
-  flex: 1 1 10rem;
+  flex: 1 1 8rem;
   min-width: 0;
+}
+/* A name field, not a search: no magnifier to clear on the left. */
+.ced-form .search-input {
+  padding-inline: var(--space-3);
 }
 .ced-form-error {
   flex: 1 1 100%;
@@ -4857,6 +4916,11 @@ body.is-card-dragging .tree-node {
 .cat-editor-footer .setup-error {
   margin: 0 var(--space-5);
 }
+/* Done spans the panel, in the footer where it always was. */
+.cat-editor-done {
+  flex: 1 1 auto;
+  width: 100%;
+}
 
 @media (max-width: 560px) {
   /* Full screen on a phone: every pixel goes to the tree. */
@@ -4868,9 +4932,8 @@ body.is-card-dragging .tree-node {
     border: 0;
     border-radius: 0;
   }
-  .cat-editor-tree {
-    padding-left: var(--space-4);
-    padding-right: var(--space-4);
+  .cat-editor-workspace {
+    margin-inline: var(--space-4);
   }
   .cat-editor-footer .setup-error {
     margin-inline: var(--space-4);

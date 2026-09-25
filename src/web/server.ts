@@ -1259,6 +1259,16 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       }
       const parent = db.getCategoryById(rawParent as number);
       if (!parent) return reply.code(400).send({ error: `Unknown category id ${String(rawParent)}.` });
+      // The editor greys its "+" out at the deepest level with this very
+      // sentence (`XBOCategoryEditor.depthLimitMessage`); a stale page that
+      // still sends one gets the same answer.
+      let parentDepth = 1;
+      for (let up = parent.parentId; up !== null; up = db.getCategoryById(up)?.parentId ?? null) parentDepth += 1;
+      if (parentDepth >= maxCategoryDepth) {
+        return reply.code(400).send({
+          error: `Categories go at most ${maxCategoryDepth} levels deep, so “${parent.name}” can’t take a sub-category.`,
+        });
+      }
       parentId = parent.id;
     }
     const created = db.createCategory(name, parentId);

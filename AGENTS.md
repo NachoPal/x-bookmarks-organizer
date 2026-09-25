@@ -775,16 +775,19 @@ Frontend: `src/web/public/category-editor.js` (`XBOCategoryEditor`) is the pure,
 the name validation (case-insensitive among siblings, matching `findCategory`'s NOCASE collation),
 the dialog's prose, and `needsConfirm`, which **fails closed**: "don't ask again" (guarded
 localStorage) may silence a sub-category delete but NEVER a root, and an unknown node always
-confirms. `app.js` owns the markup. Two things there are deliberate. The editor's tree is a nested
-`<ul>` DISCLOSURE list, not an ARIA `tree` (each row carries real buttons - a bin, a twisty, an add
-- which is the opposite of a tree's single-focus contract), and EVERY row gets a twisty including a
-leaf, because opening a leaf is what reveals the "+" that files a child under it - without it a
-category the owner just created would be a dead end. The bin is a fixed column at the far LEFT of
-every row, so depth is carried by a spacer INSIDE the row (`--ced-depth`) rather than by padding on
-the nested list; an add row carries `.ced-lead` in place of the bin so its "+" lines up with the
-grips of the level it adds to (both read `--ced-control`/`--ced-step`). A twisty opens its group IN
-PLACE, never by re-rendering - a mid-drag hover-expand would otherwise destroy the grip holding the
-pointer. The modal is most of the viewport (full screen on a phone). After a delete the viewer drops every cached view and resets the card pool (posts
+confirms. `app.js` owns the markup. The editor's tree is a nested `<ul>` DISCLOSURE list, not an ARIA
+`tree` (each row carries real buttons, the opposite of a tree's single-focus contract). A
+sub-category is added from the "+" INLINE after each category's name (`buildCatAddChildButton`),
+which opens the name form as the FIRST child of that category; only the top level keeps a
+standalone "Add a top-level category" row. At `maxDepth` the "+" stays in place but is
+`aria-disabled` (focusable, tooltip kept) and states `XBOCategoryEditor.depthLimitMessage`, which
+`POST /api/categories` also refuses with (400). The "+" shares a `white-space: nowrap` span with
+the name's last word (`splitLastWord`) so it never wraps onto a line alone. A leaf's twisty is an
+inert `.is-leaf` spacer. The bin is the LAST control of every row (after the person toggle); depth
+is a spacer INSIDE the row (`--ced-depth`), so the trailing controls line up down the tree. A
+twisty opens its group IN PLACE, never by re-rendering - a mid-drag hover-expand would otherwise
+destroy the grip holding the pointer. The header (title + prose) sits above a divider and the
+tree in its own inset `.cat-editor-workspace`; Done spans the panel. The modal is most of the viewport (full screen on a phone). After a delete the viewer drops every cached view and resets the card pool (posts
 went, and the ones spared were re-filed), and a selection inside the deleted subtree falls back to
 the empty state.
 

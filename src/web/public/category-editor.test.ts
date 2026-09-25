@@ -7,6 +7,9 @@ const {
   writeSkipConfirm,
   siblingsOf,
   validateName,
+  addChildControl,
+  depthLimitMessage,
+  splitLastWord,
   needsConfirm,
   confirmSentence,
   confirmDetail,
@@ -109,6 +112,48 @@ describe("validateName", () => {
 
   it("allows a name that is taken under a different parent", () => {
     expect(validateName("Evals", siblingsOf(tree, 5)).ok).toBe(true);
+  });
+});
+
+describe("addChildControl", () => {
+  it("offers a sub-category above the deepest level", () => {
+    expect(addChildControl("Rust", 1, 3)).toEqual({
+      allowed: true,
+      label: "Add a sub-category to “Rust”",
+      title: "Add a sub-category to “Rust”",
+      reason: null,
+    });
+    expect(addChildControl("Rust", 2, 3).allowed).toBe(true);
+  });
+
+  it("refuses at the deepest level, and says why in the server's words", () => {
+    const control = addChildControl("Borrowck", 3, 3);
+    expect(control.allowed).toBe(false);
+    expect(control.reason).toBe(depthLimitMessage("Borrowck", 3));
+    expect(control.reason).toBe("Categories go at most 3 levels deep, so “Borrowck” can’t take a sub-category.");
+    expect(control.title).toBe(control.reason);
+    expect(control.label).toBe("Add a sub-category to “Borrowck” (unavailable)");
+    // A tree the owner already built deeper still reads as full below the limit.
+    expect(addChildControl("Deeper", 4, 3).allowed).toBe(false);
+  });
+
+  it("never blocks when the limit is unknown", () => {
+    expect(addChildControl("Rust", 9, undefined).allowed).toBe(true);
+    expect(addChildControl("Rust", 9, Number.NaN).allowed).toBe(true);
+  });
+});
+
+describe("splitLastWord", () => {
+  it("splits before the last word, keeping the space in the head", () => {
+    expect(splitLastWord("Design & Product")).toEqual({ head: "Design & ", tail: "Product" });
+    expect(splitLastWord("Rust")).toEqual({ head: "", tail: "Rust" });
+  });
+
+  it("leaves a word too long to share a line in the head, and tolerates nothing", () => {
+    const long = "Supercalifragilisticexpialidocious";
+    expect(splitLastWord(`About ${long}`)).toEqual({ head: `About ${long}`, tail: "" });
+    expect(splitLastWord("")).toEqual({ head: "", tail: "" });
+    expect(splitLastWord(undefined)).toEqual({ head: "", tail: "" });
   });
 });
 
