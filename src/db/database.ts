@@ -3,11 +3,22 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import {
   ARTICLE_LINK_METADATA_ADDED_COLUMNS,
+  ARTICLES_ADDED_COLUMNS,
   BOOKMARK_SCORES_REKEY_SQL,
   BOOKMARKS_ADDED_COLUMNS,
   CATEGORIES_ADDED_COLUMNS,
   SCHEMA_SQL,
 } from './schema';
+import {
+  buildMatchQuery,
+  dropSearchSchemaSql,
+  POPULATE_SEARCH_SQL,
+  SEARCH_INDEX_VERSION,
+  SEARCH_INDEX_VERSION_KEY,
+  SEARCH_SCHEMA_SQL,
+  SEARCH_WEIGHTS,
+} from './search';
+import { htmlToPlainText } from '../summarize/summarizer';
 import type {
   ArticleLinkMetadata,
   ArticleRecord,
@@ -106,6 +117,50 @@ export interface BookmarkPageOptions {
    * another preset's verdicts.
    */
   rubricVersion?: string;
+}
+
+/** Options for {@link Database.searchBookmarks}. Every filter is optional and they combine with AND. */
+export interface BookmarkSearchOptions {
+  /** Free text; see `buildMatchQuery`. Omitted or empty lists the filtered set, newest post first. */
+  query?: string;
+  /** Only bookmarks filed in this category or any of its descendants. */
+  categoryId?: number;
+  /** Only posts created at or after this ISO date/time (compared against `post_created_at`). */
+  postedFrom?: string;
+  /** Only posts created strictly before this ISO date/time. */
+  postedBefore?: string;
+  filter?: BookmarkFilter;
+  limit: number;
+  offset?: number;
+}
+
+/** One search result: the bookmark and, for a text query, the best-matching excerpt. */
+export interface BookmarkSearchHit {
+  bookmark: StoredBookmark;
+  /** The matching passage with terms wrapped in `«»`; null when there was no text query. */
+  snippet: string | null;
+}
+
+export interface BookmarkSearchResult {
+  /** How many bookmarks match in total (not just this page). */
+  total: number;
+  /**
+   * `all` - every term matched; `any` - no bookmark had every term, so these
+   * match at least one (ranked by relevance); `none` - there was no text query.
+   */
+  mode: 'all' | 'any' | 'none';
+  hits: BookmarkSearchHit[];
+}
+
+/** Library-wide counts for the MCP server's `library_stats`. */
+export interface LibraryStats {
+  bookmarks: number;
+  unread: number;
+  favorites: number;
+  withSummary: number;
+  categories: number;
+  oldestPostAt: string | null;
+  newestPostAt: string | null;
 }
 
 interface BookmarkRow {
@@ -385,7 +440,51 @@ export class Database {
     this.addMissingColumns('article_link_metadata', ARTICLE_LINK_METADATA_ADDED_COLUMNS);
     this.addMissingColumns('bookmarks', BOOKMARKS_ADDED_COLUMNS);
     this.addMissingColumns('categories', CATEGORIES_ADDED_COLUMNS);
+    this.addMissingColumns('articles', ARTICLES_ADDED_COLUMNS);
     this.rekeyBookmarkScores();
+    this.backfillArticleText();
+    this.ensureSearchIndex();
+  }
+
+  /**
+   * Give every cached article body its plain-text twin (`content_text`),
+   * which the search index reads. Only rows cached before the column existed
+   * lack it, so this is a no-op on every later open.
+   */
+  private backfillArticleText(): void {
+    const rows = this.db
+      .prepare('SELECT bookmark_id, content_html FROM articles WHERE content_text IS NULL AND content_html IS NOT NULL')
+      .all() as { bookmark_id: number; content_html: string }[];
+    if (rows.length === 0) return;
+    const update = this.db.prepare('UPDATE articles SET content_text = ? WHERE bookmark_id = ?');
+    this.db.transaction(() => {
+      for (const row of rows) update.run(htmlToPlainText(row.content_html), row.bookmark_id);
+    })();
+  }
+
+  /**
+   * Create the full-text index and its triggers (`src/db/search.ts`), and
+   * (re)build it from scratch when it was built under another version or
+   * never - which is how a library that predates search gains it. Otherwise a
+   * no-op: the triggers keep it current from then on.
+   */
+  private ensureSearchIndex(): void {
+    const exists = !!this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bookmark_fts'")
+      .get();
+    if (exists && this.getState(SEARCH_INDEX_VERSION_KEY) === SEARCH_INDEX_VERSION) {
+      this.db.exec(SEARCH_SCHEMA_SQL);
+      return;
+    }
+    const triggers = (
+      this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as { name: string }[]
+    ).map((t) => t.name);
+    this.db.transaction(() => {
+      this.db.exec(dropSearchSchemaSql(triggers));
+      this.db.exec(SEARCH_SCHEMA_SQL);
+      this.db.exec(POPULATE_SEARCH_SQL);
+      this.setState(SEARCH_INDEX_VERSION_KEY, SEARCH_INDEX_VERSION);
+    })();
   }
 
   /**
@@ -540,6 +639,106 @@ export class Database {
     }
     const rows = this.db.prepare(sql).all(...params) as BookmarkRow[];
     return rows.map(toStoredBookmark);
+  }
+
+  /**
+   * Full-text search over the library (`src/db/search.ts`), narrowed by
+   * category subtree, post date and read/favorite state.
+   *
+   * A text query first requires EVERY term; only when nothing matches all of
+   * them does it fall back to ANY term, ranked by relevance - which is what a
+   * question phrased in several words usually needs, without drowning a
+   * precise one in partial matches.
+   */
+  searchBookmarks(opts: BookmarkSearchOptions): BookmarkSearchResult {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    let cte = '';
+    if (opts.categoryId !== undefined) {
+      cte = `WITH RECURSIVE subtree(id) AS (
+          SELECT ? UNION SELECT c.id FROM categories c JOIN subtree s ON c.parent_id = s.id
+        ) `;
+      params.push(opts.categoryId);
+      where.push('b.id IN (SELECT bc.bookmark_id FROM bookmark_categories bc JOIN subtree s ON s.id = bc.category_id)');
+    }
+    if (opts.postedFrom) {
+      where.push("b.post_created_at <> '' AND b.post_created_at >= ?");
+      params.push(opts.postedFrom);
+    }
+    if (opts.postedBefore) {
+      where.push("b.post_created_at <> '' AND b.post_created_at < ?");
+      params.push(opts.postedBefore);
+    }
+    if (opts.filter === 'unread') where.push('b.read = 0');
+    else if (opts.filter === 'read') where.push('b.read = 1');
+    else if (opts.filter === 'favorite') where.push('b.favorite = 1');
+    const page = [opts.limit, opts.offset ?? 0];
+
+    const trimmed = opts.query?.trim() ?? '';
+    if (!trimmed) {
+      const filters = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+      const total = (
+        this.db.prepare(`${cte}SELECT COUNT(*) AS n FROM bookmarks b ${filters}`).get(...params) as { n: number }
+      ).n;
+      const rows = this.db
+        .prepare(`${cte}SELECT b.* FROM bookmarks b ${filters} ORDER BY b.post_created_at DESC, b.id DESC LIMIT ? OFFSET ?`)
+        .all(...params, ...page) as BookmarkRow[];
+      return { total, mode: 'none', hits: rows.map((r) => ({ bookmark: toStoredBookmark(r), snippet: null })) };
+    }
+
+    const match = buildMatchQuery(trimmed);
+    if (!match) return { total: 0, mode: 'all', hits: [] };
+    const filters = ['bookmark_fts MATCH ?', ...where].join(' AND ');
+    const from = 'FROM bookmark_fts JOIN bookmarks b ON b.id = bookmark_fts.rowid';
+    // The CTE's parameter comes first in the statement, the MATCH expression next.
+    const bind = (expr: string) =>
+      opts.categoryId !== undefined ? [params[0]!, expr, ...params.slice(1)] : [expr, ...params];
+    const run = (expr: string, mode: 'all' | 'any'): BookmarkSearchResult => {
+      const total = (
+        this.db.prepare(`${cte}SELECT COUNT(*) AS n ${from} WHERE ${filters}`).get(...bind(expr)) as { n: number }
+      ).n;
+      if (total === 0) return { total, mode, hits: [] };
+      const rows = this.db
+        .prepare(
+          `${cte}SELECT b.*, snippet(bookmark_fts, -1, '«', '»', '…', 24) AS snippet
+           ${from} WHERE ${filters}
+           ORDER BY bm25(bookmark_fts, ${SEARCH_WEIGHTS.join(', ')}), b.id DESC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...bind(expr), ...page) as (BookmarkRow & { snippet: string | null })[];
+      return {
+        total,
+        mode,
+        hits: rows.map((r) => ({ bookmark: toStoredBookmark(r), snippet: r.snippet || null })),
+      };
+    };
+    const every = run(match.all, 'all');
+    return every.total > 0 || match.any === match.all ? every : run(match.any, 'any');
+  }
+
+  /** Library-wide counts. Pure SQL over the library tables; reads nothing from `run_state`. */
+  getLibraryStats(): LibraryStats {
+    const row = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) AS bookmarks,
+           COALESCE(SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END), 0) AS unread,
+           COALESCE(SUM(CASE WHEN favorite = 1 THEN 1 ELSE 0 END), 0) AS favorites,
+           MIN(NULLIF(post_created_at, '')) AS oldest,
+           MAX(NULLIF(post_created_at, '')) AS newest
+         FROM bookmarks`,
+      )
+      .get() as { bookmarks: number; unread: number; favorites: number; oldest: string | null; newest: string | null };
+    const count = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
+    return {
+      bookmarks: row.bookmarks,
+      unread: row.unread,
+      favorites: row.favorites,
+      withSummary: count('SELECT COUNT(*) AS n FROM summaries'),
+      categories: count('SELECT COUNT(*) AS n FROM categories'),
+      oldestPostAt: row.oldest,
+      newestPostAt: row.newest,
+    };
   }
 
   /**
@@ -1364,19 +1563,20 @@ export class Database {
     this.db
       .prepare(
         `INSERT INTO articles
-           (bookmark_id, url, status, title, content_html, excerpt, site_name, reason, fetched_at)
-         VALUES (@bookmarkId, @url, @status, @title, @contentHtml, @excerpt, @siteName, @reason, @fetchedAt)
+           (bookmark_id, url, status, title, content_html, content_text, excerpt, site_name, reason, fetched_at)
+         VALUES (@bookmarkId, @url, @status, @title, @contentHtml, @contentText, @excerpt, @siteName, @reason, @fetchedAt)
          ON CONFLICT(bookmark_id) DO UPDATE SET
            url = excluded.url,
            status = excluded.status,
            title = excluded.title,
            content_html = excluded.content_html,
+           content_text = excluded.content_text,
            excerpt = excluded.excerpt,
            site_name = excluded.site_name,
            reason = excluded.reason,
            fetched_at = excluded.fetched_at`,
       )
-      .run(record);
+      .run({ ...record, contentText: record.contentHtml ? htmlToPlainText(record.contentHtml) : null });
   }
 
   // --- Article link metadata cache (categorization input, issue #25) -------

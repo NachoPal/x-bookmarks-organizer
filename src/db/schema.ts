@@ -285,6 +285,17 @@ export const CATEGORIES_ADDED_COLUMNS: { name: string; ddl: string }[] = [
   { name: 'position', ddl: 'ALTER TABLE categories ADD COLUMN position INTEGER' },
 ];
 
+/**
+ * Columns added to `articles` after its original release: `content_text`, the
+ * reader-view body as plain text (`htmlToPlainText` of `content_html`), written
+ * by `Database.saveArticle`. It exists for the full-text index
+ * (`src/db/search.ts`), whose triggers are pure SQL and so cannot strip HTML
+ * themselves. Rows cached before it existed are back-filled on open.
+ */
+export const ARTICLES_ADDED_COLUMNS: { name: string; ddl: string }[] = [
+  { name: 'content_text', ddl: 'ALTER TABLE articles ADD COLUMN content_text TEXT' },
+];
+
 export const BOOKMARKS_ADDED_COLUMNS: { name: string; ddl: string }[] = [
   { name: 'quoted_post_id', ddl: 'ALTER TABLE bookmarks ADD COLUMN quoted_post_id TEXT' },
   {

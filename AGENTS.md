@@ -1530,6 +1530,32 @@ it ingests by design or a page the owner already has open.
 The `.env`-from-`process.cwd()` gap deferred here was closed later (security review 2, #3/#8) -
 see the credential-chain constraint above.
 
+## MCP endpoint for AI assistants (`src/mcp/`)
+
+Phase 1 (read-only) of "ask your bookmarks from the AI harness you already use" - the app has no
+chat model of its own. The endpoint is part of the viewer, `POST /mcp` (Streamable HTTP, official
+`@modelcontextprotocol/sdk`, pinned EXACTLY), so it exists only while `serve` runs. **Stateless**: a
+fresh `McpServer` + transport per request (`installMcpEndpoint` in `http.ts`); GET/DELETE answer 405.
+Refusal order: the viewer's Host/Origin/`Sec-Fetch-Site` guard (`installLocalOriginGuard` now covers
+`/mcp` like `/api/`), then 404 while turned off (the default), then 401 without the bearer token.
+
+- **Token** (`access.ts`, `run_state` `mcp_access`): only a SHA-256 hash is stored, compared with
+  `timingSafeEqual`; the plaintext exists in exactly two responses (first `PUT /api/mcp {enabled:true}`
+  and `POST /api/mcp/token`) and in the page's memory until reload. Regenerate revokes; off/on keeps
+  the token. Settings UI: the "AI assistants (MCP)" group in the gear panel, words and snippets in the
+  pure `mcp-settings.js` (`XBOMcpSettings`), snippet URL from the port the server actually bound.
+- **Read-only contract** (`tools.ts`): every tool is a `(db, args)` read returning compact JSON with
+  bounded pages and `truncated` flags. No tool may write, and none may read `run_state` beyond
+  `getLastSyncedAt` - settings, the X refresh token, keys and the MCP token must stay unreachable
+  (`mcp.test.ts` asserts it and snapshots the DB around every tool). Descriptions mark post/article/
+  summary text as untrusted. A phase-2 write tool (`show_in_app`) is a deliberate, separate decision.
+- **Search** (`src/db/search.ts`): FTS5 table `bookmark_fts`, one row per bookmark, kept current by
+  TRIGGERS on the six source tables (every trigger re-derives the affected documents from ONE SQL
+  definition), so a new write path needs no index code. SQL cannot strip HTML, so
+  `Database.saveArticle` also stores `articles.content_text`. Bump `SEARCH_INDEX_VERSION` when the
+  document or triggers change - a mismatch rebuilds on open, which is also the migration. Raw query
+  text never reaches `MATCH` (`buildMatchQuery` quotes every term); every-term first, any-term fallback.
+
 ## Paid pi-ai paths (security review 2, #19/#20)
 
 - **No call is ever sent without an output cap.** `createLlmFactory`'s `paramsFor` fills
