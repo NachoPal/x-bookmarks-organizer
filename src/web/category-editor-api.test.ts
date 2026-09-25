@@ -95,6 +95,32 @@ describe('category editor API', () => {
     expect(res.statusCode).toBe(201);
   });
 
+  it('refuses a child under a category already at the maximum depth, in the editor\'s words', async () => {
+    const shallow = buildServer(db, { maxCategoryDepth: 3 });
+    await shallow.ready();
+    try {
+      const full = await shallow.inject({
+        method: 'POST',
+        url: '/api/categories',
+        payload: { name: 'Too deep', parentId: harnesses },
+      });
+      expect(full.statusCode).toBe(400);
+      expect(full.json().error).toBe(
+        'Categories go at most 3 levels deep, so “Harnesses” can’t take a sub-category.',
+      );
+      expect(db.getAllCategories().some((c) => c.name === 'Too deep')).toBe(false);
+
+      const fits = await shallow.inject({
+        method: 'POST',
+        url: '/api/categories',
+        payload: { name: 'Sandboxes', parentId: evals },
+      });
+      expect(fits.statusCode).toBe(201);
+    } finally {
+      await shallow.close();
+    }
+  });
+
   it('rejects an empty name and an unknown parent', async () => {
     const blank = await app.inject({ method: 'POST', url: '/api/categories', payload: { name: '   ' } });
     expect(blank.statusCode).toBe(400);
