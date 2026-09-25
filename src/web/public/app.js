@@ -68,6 +68,8 @@
   const moveCancelBtn = document.getElementById("move-cancel");
   const moveCloseBtn = document.getElementById("move-close");
   const moveGhostEl = document.getElementById("move-ghost");
+  const moveTitleEl = document.getElementById("move-title");
+  const moveIntroEl = document.getElementById("move-intro");
   const moveAnnouncerEl = document.getElementById("move-announcer");
 
   let selectedCategoryId = null;
@@ -78,6 +80,8 @@
   // Full category tree (roots) kept in memory so the search filter can
   // re-render from source without re-fetching.
   let treeRoots = [];
+  /** The configured `XBOOKMARKS_MAX_DEPTH`, served with the tree - how deep a category move may go. */
+  let treeMaxDepth = Infinity;
   // id -> node, flattened from treeRoots (same object references) so a
   // read-state toggle or delete can walk straight to a category's ancestors
   // and patch counts in place, without touching the rest of the sidebar DOM.
@@ -1385,6 +1389,7 @@
       return;
     }
     treeRoots = data.tree || [];
+    if (Number.isFinite(data.maxDepth)) treeMaxDepth = data.maxDepth;
     categoryIndex = window.XBOTreeCounts ? window.XBOTreeCounts.buildCategoryIndex(treeRoots) : new Map();
     renderTree();
   }
@@ -1557,10 +1562,10 @@
 
     const toggle = el("button", "tree-toggle");
     toggle.type = "button";
-    // Only a root, and only in the full (unfiltered) tree, can be reordered:
-    // a search shows a subset, and a position in a subset means nothing.
-    const reorderable = depth === 0 && !searching && !!window.XBORootOrder;
-    if (reorderable) li.dataset.rootId = String(node.id);
+    // Every row can be moved - but only in the full (unfiltered) tree: a
+    // search shows a subset, and a position in a subset means nothing.
+    const movable = !searching && !!window.XBOTreeMove;
+    if (movable) row.dataset.moveId = String(node.id);
     const chev = el("span", "chev", "▶");
     chev.setAttribute("aria-hidden", "true");
     toggle.appendChild(chev);
@@ -1608,142 +1613,424 @@
         if (!searching) expansionState.set(String(node.id), now);
       });
       row.append(toggle, button);
-      if (reorderable) row.prepend(createRootGrip(node));
+      if (movable) row.prepend(createTreeGrip(node, "sidebar"));
       li.append(row, childList);
     } else {
       toggle.classList.add("is-leaf");
       toggle.setAttribute("aria-hidden", "true");
       toggle.tabIndex = -1;
       row.append(toggle, button);
-      if (reorderable) row.prepend(createRootGrip(node));
+      if (movable) row.prepend(createTreeGrip(node, "sidebar"));
       li.append(row);
     }
     return li;
   }
 
-  // ---- reorder the ROOT categories (issue #82) -----------------------------
-  // Pointer drag on a grip handle, or ArrowUp/ArrowDown on the focused handle.
-  // The order math is pure (root-order.js); the server persists and re-sorts.
+  // ---- move categories at any level (sidebar + category editor) ------------
+  // Every row carries a grip. Drag it onto another row - its top quarter drops
+  // BEFORE that row, the bottom quarter AFTER it, the middle INSIDE it - or,
+  // on the focused grip, press Up/Down (reorder), Left (out of the parent),
+  // Right (into the category above), or Enter for the "Move to…" picker. The
+  // tree arithmetic and every refusal's wording is the pure tree-move.js; the
+  // server (`PUT /api/categories/:id/position`) validates again and persists.
+  // One engine drives both surfaces - the sidebar and the editor - so they
+  // cannot drift apart.
 
   const rootAnnouncer = document.getElementById("tree-announcer");
+  const GRIP_SVG =
+    '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="currentColor">' +
+    '<circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/>' +
+    '<circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/>' +
+    '<circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></g></svg>';
+  const TREE_DROP_CLASSES = ["drop-before", "drop-after", "drop-inside", "drop-nested", "drop-invalid"];
+  const MOVE_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
 
-  function announceRootOrder(message) {
-    if (rootAnnouncer) rootAnnouncer.textContent = message;
+  /** One category move in flight at a time: a second would race the first's order. */
+  let treeMoveBusy = false;
+  let treeDrag = null;
+
+  const treeMove = () => window.XBOTreeMove;
+
+  function announceTreeMove(message, surface) {
+    if (surface === "editor") announceCatEditor(message);
+    else if (rootAnnouncer) rootAnnouncer.textContent = message;
   }
 
-  function createRootGrip(node) {
-    const grip = el("button", "tree-grip");
-    grip.type = "button";
-    grip.dataset.gripFor = String(node.id);
-    grip.setAttribute("aria-label", `Reorder ${node.name}`);
-    grip.title = "Drag to reorder, or press Up / Down arrow";
-    grip.innerHTML =
-      '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="currentColor">' +
-      '<circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/>' +
-      '<circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/>' +
-      '<circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></g></svg>';
-    grip.addEventListener("keydown", (e) => {
-      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-      e.preventDefault();
-      const ids = treeRoots.map((r) => r.id);
-      const next = window.XBORootOrder.moveBy(ids, node.id, e.key === "ArrowUp" ? -1 : 1);
-      if (window.XBORootOrder.sameOrder(ids, next)) {
-        announceRootOrder(`${node.name} is already ${e.key === "ArrowUp" ? "first" : "last"}.`);
-        return;
-      }
-      commitRootOrder(next, node);
-    });
-    grip.addEventListener("pointerdown", (e) => startRootDrag(e, grip, node));
-    return grip;
-  }
-
-  /** Apply a new root order at once, persist it, and roll back if the save fails. */
-  async function commitRootOrder(ids, moved) {
-    const previous = treeRoots;
-    const byId = new Map(treeRoots.map((r) => [r.id, r]));
-    treeRoots = ids.map((id) => byId.get(id));
-    captureExpansionState();
-    renderTree();
-    const grip = treeEl.querySelector(`[data-grip-for="${moved.id}"]`);
-    if (grip) grip.focus();
-    announceRootOrder(`${moved.name} moved to position ${ids.indexOf(moved.id) + 1} of ${ids.length}.`);
-    try {
-      const res = await fetch("/api/categories/root-order", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || "Could not save the category order.");
-    } catch (err) {
-      treeRoots = previous;
-      renderTree();
-      announceRootOrder(err.message || "Could not save the category order.");
-      showRootOrderError(err.message || "Could not save the category order.");
+  /** A refused or failed move, said where the owner is looking. */
+  function showTreeMoveError(message, surface) {
+    announceTreeMove(message, surface);
+    if (surface === "editor") {
+      showCatEditorError(message);
+      return;
     }
-  }
-
-  function showRootOrderError(message) {
+    const old = treeEl.querySelector(".tree-order-error");
+    if (old) old.remove();
     const note = el("p", "state state-error tree-order-error", message);
     note.setAttribute("role", "status");
     treeEl.prepend(note);
     setTimeout(() => note.remove(), 6000);
   }
 
-  function startRootDrag(e, grip, node) {
+  function createTreeGrip(node, surface) {
+    const grip = el("button", surface === "editor" ? "tree-grip ced-grip" : "tree-grip");
+    grip.type = "button";
+    grip.dataset.gripFor = String(node.id);
+    grip.setAttribute("aria-label", `Move “${node.name}”`);
+    grip.setAttribute("aria-describedby", "tree-move-help");
+    grip.title = "Drag to move, or press Enter to choose where";
+    grip.innerHTML = GRIP_SVG;
+    grip.addEventListener("keydown", (e) => onTreeGripKeydown(e, node, surface));
+    grip.addEventListener("pointerdown", (e) => startTreeDrag(e, grip, node, surface));
+    // A pointer press is settled by the drag engine (a press that never became
+    // a drag opens the picker); only a keyboard click (detail 0) lands here.
+    grip.addEventListener("click", (e) => {
+      if (e.detail === 0) openCategoryMovePicker(node, grip, surface);
+    });
+    return grip;
+  }
+
+  function onTreeGripKeydown(e, node, surface) {
+    if (!MOVE_KEYS.includes(e.key) || !treeMove()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (treeMoveBusy) return;
+    const target = treeMove().keyboardTarget(treeRoots, node.id, e.key);
+    if (!target) {
+      announceTreeMove(treeMove().keyboardEdge(treeRoots, node.id, e.key), surface);
+      return;
+    }
+    const problem = treeMove().problemFor(treeRoots, node.id, target.parentId, treeMaxDepth);
+    if (problem) {
+      showTreeMoveError(problem.message, surface);
+      return;
+    }
+    void commitCategoryMove(node, target, { surface, focusGrip: true, undo: false }).then((result) => {
+      if (!result.ok) showTreeMoveError(result.error, surface);
+    });
+  }
+
+  /**
+   * Carry out a move and put the whole viewer back in step. Resolves to
+   * `{ ok: true }` or `{ ok: false, error }` - the caller decides where a
+   * failure is said. A drop or a picker move offers Undo in the toast: the
+   * same route run backwards, to the place captured before the move.
+   */
+  async function commitCategoryMove(node, target, opts) {
+    const options = opts || {};
+    const tm = treeMove();
+    if (tm.isNoOp(treeRoots, node.id, target)) return { ok: true };
+    if (treeMoveBusy) return { ok: false, error: "Another move is still being saved." };
+    const before = tm.currentPlace(treeRoots, node.id);
+    const oldAncestors = tm.ancestorIds(treeRoots, node.id);
+    treeMoveBusy = true;
+    let body;
+    try {
+      const res = await fetch(`/api/categories/${node.id}/position`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parentId: target.parentId, index: target.index }),
+      });
+      body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not move that category.");
+    } catch (err) {
+      treeMoveBusy = false;
+      return { ok: false, error: err.message || "Could not move that category." };
+    }
+    treeMoveBusy = false;
+    applyMovedTree(body, node.id, oldAncestors);
+    const message = `Moved “${node.name}” to ${tm.placeLabel(treeRoots, node.id)}.`;
+    announceTreeMove(message, options.surface);
+    if (options.focusGrip) focusTreeGrip(node.id, options.surface);
+    if (options.undo !== false && before) {
+      showToast(message, {
+        actions: [
+          {
+            label: "Undo",
+            onClick: () =>
+              void commitCategoryMove(node, before, { surface: options.surface, undo: false }).then((result) => {
+                if (!result.ok) showToast(result.error);
+              }),
+          },
+        ],
+      });
+    }
+    return { ok: true };
+  }
+
+  function focusTreeGrip(id, surface) {
+    const host = surface === "editor" ? catEditorTreeEl : treeEl;
+    const grip = host && host.querySelector(`[data-grip-for="${id}"]`);
+    if (grip) grip.focus();
+  }
+
+  /**
+   * Adopt the tree a move answered with. The moved category's new ancestors
+   * are opened (in the sidebar and the editor) so it is on screen where it
+   * landed; the title is redrawn because a path may have changed; and the
+   * cached post lists are dropped, since an ancestor's rolled-up list gains or
+   * loses the moved subtree's posts. The open view is re-fetched only when it
+   * is one of those ancestors - the posts themselves are untouched, so the
+   * card pool (and every mounted X embed) is kept.
+   */
+  function applyMovedTree(body, movedId, oldAncestors) {
+    captureExpansionState();
+    treeRoots = body.tree || [];
+    if (Number.isFinite(body.maxDepth)) treeMaxDepth = body.maxDepth;
+    categoryIndex = window.XBOTreeCounts ? window.XBOTreeCounts.buildCategoryIndex(treeRoots) : new Map();
+    const newAncestors = treeMove().ancestorIds(treeRoots, movedId);
+    for (const id of newAncestors) {
+      expansionState.set(String(id), true);
+      if (catEditor) catEditor.expanded.add(id);
+    }
+    renderTree();
+    if (isCatEditorOpen()) renderCategoryEditor();
+    if (selectedCategoryId != null) renderTitle(selectedCategoryId);
+    clearPersistedViews();
+    viewCaches = new Map();
+    cacheOrder = [];
+    const touched = new Set([...oldAncestors, ...newAncestors]);
+    if (selectedCategoryId != null && touched.has(selectedCategoryId)) {
+      void fetchAndRenderFirstPage({ sameCategory: true });
+    }
+  }
+
+  // --- the drag ---------------------------------------------------------------
+
+  function setTreeGhost(drag, state) {
+    if (!moveGhostEl) return;
+    moveGhostEl.replaceChildren();
+    moveGhostEl.classList.toggle("is-over", !!state && !state.problem);
+    moveGhostEl.classList.toggle("is-invalid", !!state && !!state.problem);
+    document.body.classList.toggle("is-tree-drop-invalid", !!state && !!state.problem);
+    if (state && state.problem) {
+      const verb = el("span", "move-ghost-verb");
+      verb.appendChild(noEntryIcon());
+      verb.appendChild(document.createTextNode("Can’t drop here"));
+      moveGhostEl.appendChild(verb);
+      moveGhostEl.appendChild(el("span", "move-ghost-reason", state.problem.message));
+      return;
+    }
+    if (state && state.target) {
+      const verbs = { before: "Move before", after: "Move after", inside: "Move into" };
+      const nested = state.zone === "after" && state.target.parentId === state.overId;
+      moveGhostEl.appendChild(el("span", "move-ghost-verb", nested ? "Move into" : verbs[state.zone]));
+      moveGhostEl.appendChild(el("span", "move-ghost-target", state.overName));
+      return;
+    }
+    moveGhostEl.appendChild(el("span", "move-ghost-verb", "Drag to move"));
+    moveGhostEl.appendChild(el("span", "move-ghost-target", drag.node.name));
+  }
+
+  function noEntryIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("class", "icon-no-entry");
+    svg.innerHTML =
+      '<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
+      '<line x1="3.6" y1="12.4" x2="12.4" y2="3.6" stroke="currentColor" stroke-width="1.5"/>';
+    return svg;
+  }
+
+  function clearTreeDrop(drag) {
+    if (drag.expandTimer) {
+      clearTimeout(drag.expandTimer);
+      drag.expandTimer = null;
+    }
+    if (drag.row) drag.row.classList.remove(...TREE_DROP_CLASSES);
+    drag.row = null;
+    drag.zone = null;
+    drag.target = null;
+    drag.problem = null;
+  }
+
+  /** The row's own disclosure control, and whether it is open. */
+  function rowToggle(row) {
+    const toggle = row.querySelector(".tree-toggle, .ced-twisty");
+    const canOpen = !!toggle && !toggle.classList.contains("is-leaf");
+    return { toggle, canOpen, open: canOpen && toggle.getAttribute("aria-expanded") === "true" };
+  }
+
+  /**
+   * Aim the drag at the row under the pointer: work out the zone and the
+   * target, draw the indicator (a line before/after, an outline inside, all
+   * in the danger style with the ghost saying why when the drop would be
+   * refused), and arm the hover-expand for a collapsed row aimed INTO.
+   */
+  function hoverTreeDrop(drag, x, y) {
+    const under = document.elementFromPoint(x, y);
+    const row = under && under.closest ? under.closest("[data-move-id]") : null;
+    if (!row || !drag.container.contains(row)) {
+      clearTreeDrop(drag);
+      setTreeGhost(drag, null);
+      return;
+    }
+    const overId = Number(row.dataset.moveId);
+    const rect = row.getBoundingClientRect();
+    const zone = treeMove().dropZone(rect.top, rect.height, y);
+    if (row === drag.row && zone === drag.zone) return;
+    const sameRow = row === drag.row;
+    const timer = drag.expandTimer;
+    drag.expandTimer = null;
+    clearTreeDrop(drag);
+    if (sameRow && zone === "inside") drag.expandTimer = timer;
+    else if (timer) clearTimeout(timer);
+
+    const disclosure = rowToggle(row);
+    const target = treeMove().dropTarget(treeRoots, drag.node.id, overId, zone, disclosure.open);
+    drag.row = row;
+    drag.zone = zone;
+    if (!target) {
+      setTreeGhost(drag, null);
+      return;
+    }
+    const problem = treeMove().problemFor(treeRoots, drag.node.id, target.parentId, treeMaxDepth);
+    drag.target = target;
+    drag.problem = problem;
+    row.classList.add(`drop-${zone}`);
+    if (zone === "after" && target.parentId === overId) row.classList.add("drop-nested");
+    if (problem) row.classList.add("drop-invalid");
+    const over = categoryIndex.get(overId);
+    setTreeGhost(drag, { target, problem, zone, overId, overName: over ? over.name : "" });
+
+    // Hovering INTO a collapsed row opens it, so a deep target is reachable
+    // in one gesture - the revealed rows are ordinary drop targets in turn.
+    if (zone === "inside" && !problem && !disclosure.open && !drag.expandTimer) {
+      const canOpen = drag.surface === "editor" || disclosure.canOpen;
+      if (!canOpen) return;
+      drag.expandTimer = setTimeout(() => {
+        drag.expandTimer = null;
+        if (treeDrag !== drag) return;
+        if (drag.surface === "editor") setCatEditorExpanded(overId, true, { focus: false });
+        else if (disclosure.toggle) disclosure.toggle.click();
+      }, DRAG_EXPAND_MS);
+    }
+  }
+
+  function autoScrollTreeDrag(drag) {
+    const pane = drag.scroller;
+    if (!pane || pane.scrollHeight <= pane.clientHeight) return;
+    const rect = pane.getBoundingClientRect();
+    const { x, y } = drag.pointer;
+    if (x < rect.left || x > rect.right) return;
+    if (y > rect.top && y - rect.top < DRAG_SCROLL_EDGE) pane.scrollTop -= DRAG_SCROLL_STEP;
+    else if (y < rect.bottom && rect.bottom - y < DRAG_SCROLL_EDGE) pane.scrollTop += DRAG_SCROLL_STEP;
+  }
+
+  function startTreeDrag(e, grip, node, surface) {
+    if (treeDrag || cardDrag || treeMoveBusy || !treeMove()) return;
     if (e.button !== undefined && e.button !== 0) return;
-    const li = grip.closest("li");
-    const list = li && li.parentElement;
-    if (!li || !list) return;
     e.preventDefault();
     try {
       grip.setPointerCapture(e.pointerId);
     } catch (_) {
-      /* no active pointer to capture (synthetic event); moves still reach the grip */
+      /* no active pointer to capture (synthetic event); moves still bubble to the document */
     }
-    const startY = e.clientY;
-    const ids = treeRoots.map((r) => r.id);
-    const others = Array.from(list.children).filter((c) => c !== li);
-    const mids = others.map((c) => {
-      const r = c.getBoundingClientRect();
-      return r.top + r.height / 2;
-    });
-    let target = ids.indexOf(node.id);
-    li.classList.add("is-dragging");
-    treeEl.classList.add("is-reordering");
+    const editorSurface = surface === "editor";
+    const container = editorSurface ? catEditorTreeEl : treeEl;
+    const drag = {
+      node,
+      grip,
+      surface,
+      container,
+      scroller: editorSurface ? catEditorTreeEl : treeEl.closest(".sidebar-inner"),
+      source: grip.closest("li"),
+      origin: { x: e.clientX, y: e.clientY },
+      pointer: { x: e.clientX, y: e.clientY },
+      started: false,
+      row: null,
+      zone: null,
+      target: null,
+      problem: null,
+      expandTimer: null,
+      raf: null,
+    };
+    treeDrag = drag;
 
-    const markTarget = () => {
-      others.forEach((c) => c.classList.remove("drop-before", "drop-after"));
-      if (target < others.length) others[target].classList.add("drop-before");
-      else if (others.length) others[others.length - 1].classList.add("drop-after");
+    const begin = () => {
+      drag.started = true;
+      if (drag.source) drag.source.classList.add("is-move-source");
+      container.classList.add("is-reordering");
+      document.body.classList.add("is-tree-dragging");
+      if (moveGhostEl) moveGhostEl.hidden = false;
+      setTreeGhost(drag, null);
+      positionGhost(drag.pointer.x, drag.pointer.y);
+      const tick = () => {
+        if (treeDrag !== drag) return;
+        autoScrollTreeDrag(drag);
+        drag.raf = window.requestAnimationFrame(tick);
+      };
+      drag.raf = window.requestAnimationFrame(tick);
     };
+
     const onMove = (ev) => {
-      li.style.transform = `translateY(${ev.clientY - startY}px)`;
-      target = window.XBORootOrder.dropIndex(mids, ev.clientY);
-      markTarget();
+      if (ev.pointerId !== e.pointerId) return;
+      drag.pointer = { x: ev.clientX, y: ev.clientY };
+      if (!drag.started) {
+        if (!cardGesture().passedSlop(drag.origin, drag.pointer)) return;
+        begin();
+      }
+      // Aim first: the ghost's label (and so its width) changes with the
+      // target, and it is clamped to the viewport by that width.
+      hoverTreeDrop(drag, ev.clientX, ev.clientY);
+      positionGhost(ev.clientX, ev.clientY);
     };
+
     const finish = (ev, cancelled) => {
-      grip.removeEventListener("pointermove", onMove);
-      grip.removeEventListener("pointerup", onUp);
-      grip.removeEventListener("pointercancel", onCancel);
+      if (treeDrag !== drag) return;
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onCancel);
+      document.removeEventListener("keydown", onKey, true);
       try {
-        grip.releasePointerCapture(ev.pointerId);
+        if (ev) grip.releasePointerCapture(ev.pointerId);
       } catch (_) {
         /* capture already gone */
       }
-      li.classList.remove("is-dragging");
-      li.style.transform = "";
-      treeEl.classList.remove("is-reordering");
-      others.forEach((c) => c.classList.remove("drop-before", "drop-after"));
+      if (drag.raf != null) window.cancelAnimationFrame(drag.raf);
+      const { target, problem, started } = drag;
+      clearTreeDrop(drag);
+      if (drag.source) drag.source.classList.remove("is-move-source");
+      container.classList.remove("is-reordering");
+      document.body.classList.remove("is-tree-dragging", "is-tree-drop-invalid");
+      if (moveGhostEl) {
+        moveGhostEl.hidden = true;
+        moveGhostEl.classList.remove("is-over", "is-invalid");
+      }
+      treeDrag = null;
       if (cancelled) return;
-      const next = window.XBORootOrder.moveTo(ids, node.id, target);
-      if (!window.XBORootOrder.sameOrder(ids, next)) commitRootOrder(next, node);
+      // A press that never became a drag is a press: the picker, so the grip
+      // is never a control that does nothing when you click it.
+      if (!started) {
+        openCategoryMovePicker(node, grip, surface);
+        return;
+      }
+      if (!target) return;
+      if (problem) {
+        showTreeMoveError(problem.message, surface);
+        return;
+      }
+      void commitCategoryMove(node, target, { surface }).then((result) => {
+        if (!result.ok) showTreeMoveError(result.error, surface);
+      });
     };
-    const onUp = (ev) => finish(ev, false);
-    const onCancel = (ev) => finish(ev, true);
-    grip.addEventListener("pointermove", onMove);
-    grip.addEventListener("pointerup", onUp);
-    grip.addEventListener("pointercancel", onCancel);
+
+    const onUp = (ev) => {
+      if (ev.pointerId === e.pointerId) finish(ev, false);
+    };
+    const onCancel = (ev) => {
+      if (ev.pointerId === e.pointerId) finish(ev, true);
+    };
+    const onKey = (ev) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(null, true);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onCancel);
+    document.addEventListener("keydown", onKey, true);
   }
 
   // ---- bookmarks ---------------------------------------------------------
@@ -3760,8 +4047,13 @@
 
   function positionGhost(x, y) {
     if (!moveGhostEl) return;
-    // transform-only so following the pointer never triggers layout.
-    moveGhostEl.style.transform = `translate3d(${x + 14}px, ${y + 14}px, 0)`;
+    // transform-only so following the pointer never triggers layout. Kept
+    // inside the viewport: on a phone the pointer is often near the right
+    // edge, and a ghost cut off there hides the very name it is showing.
+    const gutter = 8;
+    const left = Math.max(gutter, Math.min(x + 14, window.innerWidth - moveGhostEl.offsetWidth - gutter));
+    const top = Math.max(gutter, Math.min(y + 14, window.innerHeight - moveGhostEl.offsetHeight - gutter));
+    moveGhostEl.style.transform = `translate3d(${left}px, ${top}px, 0)`;
   }
 
   function clearDropTarget(drag) {
@@ -3935,6 +4227,7 @@
   function openMovePicker(bm, card, triggerEl) {
     if (!moveModalEl) return;
     movePicker = {
+      mode: "post",
       bm,
       card,
       trigger: triggerEl,
@@ -3949,6 +4242,82 @@
       for (const id of picker().ancestorIds(categoryIndex, current)) movePicker.expanded.add(id);
       if (categoryIndex.has(current)) movePicker.focusedId = current;
     }
+    setMovePickerMode(null);
+    showMovePicker();
+  }
+
+  // The picker's second job: "Move to…" for a CATEGORY (a grip pressed, or
+  // Enter on it). The same tree and keyboard contract, plus a "Top level"
+  // item first, and every place the category cannot go marked with a short
+  // reason in words (never color alone) and explained in full when chosen.
+
+  /** The synthetic "Top level" item's id - category ids start at 1. */
+  const TOP_LEVEL_ID = 0;
+  const MOVE_BLOCK_LABELS = { cycle: "Inside itself", depth: "Too deep", clash: "Name taken" };
+  let moveDefaults = null;
+
+  function setMovePickerMode(node) {
+    if (!moveDefaults) {
+      moveDefaults = {
+        title: moveTitleEl ? moveTitleEl.textContent : "",
+        intro: moveIntroEl ? moveIntroEl.textContent : "",
+        confirm: moveConfirmBtn.textContent,
+      };
+    }
+    if (moveTitleEl) moveTitleEl.textContent = node ? `Move “${node.name}”` : moveDefaults.title;
+    if (moveIntroEl) {
+      moveIntroEl.textContent = node
+        ? "Pick where it goes: into another category, or to the top level. Its sub-categories and posts move with it."
+        : moveDefaults.intro;
+    }
+    moveConfirmBtn.textContent = node ? "Move category" : moveDefaults.confirm;
+    // Opened from the category editor, the picker stacks above it.
+    const over = !!node && isCatEditorOpen();
+    moveModalEl.classList.toggle("is-over-modal", over);
+    moveBackdropEl.classList.toggle("is-over-modal", over);
+  }
+
+  function openCategoryMovePicker(node, triggerEl, surface) {
+    if (!moveModalEl || !treeMove() || isMovePickerOpen()) return;
+    const here = treeMove().locate(treeRoots, node.id);
+    if (!here) return;
+    movePicker = {
+      mode: "category",
+      node,
+      surface,
+      trigger: triggerEl,
+      selectedId: null,
+      focusedId: here.parent ? here.parent.id : TOP_LEVEL_ID,
+      expanded: new Set(treeMove().ancestorIds(treeRoots, node.id)),
+    };
+    setMovePickerMode(node);
+    showMovePicker();
+  }
+
+  /** Why the moved category cannot go into picker item `id`, or null. */
+  function categoryPickBlock(id) {
+    const moved = movePicker.node;
+    const parentId = id === TOP_LEVEL_ID ? null : id;
+    const here = treeMove().locate(treeRoots, moved.id);
+    if (!here) return { label: "Gone", message: "That category is no longer here. Reload and try again." };
+    const currentParent = here.parent ? here.parent.id : null;
+    if (currentParent === parentId) {
+      return {
+        label: "Already here",
+        message: here.parent
+          ? `“${moved.name}” is already in “${here.parent.name}”.`
+          : `“${moved.name}” is already a top-level category.`,
+      };
+    }
+    const problem = treeMove().problemFor(treeRoots, moved.id, parentId, treeMaxDepth);
+    if (!problem) return null;
+    return {
+      label: id === moved.id ? "This category" : MOVE_BLOCK_LABELS[problem.problem] || "Not here",
+      message: problem.message,
+    };
+  }
+
+  function showMovePicker() {
     moveSearchInput.value = "";
     moveSearchClear.hidden = true;
     moveErrorEl.hidden = true;
@@ -3965,6 +4334,8 @@
     if (!isMovePickerOpen()) return;
     moveModalEl.hidden = true;
     moveBackdropEl.hidden = true;
+    moveModalEl.classList.remove("is-over-modal");
+    moveBackdropEl.classList.remove("is-over-modal");
     document.removeEventListener("keydown", onMoveModalKeydown);
     const trigger = movePicker && movePicker.trigger;
     movePicker = null;
@@ -3994,7 +4365,10 @@
   /** The roots the picker is showing: the whole tree, or the search's pruned copy. */
   function moveVisibleRoots() {
     const query = moveSearchQuery().toLowerCase();
-    return query ? picker().filterTree(treeRoots, query) : treeRoots;
+    const roots = query ? picker().filterTree(treeRoots, query) : treeRoots;
+    if (!movePicker || movePicker.mode !== "category") return roots;
+    const top = { id: TOP_LEVEL_ID, parentId: null, name: "Top level", path: ["Top level"], children: [] };
+    return [top, ...roots];
   }
 
   /** While searching every surviving branch is forced open, exactly as the sidebar does. */
@@ -4015,7 +4389,7 @@
       return;
     }
     const roots = moveVisibleRoots();
-    if (roots.length === 0) {
+    if (roots.length === 0 || (movePicker.mode === "category" && roots.length === 1 && raw)) {
       stateMessage(moveTreeEl, "empty", `No categories match “${raw}”.`);
       return;
     }
@@ -4035,6 +4409,7 @@
       const hasChildren = !!(node.children && node.children.length);
       const expanded = hasChildren && moveIsExpanded(node);
       const selected = movePicker.selectedId === node.id;
+      const block = movePicker.mode === "category" ? categoryPickBlock(node.id) : null;
 
       const li = el("li", "move-item");
       li.setAttribute("role", "treeitem");
@@ -4043,12 +4418,15 @@
       // without this its accessible name would swallow its whole subtree.
       li.setAttribute("aria-label", node.name);
       li.setAttribute("aria-selected", String(selected));
+      if (block) li.setAttribute("aria-disabled", "true");
       if (hasChildren) li.setAttribute("aria-expanded", String(expanded));
       li.dataset.categoryId = String(node.id);
       li.tabIndex = node.id === movePicker.focusedId ? 0 : -1;
 
       const row = el("div", "move-row");
       if (selected) row.classList.add("is-selected");
+      if (block) row.classList.add("is-disabled");
+      if (node.id === TOP_LEVEL_ID && movePicker.mode === "category") row.classList.add("is-top-level");
       const chev = el("span", hasChildren ? "move-chev" : "move-chev is-leaf");
       chev.setAttribute("aria-hidden", "true");
       if (hasChildren) chev.textContent = "▶";
@@ -4056,6 +4434,7 @@
       const label = el("span", "move-label");
       appendHighlighted(label, node.name, query);
       row.appendChild(label);
+      if (block) row.appendChild(el("span", "move-note", block.label));
       // The selection is carried by a mark as well as the tint, never by
       // color alone.
       const mark = el("span", "move-check");
@@ -4106,6 +4485,17 @@
   /** The chosen destination in prose, plus whether confirming would do anything. */
   function updateMoveSelection() {
     if (!movePicker) return;
+    if (movePicker.mode === "category") {
+      const id = movePicker.selectedId;
+      const block = id == null ? null : categoryPickBlock(id);
+      moveConfirmBtn.disabled = id == null || !!block;
+      const name = movePicker.node.name;
+      if (id == null) moveSelectionEl.textContent = "No place chosen yet.";
+      else if (block) moveSelectionEl.textContent = block.message;
+      else if (id === TOP_LEVEL_ID) moveSelectionEl.textContent = `Move “${name}” to the top level.`;
+      else moveSelectionEl.textContent = `Move “${name}” into ${picker().pathLabel(categoryIndex.get(id))}.`;
+      return;
+    }
     const node = movePicker.selectedId != null ? categoryIndex.get(movePicker.selectedId) : null;
     const noop = picker().isNoOp(movePicker.selectedId, movePicker.bm.categoryIds);
     moveConfirmBtn.disabled = noop;
@@ -4120,6 +4510,10 @@
 
   async function confirmMove() {
     if (!movePicker || movePicker.selectedId == null) return;
+    if (movePicker.mode === "category") {
+      await confirmCategoryMove();
+      return;
+    }
     const { bm, card, selectedId } = movePicker;
     moveConfirmBtn.disabled = true;
     moveConfirmBtn.classList.add("is-loading");
@@ -4135,6 +4529,26 @@
     }
     moveConfirmBtn.classList.remove("is-loading");
     closeMovePicker(treeEl.querySelector(`[data-category-id="${selectedId}"]`));
+  }
+
+  async function confirmCategoryMove() {
+    const { node, surface, selectedId } = movePicker;
+    if (categoryPickBlock(selectedId)) return;
+    const parentId = selectedId === TOP_LEVEL_ID ? null : selectedId;
+    const target = { parentId, index: treeMove().childrenOf(treeRoots, parentId, node.id).length };
+    moveConfirmBtn.disabled = true;
+    moveConfirmBtn.classList.add("is-loading");
+    moveErrorEl.hidden = true;
+    const result = await commitCategoryMove(node, target, { surface });
+    moveConfirmBtn.classList.remove("is-loading");
+    if (!result.ok) {
+      moveErrorEl.textContent = result.error;
+      moveErrorEl.hidden = false;
+      moveConfirmBtn.disabled = false;
+      return;
+    }
+    const host = surface === "editor" ? catEditorTreeEl : treeEl;
+    closeMovePicker(host.querySelector(`[data-grip-for="${node.id}"]`));
   }
 
   function onMoveTreeKeydown(e) {
@@ -4315,7 +4729,8 @@
     // Start from the expansion state the sidebar is showing, so the editor
     // opens on the part of the tree the owner is already looking at.
     const expanded = new Set();
-    for (const [id, open] of expansionState) if (open) expanded.add(id);
+    // (The sidebar keys its state by the id's STRING, the editor by the number.)
+    for (const [id, open] of expansionState) if (open) expanded.add(Number(id));
     catEditor = { trigger: triggerEl, expanded, adding: undefined, busy: false };
     showCatEditorError(null);
     renderCategoryEditor();
@@ -4382,6 +4797,7 @@
       const li = el("li", "ced-item");
       const row = el("div", "ced-row");
       row.style.setProperty("--ced-depth", String(depth));
+      row.dataset.moveId = String(node.id);
 
       const bin = el("button", "ced-bin");
       bin.type = "button";
@@ -4395,6 +4811,10 @@
       const indent = el("span", "ced-indent");
       indent.setAttribute("aria-hidden", "true");
       row.appendChild(indent);
+
+      // The grip steps in with the depth, like the sidebar's: it belongs to
+      // this node, and dragging it carries the node's whole subtree along.
+      row.appendChild(createTreeGrip(node, "editor"));
 
       // EVERY node gets a twisty here, including a leaf - unlike the sidebar,
       // where one would open on nothing. Opening a leaf reveals the "+" that
@@ -4415,7 +4835,9 @@
       const chev = el("span", "ced-chev", "▶");
       chev.setAttribute("aria-hidden", "true");
       twisty.appendChild(chev);
-      twisty.addEventListener("click", () => setCatEditorExpanded(node.id, !expanded));
+      twisty.addEventListener("click", () =>
+        setCatEditorExpanded(node.id, twisty.getAttribute("aria-expanded") !== "true"),
+      );
       row.appendChild(twisty);
 
       row.appendChild(el("span", "ced-name", node.name));
@@ -4469,6 +4891,12 @@
     const parentId = parent ? parent.id : null;
     const li = el("li", "ced-add-row");
     li.style.setProperty("--ced-depth", String(depth));
+    // The same leading columns as a category row - the bin's, then the
+    // depth - so the "+" starts exactly where the rows of the level it adds
+    // to start (their grip), not a bin's width to the left of them.
+    const lead = el("span", "ced-lead");
+    lead.setAttribute("aria-hidden", "true");
+    li.appendChild(lead);
     const indent = el("span", "ced-indent");
     indent.setAttribute("aria-hidden", "true");
     li.appendChild(indent);
@@ -4563,12 +4991,34 @@
     return form;
   }
 
-  function setCatEditorExpanded(id, open) {
+  /**
+   * Open or close one row's group IN PLACE - never a re-render, which would
+   * throw away the focused twisty and, mid-drag, the grip holding the
+   * pointer (a hovered row opens itself while a category is dragged over it).
+   */
+  function setCatEditorExpanded(id, open, opts) {
     if (!catEditor) return;
     if (open) catEditor.expanded.add(id);
     else catEditor.expanded.delete(id);
-    renderCategoryEditor();
-    focusCatEditorRow(id);
+    const group = document.getElementById(`ced-group-${id}`);
+    const twisty = catEditorTreeEl.querySelector(`.ced-twisty[aria-controls="ced-group-${id}"]`);
+    const node = categoryIndex.get(id);
+    if (!group || !twisty || !node) {
+      renderCategoryEditor();
+      if (!opts || opts.focus !== false) focusCatEditorRow(id);
+      return;
+    }
+    group.hidden = !open;
+    twisty.setAttribute("aria-expanded", String(open));
+    const hasChildren = !!(node.children && node.children.length);
+    twisty.setAttribute(
+      "aria-label",
+      open
+        ? `Collapse “${node.name}”`
+        : hasChildren
+          ? `Expand “${node.name}”`
+          : `Open “${node.name}” to add a category in it`,
+    );
   }
 
   function startCatAdd(parentId) {
@@ -5018,8 +5468,9 @@
 
   function onCatEditorKeydown(e) {
     if (!isCatEditorOpen()) return;
-    // The confirmation is on top and owns the keyboard while it is open.
-    if (isCatDeleteOpen() || isCatFindOpen()) return;
+    // The confirmation (or the "Move to…" picker) is on top and owns the
+    // keyboard while it is open.
+    if (isCatDeleteOpen() || isCatFindOpen() || isMovePickerOpen()) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();

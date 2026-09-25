@@ -137,6 +137,10 @@
           </div>
         </div>
         <p id="tree-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
+        <p id="tree-move-help" class="visually-hidden">
+          Drag to move it. Or press Up or Down arrow to reorder it, Left arrow to move it out of its
+          parent, Right arrow to move it into the category above, or Enter to choose where it goes.
+        </p>
         <div id="tree" class="tree">
           <p class="state state-loading" role="status">Loading categories…</p>
         </div>
@@ -934,10 +938,11 @@
       </div>
     </div>
 
-    <!-- Move a post to another category (issue #92). The keyboard-accessible
-         equivalent of dragging a card's handle onto the sidebar: the same
-         tree and the same search filter, minus the roots' reorder grips
-         (a sidebar-only affordance), plus single-select and a confirm. -->
+    <!-- Move a post to another category (issue #92) - or a CATEGORY to another
+         place ("Move to…", from a category's grip). The keyboard-accessible
+         equivalent of dragging: the same tree and the same search filter,
+         minus the grips, plus single-select and a confirm. app.js retitles it
+         per use. -->
     <div id="move-backdrop" class="reader-backdrop" hidden></div>
     <div
       id="move-modal"
@@ -1011,7 +1016,7 @@
     <div id="cat-editor-backdrop" class="reader-backdrop" hidden></div>
     <div
       id="cat-editor-modal"
-      class="reader-modal setup-modal"
+      class="reader-modal setup-modal cat-editor-modal"
       hidden
       role="dialog"
       aria-modal="true"
@@ -1025,7 +1030,9 @@
             <p id="cat-editor-intro" class="setup-step-hint">
               Categories you add are yours: syncs file posts into them but never change them. The
               person icon marks a category as yours; the magnifier finds stored bookmarks that fit
-              it. Deleting a category deletes its sub-categories and any post filed nowhere else.
+              it. Drag a category's handle to move it, with everything in it, or press the handle to
+              pick a place. Deleting a category deletes its sub-categories and any post filed
+              nowhere else.
             </p>
           </div>
           <div class="reader-header-actions">
@@ -1188,7 +1195,7 @@
     <script src="sidebar-state.js" defer></script>
     <script src="tree-color.js" defer></script>
     <script src="tree-counts.js" defer></script>
-    <script src="root-order.js" defer></script>
+    <script src="tree-move.js" defer></script>
     <script src="read-toggle.js" defer></script>
     <script src="sidebar-width.js" defer></script>
     <script src="scroll-top.js" defer></script>

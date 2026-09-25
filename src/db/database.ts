@@ -131,6 +131,8 @@ interface CategoryRow {
   description?: string | null;
   created_at: string;
   origin?: string | null;
+  /** Absent on a row written before the column existed. */
+  position?: number | null;
 }
 
 interface ArticleRow {
@@ -223,6 +225,7 @@ function toCategoryNode(row: CategoryRow): CategoryNode {
     name: row.name,
     origin: row.origin === 'user' ? 'user' : 'generated',
     description: row.description ?? null,
+    position: row.position ?? null,
     createdAt: row.created_at,
   };
 }
@@ -741,6 +744,30 @@ export class Database {
         .run(...keep);
     });
     tx();
+  }
+
+  /**
+   * Run `fn` in one transaction: everything it writes lands, or nothing does.
+   * Nests (as a savepoint) inside another transaction.
+   */
+  inTransaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
+  /**
+   * Re-parent a category (null: make it a root). Its descendants and its
+   * bookmark links ride along untouched, since both hang off its id - and so
+   * does its `origin`: moving is the owner's action, never a pass's. The
+   * CALLER validates the move (`planCategoryMove`) - this is only the write.
+   */
+  setCategoryParent(id: number, parentId: number | null): boolean {
+    return this.db.prepare('UPDATE categories SET parent_id = ? WHERE id = ?').run(parentId, id).changes > 0;
+  }
+
+  /** Store `ids` (one parent's children, in the wanted order) as positions 0..n-1. */
+  setCategoryPositions(ids: number[]): void {
+    const stmt = this.db.prepare('UPDATE categories SET position = ? WHERE id = ?');
+    this.inTransaction(() => ids.forEach((id, i) => stmt.run(i, id)));
   }
 
   /**

@@ -616,21 +616,32 @@ counter update walks each id's ancestor chain and applies a total/unread delta o
 deduplicated affected category (`src/web/public/tree-counts.js`, `applyCountDelta` +
 `updateSidebarCounts`/`patchCategoryCountDom` in `app.js`), because a category's rolled-up counts
 include all descendants (`assembleTree` in `src/categorize/tree.ts`) and a multi-category bookmark
-must not double-adjust a shared ancestor. **Root categories are reorderable** (issue #82): a grip handle (pointer drag, or ArrowUp/ArrowDown on
-the focused handle) on ROOTS only, hidden while a search filters the tree. The order is persisted
-server-side in `run_state` key `root_order` as a list of root NAMES (not ids: `recategorize` clears
-and re-creates every `categories` row, so ids do not survive it, names do), applied by
-`orderRoots`/`assembleTree` in `src/categorize/tree.ts` to roots only - an unsaved root follows
-alphabetically, children stay alphabetical. `PUT /api/categories/root-order` takes the complete
-list of root ids (400 for an unknown/child/duplicate id, 409 for an incomplete/stale list). Pure
-order math lives in `root-order.js` (`XBORootOrder`).
+must not double-adjust a shared ancestor.
+
+**Every category is movable, at any level** (issue #82 did roots; now any depth), from a grip on
+EVERY row of the sidebar AND the category editor (hidden while a search filters the sidebar). One
+engine in `app.js` (`startTreeDrag`/`hoverTreeDrop`/`commitCategoryMove`) drives both surfaces:
+pointer drag with before/after/inside zones, hover-expand, a "can't drop here" cue (danger styling
++ the reason in the ghost); on the focused grip Up/Down reorder, Left moves out of the parent,
+Right into the sibling above, Enter (or a press that never became a drag) opens the move picker in
+its "category" mode (a "Top level" item, blocked places labelled). A drop or picker move offers
+Undo (the same route back to `currentPlace`). ONE route, `PUT /api/categories/:id/position`
+`{ parentId | null, index }` (`src/categorize/move.ts`: pure `planCategoryMove` + one-transaction
+`moveCategory`), refuses a cycle (400), a move past `XBOOKMARKS_MAX_DEPTH` that also deepens the
+tree (400 - `/api/tree` serves `maxDepth`), and a case-insensitive sibling name clash (409). The
+client's pure `tree-move.js` (`XBOTreeMove`) mirrors those refusals WORD FOR WORD - keep them in
+step. It is an owner action: owner-category protections never block it and `origin` is kept.
+**Sibling order** is `categories.position` (NULL = never placed) read through ONE function,
+`orderSiblings` in `src/categorize/tree.ts`: placed siblings by position, then the rest by name -
+which is where a sync's new category lands (after the owner's arrangement). The root level ALSO
+keeps the old name-keyed `run_state` `root_order` mirror, rewritten with every root-level move,
+because `recategorize` re-creates generated rows (positions lost) but names survive; a root with
+no position ranks by its index there, which is also how a pre-position library keeps its order.
 
 The category tree renders with every node - including
 roots - collapsed by default until the owner expands it or a search match forces ancestors open.
-Indentation is two tokens, not a literal: `--tree-grip-width` (the drag handle's column, roots
-only) and `--tree-indent` (the per-level step). A root's first level of children clears the grip
-column FIRST and then takes the step, because without that a subtree started left of its own
-root's chevron and read as a sibling.
+Indentation is two tokens, not a literal: `--tree-grip-width` (the drag handle's column, on every
+row) and `--tree-indent` (the per-level step).
 
 The per-root tree tint (`tree-color.js`) has a paired on/off toggle, persisted in localStorage
 (`readColorEnabled`/`writeColorEnabled`, default **off** - a plain tree - since issue #30) via a
@@ -770,7 +781,10 @@ confirms. `app.js` owns the markup. Two things there are deliberate. The editor'
 leaf, because opening a leaf is what reveals the "+" that files a child under it - without it a
 category the owner just created would be a dead end. The bin is a fixed column at the far LEFT of
 every row, so depth is carried by a spacer INSIDE the row (`--ced-depth`) rather than by padding on
-the nested list. After a delete the viewer drops every cached view and resets the card pool (posts
+the nested list; an add row carries `.ced-lead` in place of the bin so its "+" lines up with the
+grips of the level it adds to (both read `--ced-control`/`--ced-step`). A twisty opens its group IN
+PLACE, never by re-rendering - a mid-drag hover-expand would otherwise destroy the grip holding the
+pointer. The modal is most of the viewport (full screen on a phone). After a delete the viewer drops every cached view and resets the card pool (posts
 went, and the ones spared were re-filed), and a selection inside the deleted subtree falls back to
 the empty state.
 
@@ -823,8 +837,7 @@ The two surfaces are `app.js`'s `startCardDrag` (the card's `.card-grip`, LEFT o
 and `openMovePicker` (the `.move-btn`, between Favorite and Summarize); both end in
 `moveBookmarkToCategory`, which is the only place the re-file's consequences are settled.
 
-- **The drag is POINTER events, not HTML5 DnD** - the same idiom the roots' reorder grip (#82)
-  uses. It works with a finger, it is unaffected by the cross-origin X embeds a card is full of,
+- **The drag is POINTER events, not HTML5 DnD** - the same idiom the category grips use. It works with a finger, it is unaffected by the cross-origin X embeds a card is full of,
   and hover-expand timing stays in `app.js`. Expanding a hovered category is delegated to the
   tree's OWN toggle, which is what makes drilling in recursive for free. The grip also OPENS THE
   PICKER on a press that never became a drag (and on Enter/Space): a focusable control that only
@@ -838,7 +851,7 @@ and `openMovePicker` (the `.move-btn`, between Favorite and Summarize); both end
   Home/End, Enter/Space select). Its pure half is `src/web/public/category-picker.js`
   (`XBOCategoryPicker`: the search filter - the sidebar's, so it prunes identically -
   `visibleItems`, `focusTarget`/`lateralTarget`, `isNoOp`, `pathLabel`), unit-tested DOM-free like
-  `tree-counts.js`. Roots carry NO reorder grip here; #82 is a sidebar-only affordance.
+  `tree-counts.js`. It carries no grips; the same modal doubles as a category's "Move to…".
 - **Counts are `XBOTreeCounts.applyMoveDelta`**: the source chains lose the post and the
   destination chain gains it, as two sequenced `applyCountDelta` calls, so an ancestor common to
   both nets ZERO - correct, because a rolled-up count is DISTINCT bookmarks in the subtree.

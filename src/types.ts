@@ -148,6 +148,12 @@ export interface CategoryNode {
    * the column existed, or created without one by an older version.
    */
   description?: string | null;
+  /**
+   * The owner's order among siblings, from a drag or a keyboard move. Null (or
+   * absent) for a node never ordered - every row a sync creates - which sorts
+   * after the ordered siblings, by name. See `orderSiblings`.
+   */
+  position?: number | null;
   createdAt: string;
 }
 

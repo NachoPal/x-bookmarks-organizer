@@ -119,6 +119,12 @@
      per-level indent. Children clear the handle AND step in past it, so a
      subtree still reads as sitting inside its root (issue #89). */
   --tree-grip-width: 1.5rem;
+  /* Where a drop line starts inside a row: the sidebar's rows begin at their
+     grip; the editor's begin after the bin column (set on .ced-row). */
+  --drop-line-inset: 0rem;
+  /* How far a child row starts right of its parent's row (the nested list's
+     margin + padding) - where "after an open parent" draws its line. */
+  --drop-nest-step: calc(var(--space-1) + var(--tree-indent));
   --tree-indent: var(--space-4);
 
   /* Layout */
@@ -1653,13 +1659,6 @@ body[data-resizing="sidebar"] {
   padding-left: var(--tree-indent);
   border-left: 1px solid var(--color-border);
 }
-/* Roots carry a drag handle (issue #82) that their children do not, so a
-   root's subtree would otherwise start LEFT of its own chevron and read as a
-   sibling. Its first level clears that column first, then takes the same
-   step as every deeper level. */
-.tree > ul > li > ul {
-  margin-left: calc(var(--tree-grip-width) + var(--space-1));
-}
 .tree-row {
   display: flex;
   align-items: flex-start;
@@ -1688,8 +1687,10 @@ body[data-resizing="sidebar"] {
 .tree-toggle[aria-expanded="true"] .chev {
   transform: rotate(90deg);
 }
-/* Root reorder handle (issue #82). Roots only. 1.75rem wide, full row height,
-   so it is a comfortable target; touch-action none lets a finger drag it. */
+/* Move handle, on EVERY row (issue #82 put it on roots; any level since):
+   drag it anywhere in the tree, or use it from the keyboard. Full row
+   height, so it is a comfortable target; touch-action none lets a finger
+   drag it. Absent while a search filters the tree. */
 .tree-grip {
   flex: 0 0 auto;
   width: var(--tree-grip-width);
@@ -1723,38 +1724,69 @@ body[data-resizing="sidebar"] {
   outline: 2px solid var(--color-focus);
   outline-offset: 1px;
 }
-.tree > ul > li {
+/* --- moving a category: the drag's cues, shared by the sidebar rows and the
+   category editor's rows. The dragged category - its whole subtree, since
+   that moves with it - dims in place; the ghost that follows the pointer is
+   `.move-ghost`. Every indicator is a pseudo-element or an inset shadow, so
+   aiming never moves a row. */
+.tree-row,
+.ced-row {
   position: relative;
 }
-.tree > ul > li.is-dragging {
-  z-index: 2;
-  opacity: 0.92;
-  background: var(--color-surface);
-  box-shadow: var(--shadow-md);
-  border-radius: var(--radius-sm);
-  pointer-events: none;
+.is-move-source {
+  opacity: 0.5;
 }
-.tree.is-reordering {
+.tree.is-reordering,
+.cat-editor-tree.is-reordering {
   user-select: none;
+}
+body.is-tree-dragging,
+body.is-tree-dragging * {
   cursor: grabbing;
 }
-/* The drop line is a pseudo-element so it never moves a row. */
-.tree > ul > li.drop-before::before,
-.tree > ul > li.drop-after::after {
+body.is-tree-drop-invalid,
+body.is-tree-drop-invalid * {
+  cursor: not-allowed;
+}
+/* BEFORE / AFTER: a line at the row's own indentation. AFTER an open parent
+   means "its first child", so that line steps in one level. */
+.drop-before::before,
+.drop-after::after {
   content: "";
   position: absolute;
-  left: 0;
+  left: var(--drop-line-inset);
   right: 0;
-  height: 2px;
+  height: 3px;
   background: var(--color-accent);
-  border-radius: 1px;
+  border-radius: 2px;
   pointer-events: none;
 }
-.tree > ul > li.drop-before::before {
-  top: -1px;
+.drop-before::before {
+  top: -2px;
 }
-.tree > ul > li.drop-after::after {
-  bottom: -1px;
+.drop-after::after {
+  bottom: -2px;
+}
+.drop-after.drop-nested::after {
+  left: calc(var(--drop-line-inset) + var(--drop-nest-step));
+}
+/* INSIDE: the whole row is outlined and tinted. */
+.drop-inside {
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+/* Refused: the same shapes in the danger color, drawn DASHED where the shape
+   allows it, with the ghost stating the reason in words. */
+.drop-invalid.drop-before::before,
+.drop-invalid.drop-after::after {
+  height: 0;
+  border-top: 3px dashed var(--color-danger);
+  background: none;
+}
+.drop-invalid.drop-inside {
+  background: var(--color-danger-soft);
+  box-shadow: inset 0 0 0 2px var(--color-danger);
 }
 .tree-order-error {
   margin: 0 0 var(--space-2);
@@ -4356,6 +4388,27 @@ body.is-card-dragging .tree-node {
 .move-ghost.is-over .move-ghost-target {
   color: var(--color-accent);
 }
+/* A category drag aimed where it cannot go: the danger border, a no-entry
+   glyph and the refusal itself in words. */
+.move-ghost.is-invalid {
+  border-color: var(--color-danger);
+}
+.move-ghost.is-invalid .move-ghost-verb {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-danger);
+  font-weight: 700;
+}
+.move-ghost .icon-no-entry {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+}
+.move-ghost-reason {
+  color: var(--color-text);
+  line-height: 1.35;
+}
 
 /* --- the picker modal ----------------------------------------------------- */
 .move-panel {
@@ -4410,6 +4463,28 @@ body.is-card-dragging .tree-node {
 .move-row.is-selected {
   background: var(--color-accent-soft);
   color: var(--color-accent);
+  font-weight: 600;
+}
+/* "Move to…" for a category: a place it cannot go keeps its row (the tree
+   must still read as the tree) but says why in a note - not by color alone. */
+.move-row.is-disabled {
+  color: var(--color-text-muted);
+}
+.move-row.is-disabled.is-selected {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+.move-note {
+  flex: 0 0 auto;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.move-row.is-top-level .move-label {
   font-weight: 600;
 }
 .move-chev {
@@ -4523,15 +4598,25 @@ body.is-card-dragging .tree-node {
    indentation. The depth is therefore carried by a spacer INSIDE the row
    (`--ced-depth`), not by padding on the nested list.
    ============================================================ */
+/* Most of the viewport: the editor is where a whole tree gets rearranged by
+   dragging, and a small box would make every drag a scroll. A FIXED height
+   (not a floor and a ceiling) so the panel never resizes as branches open -
+   the owner would be chasing the row they were aiming at. Full screen on a
+   phone (below). */
 .cat-editor-panel {
-  width: min(34rem, 100%);
-  /* A floor as well as a ceiling: the tree grows and shrinks as branches are
-     opened, and a panel that resized on every twisty would make the owner
-     chase the row they were aiming at. */
-  min-height: min(26rem, 100%);
-  max-height: min(38rem, 100%);
+  width: min(64rem, 100%);
+  height: 100%;
+}
+/* The panel is wide; its prose is not. */
+.cat-editor-panel .setup-step-hint {
+  max-width: 72ch;
 }
 .cat-editor-tree {
+  /* The bin/control column and the per-level step every row and every add
+     row is laid out from - one source, so they cannot fall out of line. */
+  --ced-control: 1.75rem;
+  --ced-step: var(--tree-indent);
+  --drop-nest-step: var(--ced-step);
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -4551,6 +4636,8 @@ body.is-card-dragging .tree-node {
   border-radius: var(--radius-sm);
 }
 .ced-row {
+  /* A drop line starts at the grip: past the padding, the bin, and the depth. */
+  --drop-line-inset: calc(3 * var(--space-1) + var(--ced-control) + var(--ced-depth, 0) * var(--ced-step));
   display: flex;
   align-items: center;
   gap: var(--space-1);
@@ -4564,7 +4651,17 @@ body.is-card-dragging .tree-node {
 /* The row's depth, as an inert spacer after the bin column. */
 .ced-indent {
   flex: 0 0 auto;
-  width: calc(var(--ced-depth, 0) * var(--tree-indent));
+  width: calc(var(--ced-depth, 0) * var(--ced-step));
+}
+/* An add row's stand-in for the bin column, so its "+" lines up with the
+   grips of the level it adds to. */
+.ced-lead {
+  flex: 0 0 auto;
+  width: var(--ced-control);
+}
+.tree-grip.ced-grip {
+  width: var(--ced-control);
+  height: var(--ced-control);
 }
 .ced-bin,
 .ced-twisty,
@@ -4574,8 +4671,8 @@ body.is-card-dragging .tree-node {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.75rem;
-  height: 1.75rem;
+  width: var(--ced-control);
+  height: var(--ced-control);
   padding: 0;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -4684,6 +4781,8 @@ body.is-card-dragging .tree-node {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+  text-align: start;
   min-height: 2rem;
   padding: var(--space-1) var(--space-2);
   border: 1px dashed var(--color-border-strong);
@@ -4706,10 +4805,11 @@ body.is-card-dragging .tree-node {
 /* The inline name form the add button becomes. */
 .ced-form {
   display: flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  width: 100%;
+  min-width: 0;
   padding: var(--space-1) 0;
 }
 .ced-form .search-field {
@@ -4759,6 +4859,15 @@ body.is-card-dragging .tree-node {
 }
 
 @media (max-width: 560px) {
+  /* Full screen on a phone: every pixel goes to the tree. */
+  .cat-editor-modal {
+    padding: 0;
+  }
+  .cat-editor-panel {
+    width: 100%;
+    border: 0;
+    border-radius: 0;
+  }
   .cat-editor-tree {
     padding-left: var(--space-4);
     padding-right: var(--space-4);
@@ -4768,8 +4877,8 @@ body.is-card-dragging .tree-node {
   }
   /* A phone has no room for a full indent step per level AND the bin column,
      so the step narrows rather than pushing deep names off the row. */
-  .ced-indent {
-    width: calc(var(--ced-depth, 0) * var(--space-2));
+  .cat-editor-tree {
+    --ced-step: var(--space-2);
   }
 }
 
