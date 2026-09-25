@@ -11,9 +11,11 @@
  * one response that generated it.
  *
  * A snippet is built from the URL the SERVER reports (the port it actually
- * bound), never from `location`, and carries the real token only when the page
- * still holds it - otherwise {@link TOKEN_PLACEHOLDER}, which is never a
- * working value.
+ * bound), never from `location`, and NEVER carries the token (issue #141): it
+ * always holds {@link TOKEN_PLACEHOLDER}, so the setup stays copyable at any
+ * time while Settings, a screenshot or a screen share never shows a working
+ * credential. The token itself is shown once, in its own card, and only by
+ * the response that generated it.
  *
  * Browser global (no modules in this viewer) + CommonJS export for the test.
  */
@@ -22,7 +24,7 @@
   var SERVER_NAME = "xbookmarks";
   /** Codex reads the token from this environment variable rather than from its config file. */
   var TOKEN_ENV_VAR = "XBOOKMARKS_MCP_TOKEN";
-  var TOKEN_PLACEHOLDER = "<your-token>";
+  var TOKEN_PLACEHOLDER = "<YOUR_TOKEN>";
 
   var CLIENTS = [
     {
@@ -36,8 +38,8 @@
       id: "codex",
       label: "Codex",
       note:
-        "Add the block to ~/.codex/config.toml (every project) or a project's .codex/config.toml, and put the " +
-        "export line in your shell profile so the token stays out of the config file.",
+        "Add the block to ~/.codex/config.toml (every project) or a project's .codex/config.toml, and set " +
+        TOKEN_ENV_VAR + " to your token in your shell profile, so the token stays out of the config file.",
     },
     {
       id: "json",
@@ -53,9 +55,9 @@
     return CLIENTS[0];
   }
 
-  /** The config text for `clientId`, with `token` or the placeholder when the page no longer holds it. */
-  function snippet(clientId, url, token) {
-    var secret = token || TOKEN_PLACEHOLDER;
+  /** The config text for `clientId`. Takes no token on purpose: every snippet carries the placeholder. */
+  function snippet(clientId, url) {
+    var secret = TOKEN_PLACEHOLDER;
     var id = clientById(clientId).id;
     if (id === "codex") {
       return (
@@ -92,25 +94,46 @@
     if (!state || !state.enabled) {
       return "Off. Assistants cannot reach your bookmarks.";
     }
-    var token = state.tokenHint ? "token ending " + state.tokenHint : "a token";
-    var created = state.tokenCreatedAt ? formatDate(state.tokenCreatedAt) : "";
-    return "On at " + state.url + ", " + token + (created ? " (created " + created + ")" : "") + ".";
+    return "On at " + state.url + ".";
   }
 
-  /** What to say beside the snippet when the page does not hold the token. */
-  var LOST_TOKEN_TEXT =
-    "The token is only shown once, when it is generated. Paste yours in place of " + TOKEN_PLACEHOLDER +
-    ", or regenerate one - the old token then stops working.";
+  /**
+   * Which token is live, without revealing it, as `{ lead, hint, trail }` so
+   * the page can set the masked hint in code type: `Active token ` +
+   * `xbo_mcp_ab12…9f3c` + `, created 2026-09-25.` A token stored before hints
+   * existed has only its date (`hint` null); no token at all, null.
+   */
+  function tokenLineParts(state) {
+    if (!state || !state.hasToken) return null;
+    var created = state.tokenCreatedAt ? formatDate(state.tokenCreatedAt) : "";
+    if (state.tokenHint) {
+      return { lead: "Active token ", hint: state.tokenHint, trail: (created ? ", created " + created : "") + "." };
+    }
+    return { lead: created ? "Active token created " + created + "." : "A token is active.", hint: null, trail: "" };
+  }
+
+  /** {@link tokenLineParts} as one sentence. */
+  function tokenLine(state) {
+    var parts = tokenLineParts(state);
+    return parts ? parts.lead + (parts.hint || "") + parts.trail : "";
+  }
+
+  /** What to say beside the snippet: where the real token goes, and what to do without it. */
+  var PLACEHOLDER_TEXT =
+    "Replace " + TOKEN_PLACEHOLDER + " with the token you copied when it was generated. It is never shown " +
+    "again - if you lost it, regenerate one.";
 
   var api = {
     SERVER_NAME: SERVER_NAME,
     TOKEN_ENV_VAR: TOKEN_ENV_VAR,
     TOKEN_PLACEHOLDER: TOKEN_PLACEHOLDER,
     CLIENTS: CLIENTS,
-    LOST_TOKEN_TEXT: LOST_TOKEN_TEXT,
+    PLACEHOLDER_TEXT: PLACEHOLDER_TEXT,
     clientById: clientById,
     snippet: snippet,
     statusText: statusText,
+    tokenLine: tokenLine,
+    tokenLineParts: tokenLineParts,
   };
 
   root.XBOMcpSettings = api;

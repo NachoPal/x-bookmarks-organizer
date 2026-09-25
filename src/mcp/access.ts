@@ -29,7 +29,12 @@ export const MCP_TOKEN_PREFIX = 'xbo_mcp_';
 interface StoredAccess {
   enabled: boolean;
   tokenHash: string | null;
-  /** The token's last four characters, so the panel can say which one is live. */
+  /**
+   * A non-secret mask of the token ({@link maskMcpToken}), derived when it is
+   * generated so the panel can say which one is live. Rows written before the
+   * mask existed hold the bare last four characters; {@link toView} shows those
+   * in the same shape.
+   */
   tokenHint: string | null;
   tokenCreatedAt: string | null;
 }
@@ -65,6 +70,26 @@ function read(db: Database): StoredAccess {
   }
 }
 
+/** How many characters of the token's random part a hint shows at each end. */
+const HINT_EDGE = 4;
+
+/**
+ * The non-secret hint for a token: the fixed prefix, the first and last
+ * {@link HINT_EDGE} characters of its random part, and an ellipsis between
+ * (`xbo_mcp_ab12…9f3c`). Eight of the 43 base64url characters leaves 210 bits
+ * unknown, so the hint identifies the token without weakening it.
+ */
+export function maskMcpToken(token: string): string {
+  const body = token.startsWith(MCP_TOKEN_PREFIX) ? token.slice(MCP_TOKEN_PREFIX.length) : token;
+  return `${MCP_TOKEN_PREFIX}${body.slice(0, HINT_EDGE)}\u2026${body.slice(-HINT_EDGE)}`;
+}
+
+/** A pre-mask row stored only the last four characters: show them in the mask's shape. */
+function normalizeHint(hint: string | null): string | null {
+  if (!hint) return null;
+  return hint.includes('\u2026') ? hint : `${MCP_TOKEN_PREFIX}\u2026${hint}`;
+}
+
 function write(db: Database, access: StoredAccess): void {
   db.setState(MCP_ACCESS_KEY, JSON.stringify(access));
 }
@@ -73,7 +98,7 @@ function toView(access: StoredAccess): McpAccessView {
   return {
     enabled: access.enabled,
     hasToken: access.tokenHash !== null,
-    tokenHint: access.tokenHint,
+    tokenHint: normalizeHint(access.tokenHint),
     tokenCreatedAt: access.tokenCreatedAt,
   };
 }
@@ -88,7 +113,7 @@ export function regenerateMcpToken(db: Database, when: string = new Date().toISO
   const access: StoredAccess = {
     ...read(db),
     tokenHash: hashToken(token).toString('hex'),
-    tokenHint: token.slice(-4),
+    tokenHint: maskMcpToken(token),
     tokenCreatedAt: when,
   };
   write(db, access);

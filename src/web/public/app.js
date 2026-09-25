@@ -860,11 +860,17 @@
     return !p.panel.hidden;
   }
 
+  /** Drops a revealed MCP token (issue #141); `initMcpSettings` replaces it, closing Settings calls it. */
+  let forgetMcpToken = () => {};
+
   function setPopoverOpen(p, open, opts) {
     const options = opts || {};
     if (open) popovers.forEach((o) => o !== p && isPopoverOpen(o) && setPopoverOpen(o, false, { returnFocus: false }));
     p.panel.hidden = !open;
-    if (!open && p.name === "settings") discardSettingsEdits();
+    if (!open && p.name === "settings") {
+      discardSettingsEdits();
+      forgetMcpToken();
+    }
     p.toggle.setAttribute("aria-expanded", String(open));
     p.toggle.setAttribute("aria-label", `${open ? "Close" : "Open"} ${p.name}`);
 
@@ -8526,10 +8532,13 @@
   }
 
   // ---- AI assistants (MCP) ----------------------------------------------
-  // The switch, the one-time token and the copyable config for the read-only
-  // MCP endpoint (`src/mcp/`). Words and snippets are `mcp-settings.js`; this
-  // is only the markup's wiring. The plaintext token is held in THIS variable
-  // alone - never stored - so it is gone on reload, exactly as the panel says.
+  // The switch, the one-time token and the copyable config for the MCP
+  // endpoint (`src/mcp/`). Words and snippets are `mcp-settings.js`; this is
+  // only the markup's wiring. The plaintext token is shown ONCE (issue #141):
+  // it lives in `token` alone - never in storage, never in a snippet - only
+  // the response that generated it sets it, and "Done", closing Settings or
+  // any later server answer clears it for good. After that only the masked
+  // hint (`tokenLine`) says which token is live.
 
   function initMcpSettings() {
     const helpers = window.XBOMcpSettings;
@@ -8541,10 +8550,12 @@
     const tokenBoxEl = document.getElementById("mcp-token");
     const tokenValueEl = document.getElementById("mcp-token-value");
     const tokenCopyBtn = document.getElementById("mcp-token-copy");
+    const tokenDoneBtn = document.getElementById("mcp-token-done");
+    const tokenHintEl = document.getElementById("mcp-token-hint");
     const clientSelect = document.getElementById("mcp-client");
     const clientNoteEl = document.getElementById("mcp-client-note");
     const snippetEl = document.getElementById("mcp-snippet");
-    const lostTokenEl = document.getElementById("mcp-lost-token");
+    const placeholderNoteEl = document.getElementById("mcp-placeholder-note");
     const snippetCopyBtn = document.getElementById("mcp-snippet-copy");
     const regenerateBtn = document.getElementById("mcp-regenerate");
     let state = null;
@@ -8569,13 +8580,25 @@
       toggleBtn.setAttribute("aria-checked", String(enabled));
       statusEl.textContent = state ? helpers.statusText(state) : "Checking...";
       detailsEl.hidden = !enabled;
+      const line = helpers.tokenLineParts(state);
+      tokenHintEl.replaceChildren();
+      if (line) {
+        tokenHintEl.append(line.lead);
+        if (line.hint) {
+          const hint = document.createElement("code");
+          hint.className = "mcp-hint";
+          hint.textContent = line.hint;
+          tokenHintEl.append(hint);
+        }
+        tokenHintEl.append(line.trail);
+      }
+      tokenHintEl.hidden = !line;
       tokenBoxEl.hidden = !token;
       tokenValueEl.textContent = token || "";
       const client = helpers.clientById(clientSelect.value);
-      snippetEl.textContent = state ? helpers.snippet(client.id, state.url, token) : "";
+      snippetEl.textContent = state ? helpers.snippet(client.id, state.url) : "";
       clientNoteEl.textContent = client.note;
-      lostTokenEl.textContent = helpers.LOST_TOKEN_TEXT;
-      lostTokenEl.hidden = !!token;
+      placeholderNoteEl.textContent = helpers.PLACEHOLDER_TEXT;
     }
 
     async function request(url, init) {
@@ -8585,11 +8608,20 @@
       return body;
     }
 
+    // Only a generating response carries `token`; every other answer (a
+    // reload's GET, switching off and on) clears a reveal still on screen.
     function adopt(body) {
-      if (body.token) token = body.token;
-      state = body;
+      token = body.token || null;
+      state = Object.assign({}, body);
+      delete state.token;
       render();
     }
+
+    forgetMcpToken = () => {
+      if (!token) return;
+      token = null;
+      render();
+    };
 
     async function load() {
       try {
@@ -8652,6 +8684,10 @@
 
     clientSelect.addEventListener("change", render);
     tokenCopyBtn.addEventListener("click", () => copy(token || "", tokenCopyBtn));
+    tokenDoneBtn.addEventListener("click", () => {
+      forgetMcpToken();
+      snippetCopyBtn.focus();
+    });
     snippetCopyBtn.addEventListener("click", () => copy(snippetEl.textContent, snippetCopyBtn));
 
     render();

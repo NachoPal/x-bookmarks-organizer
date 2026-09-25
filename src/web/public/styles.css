@@ -3869,6 +3869,12 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   word-break: break-all;
   user-select: all;
 }
+/* The live token's masked hint: code type, so its characters read unambiguously, kept on one line. */
+.mcp-hint {
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  white-space: nowrap;
+}
 /* The one-time token: an accent-tinted card with an icon AND a title, so its
    "copy it now" urgency is never carried by color alone. */
 .mcp-token {
@@ -3920,6 +3926,10 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 }
 .mcp-actions .btn {
   flex: 1 1 auto;
+}
+/* The reveal's two buttons are one decision (copy, then dismiss): equal halves. */
+.mcp-token .mcp-actions .btn {
+  flex: 1 1 0;
 }
 /* The row's hover wash needs its padding, but its label must line up with
    the group's text: pull the row out by exactly that padding. */
