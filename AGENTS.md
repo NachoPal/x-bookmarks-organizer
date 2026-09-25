@@ -497,8 +497,11 @@ open/close interpolation follow it with no extra wiring. Bounds + guarded persis
 `--content-measure` on a laptop, which is what keeps a resize from re-laying-out the X embeds.
 During a drag `body[data-resizing="sidebar"]` suppresses the grid transition (the column must track
 the pointer, not ease after it) and the width is persisted ONCE on pointerup, not per frame. The
-splitter sits INSIDE the sidebar's padding and `.sidebar-inner` is inset by
-`--sidebar-resizer-width`, so it covers no tree row and no scrollbar. Hidden at `<=820px`: an
+splitter sits INSIDE the sidebar's end padding (wider than it), so it covers no tree row; the
+padding is named (`--sidebar-pad-start`/`-end` on `.sidebar-inner`) so a full-bleed child - the
+menu's rows, a page's sticky header - cancels exactly it. The column's right-edge divider is a
+`.sidebar::after` layer stacked ABOVE the content: as an inset box-shadow it painted under every
+descendant, and the sticky header's surface hid it (the "white edge"). Hidden at `<=820px`: an
 overlay drawer has no second column to hand width back to. A
 closed drawer gets `inert` from JS (not just an off-screen transform) so it leaves the tab order.
 The empty-state prompts (`[data-open-categories]`: the landing card and the top-bar "Select a
@@ -515,9 +518,9 @@ that size is the PANEL's width (`width: 100%`), which is why there is no longer 
 remains. Save's status still stacks UNDER it rather than beside it, so a long "why it failed"
 message cannot squeeze the button.
 
-**The sidebar is a drill-down too, in its OWN style** (not Settings'): a menu of two large icon
-rows - Categories, then Lists (the MCP result lists, with the unviewed count) - and one page each
-with a round Back (`initSidebarNav`/`showSidebarPage` in `app.js`, pure half `sidebar-nav.js`).
+**The sidebar is a drill-down too, in its OWN style** (not Settings'): a menu of two large
+edge-to-edge icon rows split by hairlines - Categories, then Lists (the MCP result lists, with the unviewed count) - and one page each
+with a Back chevron (`initSidebarNav`/`showSidebarPage` in `app.js`, pure half `sidebar-nav.js`).
 The open page is `body[data-sidebar-page]`, persisted and applied by `#xbo-preboot`. Escape in a
 page goes back only while focus is inside the sidebar. Anything that needs the TREE while another
 page is open switches to Categories first: "Select a category", the top-bar search, and a card

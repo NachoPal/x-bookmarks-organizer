@@ -855,18 +855,15 @@
   /**
    * The width in force right now. With nothing persisted that is whatever the
    * stylesheet's `clamp()` resolved to, which is read off `.sidebar-inner` -
-   * it is absolutely positioned at a width derived from the token, so it
-   * reports a real number even while the track is animating (or collapsed to
-   * zero) and the token itself would only read back as the unresolved
-   * `clamp(...)` expression.
+   * it is absolutely positioned at exactly the token's width, so it reports a
+   * real number even while the track is animating (or collapsed to zero) and
+   * the token itself would only read back as the unresolved `clamp(...)`
+   * expression.
    */
   function currentSidebarWidth() {
     if (sidebarWidth !== null) return sidebarWidth;
     if (!sidebarInnerEl || !window.XBOSidebarWidth) return null;
-    const strip = resizerEl ? resizerEl.getBoundingClientRect().width : 0;
-    return window.XBOSidebarWidth.clampWidth(
-      sidebarInnerEl.getBoundingClientRect().width + strip,
-    );
+    return window.XBOSidebarWidth.clampWidth(sidebarInnerEl.getBoundingClientRect().width);
   }
 
   function syncResizerValues() {
@@ -9737,14 +9734,24 @@
   }
 
   /**
-   * The top bar's title for an open list: its name alone. Where it came from
-   * is the pane header's eyebrow, so the bar does not spend a capped crumb on
-   * it - the name is the part that has to survive the one line.
+   * The top bar's title for an open list: the sidebar's own Lists icon, then
+   * the name, so a list never reads as a category. The icon is a drawing
+   * (`aria-hidden`); the words "List:" say the same to a screen reader.
    */
   function renderListTitle(list) {
     closeCrumbMenu();
-    titleEl.replaceChildren(el("span", "topbar-leaf crumb-static crumb-current", list.title));
-    titleEl.title = list.title;
+    const parts = [];
+    const icon = document.querySelector("#sidebar-home-lists .sidebar-home-icon svg");
+    if (icon) {
+      const mark = icon.cloneNode(true);
+      mark.setAttribute("class", "icon-glyph topbar-list-icon");
+      mark.setAttribute("aria-hidden", "true");
+      parts.push(mark);
+    }
+    parts.push(el("span", "visually-hidden", "List: "));
+    parts.push(el("span", "topbar-leaf crumb-static crumb-current", list.title));
+    titleEl.replaceChildren(...parts);
+    titleEl.title = `List: ${list.title}`;
   }
 
   /** The "Select a category" landing, for when the open list goes away. */
