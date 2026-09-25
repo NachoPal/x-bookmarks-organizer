@@ -274,7 +274,7 @@ describe('the MCP endpoint', () => {
         [...db.getCategoryIdsForBookmarks(db.getAllBookmarks().map((b) => b.id))],
       ]);
 
-    it('creates a named list in the order given, and touches nothing else', async () => {
+    it('creates a named list, and touches nothing else', async () => {
       const before = dumpLibrary();
       const client = await connect();
       const res = await call(client, 'show_in_app', {
@@ -291,7 +291,7 @@ describe('the MCP endpoint', () => {
       const list = db.getAssistantList(answer.listId)!;
       expect(list).toMatchObject({ title: 'Eval harnesses', note: 'Posts about how to\nevaluate agents.', count: 3 });
       // Duplicates collapse to the first mention; URLs resolve like get_bookmark's.
-      expect(db.getAssistantListBookmarks(list.id).map((b) => b.postId)).toEqual(['3', '1', '4']);
+      expect(db.getAssistantListBookmarks(list.id).map((b) => b.postId)).toEqual(['4', '3', '1']);
       expect(dumpLibrary()).toBe(before);
     });
 

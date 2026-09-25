@@ -103,9 +103,9 @@
   // arrive. Both are persisted through XBOSortOrder's guarded storage.
   let activeSort = "recent";
   let activeDir = "desc";
-  // An open assistant list's ordering: the same selector, but its own stored
-  // preference, whose default is "list" - the order the assistant sent.
-  let listSort = "list";
+  // An open assistant list's ordering: the same selector and the same
+  // options, but its own stored preference.
+  let listSort = "recent";
   let listDir = "desc";
 
   // ---- lazy loading (paged, filtered, infinite scroll) ------------------
@@ -1240,8 +1240,6 @@
     const dir = currentSortDir();
 
     for (const input of sortFieldInputs()) {
-      // "Assistant's order" exists only in a list.
-      input.parentElement.hidden = !api.isKnownSortOrder(input.value, sortScope());
       input.checked = input.value === field;
       const blocked = input.value === "score" && !scoreOk;
       input.disabled = blocked;
@@ -1307,7 +1305,7 @@
   function selectSortOrder(id) {
     const api = sortOrderApi();
     const scope = sortScope();
-    if (!api || id === currentSortField() || !api.isKnownSortOrder(id, scope)) return;
+    if (!api || id === currentSortField() || !api.isKnownSortOrder(id)) return;
     if (id === "score" && !scoreOrderAvailable()) return;
     api.writeSortOrder(window.localStorage, id, scope);
     if (activeList) listSort = id;
@@ -1371,7 +1369,6 @@
     listSort = api.resolveSortOrder(
       api.readSortOrder(window.localStorage, "list"),
       api.rememberedRanking(window.localStorage),
-      "list",
     );
     listDir = api.readSortDirection(window.localStorage, "list");
     renderSortBar();
@@ -1405,7 +1402,7 @@
     const resolved = api.resolveSortOrder(api.readSortOrder(window.localStorage), ranking);
     const changed = resolved !== activeSort;
     activeSort = resolved;
-    const listResolved = api.resolveSortOrder(api.readSortOrder(window.localStorage, "list"), ranking, "list");
+    const listResolved = api.resolveSortOrder(api.readSortOrder(window.localStorage, "list"), ranking);
     const listChanged = listResolved !== listSort;
     listSort = listResolved;
     renderSortBar();

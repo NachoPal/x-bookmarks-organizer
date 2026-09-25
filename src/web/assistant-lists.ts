@@ -59,9 +59,9 @@ export interface AssistantListRouteOptions {
   toBookmarks: (bookmarks: StoredBookmark[], rubricVersion: string) => unknown[];
 }
 
-/** `?sort=`: the category orders, plus `list` (the assistant's order, and the default). */
-function parseListSort(raw: unknown): 'list' | 'recent' | 'score' {
-  return raw === 'recent' || raw === 'score' ? raw : 'list';
+/** `?sort=`: the category orders, with the category default (`recent`) for anything else. */
+function parseListSort(raw: unknown): 'recent' | 'score' {
+  return raw === 'score' ? 'score' : 'recent';
 }
 
 /** Serve the lists. */

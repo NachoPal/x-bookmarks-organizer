@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const {
   DEFAULT_SORT_ORDER,
   DEFAULT_SORT_DIRECTION,
+  LIST_SORT_ORDER_KEY,
   SORT_ORDERS,
   SCORE_UNAVAILABLE_MESSAGE,
   isKnownSortOrder,
@@ -444,29 +445,27 @@ describe("snapshot key stability across a reload (issue #104)", () => {
 });
 
 describe("an assistant list's ordering (its own scope)", () => {
-  it("offers Assistant's order in a list only, as the list default, stored apart from a category's", () => {
+  it("offers a category's orders, with a category's default, stored apart from a category's", () => {
     expect(isKnownSortOrder("list")).toBe(false);
-    expect(isKnownSortOrder("list", "list")).toBe(true);
-    expect(isKnownSortOrder("recent", "list")).toBe(true);
     const storage = fakeStorage();
-    expect(readSortOrder(storage, "list")).toBe("list");
-    writeSortOrder(storage, "list"); // not a category order: ignored
-    expect(readSortOrder(storage)).toBe(DEFAULT_SORT_ORDER);
-    writeSortOrder(storage, "recent", "list");
+    expect(readSortOrder(storage, "list")).toBe(DEFAULT_SORT_ORDER);
+    expect(readSortDirection(storage, "list")).toBe(DEFAULT_SORT_DIRECTION);
+    writeSortOrder(storage, "score", "list");
     writeSortDirection(storage, "asc", "list");
-    expect(readSortOrder(storage, "list")).toBe("recent");
+    expect(readSortOrder(storage, "list")).toBe("score");
     expect(readSortDirection(storage, "list")).toBe("asc");
     expect(readSortOrder(storage)).toBe(DEFAULT_SORT_ORDER);
     expect(readSortDirection(storage)).toBe(DEFAULT_SORT_DIRECTION);
-    expect(readSortOrder(throwingStorage(), "list")).toBe("list");
+    expect(readSortOrder(throwingStorage(), "list")).toBe(DEFAULT_SORT_ORDER);
   });
 
-  it("falls back to the assistant's order when a list's Top score cannot order anything", () => {
-    expect(resolveSortOrder("score", { scored: 0 }, "list")).toBe("list");
-    expect(resolveSortOrder("score", { scored: 2 }, "list")).toBe("score");
-    expect(resolveSortOrder("list", null)).toBe(DEFAULT_SORT_ORDER); // never for a category
-    expect(sortParam("list")).toBe("list");
-    expect(directionLabel("list", "desc")).toBe("As sent");
-    expect(directionLabel("list", "asc")).toBe("Reversed");
+  it("reads a stored, retired \"Assistant's order\" back as the default", () => {
+    const storage = fakeStorage();
+    storage.setItem(LIST_SORT_ORDER_KEY, "list");
+    expect(readSortOrder(storage, "list")).toBe(DEFAULT_SORT_ORDER);
+    writeSortOrder(storage, "list", "list"); // no longer an order: ignored
+    expect(storage.getItem(LIST_SORT_ORDER_KEY)).toBe("list");
+    expect(resolveSortOrder("list", { scored: 2 })).toBe(DEFAULT_SORT_ORDER);
+    expect(sortParam("list")).toBe(DEFAULT_SORT_ORDER);
   });
 });

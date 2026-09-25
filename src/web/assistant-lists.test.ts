@@ -82,7 +82,7 @@ describe('assistant result lists in the viewer', () => {
 
   const id = (postId: string) => db.getBookmarkByPostId(postId)!.id;
 
-  it('lists newest first and serves a list as normal cards, in the assistant order', async () => {
+  it('lists newest first and serves a list as normal cards, newest first', async () => {
     db.createAssistantList({ title: 'Older', note: null, bookmarkIds: [id('1')] }, WHEN);
     const { listId } = await showInApp({ postIds: ['3', '1'], title: 'Eval harnesses', note: 'Why' });
 
@@ -97,7 +97,7 @@ describe('assistant result lists in the viewer', () => {
     expect(body.bookmarks[0]).toMatchObject({ categoryIds: [expect.any(Number)], hasSummary: false, score: null });
   });
 
-  it('orders a list on request, the assistant order by default, and says which it used', async () => {
+  it('orders a list like a category, newest by default, and says which it used', async () => {
     const list = db.createAssistantList({ title: 'L', note: null, bookmarkIds: [id('2'), id('3'), id('1')] });
     const get = async (query: string) =>
       (await (await fetch(`${base}/api/assistant-lists/${list.id}${query}`)).json()) as {
@@ -106,10 +106,11 @@ describe('assistant result lists in the viewer', () => {
         bookmarks: { postId: string }[];
       };
     const plain = await get('');
-    expect([plain.sort, plain.dir, plain.bookmarks.map((b) => b.postId)]).toEqual(['list', 'desc', ['2', '3', '1']]);
-    expect((await get('?sort=recent&dir=desc')).bookmarks.map((b) => b.postId)).toEqual(['3', '2', '1']);
-    expect((await get('?sort=list&dir=asc')).bookmarks.map((b) => b.postId)).toEqual(['1', '3', '2']);
-    expect((await get('?sort=nonsense')).sort).toBe('list');
+    expect([plain.sort, plain.dir, plain.bookmarks.map((b) => b.postId)]).toEqual(['recent', 'desc', ['3', '2', '1']]);
+    expect((await get('?sort=recent&dir=asc')).bookmarks.map((b) => b.postId)).toEqual(['1', '2', '3']);
+    // The retired assistant's order, like any unknown value, is the default.
+    expect(await get('?sort=list&dir=asc')).toMatchObject({ sort: 'recent', dir: 'asc' });
+    expect((await get('?sort=nonsense')).sort).toBe('recent');
   });
 
   it('streams a change when a listed post is read, unread or deleted - and only then', async () => {

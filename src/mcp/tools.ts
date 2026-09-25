@@ -536,7 +536,7 @@ export function createMcpServer(db: Database, version: string, opts: McpServerOp
     {
       title: 'Show in app',
       description:
-        "Open posts in the owner's bookmarks app as a named list (e.g. after a search), in the order given, " +
+        "Open posts in the owner's bookmarks app as a named list (e.g. after a search), " +
         'so they can read them there with embeds and summaries. It only creates that list: it never files, ' +
         'moves, re-categorizes or deletes anything. Posts not in the library are reported and left out.',
       inputSchema: {
