@@ -497,6 +497,17 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* An open assistant list's mark: the sidebar's Lists icon, before the name,
+   so a list never reads as a category. Centered on the line rather than on
+   the baseline the title's text shares. */
+.topbar-list-icon {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-left: var(--space-1);
+  color: var(--color-accent);
+}
 /* The open category: the full-strength text the bar already showed. */
 .crumb-current {
   color: var(--color-text);
@@ -838,14 +849,30 @@ body:not([data-sidebar="collapsed"]) .sidebar {
     grid-area: 1 / 1;
     width: auto; /* the track sizes it now */
     transform: none;
-    /* The divider is an INSET shadow, not a border: it paints on the track's
-       own right edge, so it follows the resize and vanishes at width 0 (a
-       border-box border would leave a 1px seam on a closed column). */
     border-right: 0;
-    box-shadow: inset -1px 0 0 var(--color-border);
+    box-shadow: none;
   }
   body:not([data-sidebar="collapsed"]) .sidebar {
-    box-shadow: inset -1px 0 0 var(--color-border);
+    box-shadow: none;
+  }
+  /* The divider is a 1px layer on the track's own right edge, not a border:
+     it follows the resize and is clipped away at width 0 (a border-box
+     border would leave a 1px seam on a closed column). It is stacked ABOVE
+     the column's content on purpose. It used to be an inset box-shadow,
+     which paints under every descendant - and `.sidebar-inner` reaches this
+     edge, so the sticky page header's surface (and a scrollbar track, where
+     the system draws one) painted over it and the edge vanished into white.
+     Above the header (z 2) and the splitter (z 1); it takes no pointer. */
+  .sidebar::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 1px;
+    z-index: 3;
+    background: var(--color-border);
+    pointer-events: none;
   }
   .viewer {
     grid-area: 1 / 2;
@@ -858,7 +885,11 @@ body:not([data-sidebar="collapsed"]) .sidebar {
   /* A page slides in sideways: the travel must not raise a scrollbar. */
   overflow-x: hidden;
   overscroll-behavior: contain;
-  padding: var(--space-4);
+  /* The inline padding, named so a full-bleed child (the menu's rows, a
+     page's sticky header) cancels exactly what is there. */
+  --sidebar-pad-start: var(--space-4);
+  --sidebar-pad-end: var(--space-4);
+  padding: var(--space-4) var(--sidebar-pad-end) var(--space-4) var(--sidebar-pad-start);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -876,11 +907,14 @@ body:not([data-sidebar="collapsed"]) .sidebar {
     top: 0;
     right: 0;
     bottom: 0;
-    /* The full track width LESS the splitter's hit strip (issue #99), so the
-       tree's own scrollbar sits clear of it rather than underneath it. Still
-       a CONSTANT independent of the track, which is the property that keeps
-       a label from rewrapping mid-animation. */
-    width: calc(var(--sidebar-width) - var(--sidebar-resizer-width));
+    /* The FULL track width - a CONSTANT independent of the track, which is
+       the property that keeps a label from rewrapping mid-animation - so a
+       full-bleed row reaches both edges of the column. The splitter's hit
+       strip (issue #99) sits over the end padding, which is wider than it,
+       so it covers no content; the start padding keeps the strip's width
+       too, which is where the content has always sat. */
+    width: var(--sidebar-width);
+    --sidebar-pad-start: calc(var(--space-4) + var(--sidebar-resizer-width));
   }
 }
 /* --- The drag-resizable right edge (issue #99) ---------------------------
@@ -962,14 +996,15 @@ body[data-resizing="sidebar"] {
 /* ============================================================
    Sidebar drill-down: the menu, Categories, Lists
    One view shows at a time: the menu (a large row per section) or a
-   section's page (a round Back, the page title, its own actions). Which one
+   section's page (a Back chevron, the page title, its own actions). Which one
    is `body[data-sidebar-page]`, applied before the first paint by the
    preboot script, so a reload never flashes the menu before the page it
    restores; app.js also sets `hidden` on the others. A page slides in the
    whole column's width from the side it comes from (deeper from the right,
    back from the left) on transform + opacity; reduced motion keeps the fade.
-   The style is deliberately NOT Settings' (issue #142): bordered tiles with
-   icons on the menu, a filled round Back, no divider under the header.
+   The style is deliberately NOT Settings' (issue #142): large edge-to-edge
+   rows with icon tiles, split by hairlines, and no divider under a page's
+   header.
    ============================================================ */
 .sidebar-view {
   display: flex;
@@ -1017,10 +1052,15 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
 .sidebar-home-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  margin: 0;
+  /* Edge to edge: the rows are the menu, not tiles inside it. The column's
+     top padding is the only space above the first one. */
+  margin: 0 calc(-1 * var(--sidebar-pad-end)) 0 calc(-1 * var(--sidebar-pad-start));
   padding: 0;
   list-style: none;
+}
+/* One hairline under each row: between Categories and Lists, and after Lists. */
+.sidebar-home-list > li {
+  border-bottom: 1px solid var(--color-border);
 }
 .sidebar-home-row {
   display: flex;
@@ -1028,25 +1068,26 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   gap: var(--space-3);
   width: 100%;
   min-height: var(--sidebar-home-row-height);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--sidebar-pad-end) var(--space-3) var(--sidebar-pad-start);
+  border: 0;
+  border-radius: 0;
   background: var(--color-surface);
   color: var(--color-text);
   font: inherit;
   text-align: start;
   cursor: pointer;
-  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease),
-    box-shadow var(--motion-fast) var(--ease);
+  transition: background var(--motion-fast) var(--ease);
 }
 .sidebar-home-row:hover {
-  border-color: var(--color-border-strong);
   background: var(--color-surface-2);
-  box-shadow: var(--shadow-sm);
 }
 .sidebar-home-row:active {
   background: var(--color-border);
-  box-shadow: none;
+}
+/* Inset, because the scroller clips anything past the column's edges. */
+.sidebar-home-row:focus-visible {
+  outline-offset: -2px;
+  border-radius: 0;
 }
 .sidebar-home-icon {
   flex: 0 0 auto;
@@ -1124,10 +1165,13 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) 0;
-  padding: var(--space-3) var(--space-4) var(--space-2);
+  margin: calc(-1 * var(--space-4)) calc(-1 * var(--sidebar-pad-end)) 0
+    calc(-1 * var(--sidebar-pad-start));
+  padding: var(--space-3) var(--sidebar-pad-end) var(--space-2) var(--sidebar-pad-start);
   background: var(--color-surface);
 }
+/* The chevron alone, with no disc behind it; the hit area stays a 2.5rem
+   square, pulled left so the glyph lines up with the content's edge. */
 .sidebar-back {
   position: relative;
   flex: 0 0 auto;
@@ -1136,24 +1180,24 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   justify-content: center;
   width: 2.5rem;
   height: 2.5rem;
+  margin-left: calc(-1 * var(--space-3));
   padding: 0;
-  border: 1px solid var(--color-border);
-  border-radius: 50%;
-  background: var(--color-surface-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
   color: var(--color-text);
   cursor: pointer;
-  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+  transition: color var(--motion-fast) var(--ease);
 }
 .sidebar-back:hover {
-  border-color: var(--color-border-strong);
-  background: var(--color-border);
+  color: var(--color-accent);
 }
 .sidebar-back:active {
-  background: var(--color-border-strong);
+  color: var(--color-accent-hover);
 }
 .sidebar-back .icon-glyph {
-  width: 1.25rem;
-  height: 1.25rem;
+  width: 1.5rem;
+  height: 1.5rem;
 }
 /* On Categories' Back, the unviewed-lists count rides the corner, so a new
    list is never out of sight while the owner stays in the tree. */
@@ -2141,19 +2185,6 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-.assistant-list-eyebrow {
-  margin: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--color-accent);
-  font-size: var(--text-small);
-  font-weight: 700;
-}
-.assistant-list-eyebrow .icon-glyph {
-  width: 1rem;
-  height: 1rem;
 }
 /* The assistant's own words, kept as the plain text they are - line breaks
    included - in a readable measure. */

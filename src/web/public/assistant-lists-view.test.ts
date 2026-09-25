@@ -258,7 +258,10 @@ describe("Lists (MCP show_in_app lists)", () => {
     expect(page(doc)).toBe("lists"); // Open takes the sidebar to where the list is
     expect(calls.some((c) => c.url === "/api/assistant-lists/7")).toBe(true);
     expect(calls.some((c) => c.url === "/api/assistant-lists/7/viewed" && c.method === "POST")).toBe(true);
-    expect(doc.getElementById("content-title")!.textContent).toBe("Eval harnesses");
+    expect(doc.getElementById("content-title")!.textContent).toBe("List: Eval harnesses");
+    // Marked as a list by the sidebar's Lists icon, not by an eyebrow in the pane.
+    expect(doc.querySelector("#content-title .topbar-list-icon")!.getAttribute("aria-hidden")).toBe("true");
+    expect(doc.getElementById("assistant-list-header")!.textContent).not.toContain("From your assistant");
     expect(visibleIds(doc)).toEqual(["3", "1"]); // the assistant's order
     expect((doc.getElementById("assistant-list-header") as HTMLElement).hidden).toBe(false);
     expect(doc.getElementById("assistant-list-note")!.textContent).toBe("Why these two");
@@ -274,7 +277,7 @@ describe("Lists (MCP show_in_app lists)", () => {
     (doc.querySelector(".assistant-list-item") as HTMLElement).click();
     await tick();
     expect(doc.querySelector("img[src=x]")).toBeNull();
-    expect(doc.getElementById("content-title")!.textContent).toBe(hostile);
+    expect(doc.getElementById("content-title")!.textContent).toBe(`List: ${hostile}`);
     expect(doc.getElementById("assistant-list-note")!.textContent).toBe(`<b>bold</b>${hostile}`);
     expect(w.__pwned).toBeUndefined();
   });
@@ -311,7 +314,7 @@ describe("Lists (MCP show_in_app lists)", () => {
     toastAction(doc, "Undo")!.click();
     await tick(80);
     expect(rows(doc)).toEqual(["Doomed"]);
-    expect(doc.getElementById("content-title")!.textContent).toBe("Doomed");
+    expect(doc.getElementById("content-title")!.textContent).toBe("List: Doomed");
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
 
     // Clear all, while a new list arrives inside the undo window.
@@ -325,11 +328,11 @@ describe("Lists (MCP show_in_app lists)", () => {
 
   it("reopens the list that was open before a reload, and forgets one that is gone", async () => {
     const { doc } = await boot({ lists: [list(8, "Kept", [2, 3])], openList: 8 });
-    expect(doc.getElementById("content-title")!.textContent).toBe("Kept");
+    expect(doc.getElementById("content-title")!.textContent).toBe("List: Kept");
     expect(visibleIds(doc)).toEqual(["2", "3"]);
 
     const gone = await boot({ lists: [], openList: 99 });
-    expect(gone.doc.getElementById("content-title")!.textContent).not.toBe("Kept");
+    expect(gone.doc.getElementById("content-title")!.textContent).not.toBe("List: Kept");
     expect(gone.w.localStorage.getItem("xbo:assistant-list")).toBeNull();
   });
 
