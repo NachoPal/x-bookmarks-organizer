@@ -97,6 +97,48 @@ describe('assistant result lists in the viewer', () => {
     expect(body.bookmarks[0]).toMatchObject({ categoryIds: [expect.any(Number)], hasSummary: false, score: null });
   });
 
+  it('orders a list on request, the assistant order by default, and says which it used', async () => {
+    const list = db.createAssistantList({ title: 'L', note: null, bookmarkIds: [id('2'), id('3'), id('1')] });
+    const get = async (query: string) =>
+      (await (await fetch(`${base}/api/assistant-lists/${list.id}${query}`)).json()) as {
+        sort: string;
+        dir: string;
+        bookmarks: { postId: string }[];
+      };
+    const plain = await get('');
+    expect([plain.sort, plain.dir, plain.bookmarks.map((b) => b.postId)]).toEqual(['list', 'desc', ['2', '3', '1']]);
+    expect((await get('?sort=recent&dir=desc')).bookmarks.map((b) => b.postId)).toEqual(['3', '2', '1']);
+    expect((await get('?sort=list&dir=asc')).bookmarks.map((b) => b.postId)).toEqual(['1', '3', '2']);
+    expect((await get('?sort=nonsense')).sort).toBe('list');
+  });
+
+  it('streams a change when a listed post is read, unread or deleted - and only then', async () => {
+    const list = db.createAssistantList({ title: 'L', note: null, bookmarkIds: [id('1'), id('2')] });
+    const stream = await openStream(`${base}${ASSISTANT_LIST_EVENTS_PATH}`);
+    const post = (bookmarkId: number, read: boolean) =>
+      fetch(`${base}/api/bookmarks/${bookmarkId}/read`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ read }),
+      });
+    try {
+      await post(id('3'), true); // in no list: nothing to announce
+      await post(id('1'), true);
+      expect((await stream.next()).event).toBe('changed');
+      expect(db.getAssistantList(list.id)).toMatchObject({ count: 2, unread: 1 });
+      await post(id('1'), false);
+      expect((await stream.next()).event).toBe('changed');
+      await fetch(`${base}/api/bookmarks/${id('2')}`, { method: 'DELETE' });
+      expect((await stream.next()).event).toBe('changed');
+      expect(db.getAssistantList(list.id)).toMatchObject({ count: 1, unread: 1 });
+      // Nothing was queued for the unlisted post: the next event is this list.
+      await showInApp({ postIds: ['3'], title: 'Next' });
+      expect((await stream.next()).event).toBe('created');
+    } finally {
+      stream.close();
+    }
+  });
+
   it('answers 404 for an unknown list and 400 for a malformed id', async () => {
     expect((await fetch(`${base}/api/assistant-lists/999`)).status).toBe(404);
     expect((await fetch(`${base}/api/assistant-lists/abc`)).status).toBe(400);

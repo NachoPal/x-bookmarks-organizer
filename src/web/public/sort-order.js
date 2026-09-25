@@ -24,6 +24,13 @@
   // Descending is the default for BOTH fields - newest first, highest first -
   // which is the only ordering that existed before the direction did.
   const DEFAULT_SORT_DIRECTION = "desc";
+  // An assistant's result list keeps its OWN ordering preference: it offers
+  // one order a category cannot ("Assistant's order", the order the list was
+  // sent in, which is its default), so it cannot share the category keys
+  // without a category one day reading back an order it has no meaning for.
+  const LIST_SORT_ORDER_KEY = "xbo:list-sort-order";
+  const LIST_SORT_DIRECTION_KEY = "xbo:list-sort-direction";
+  const DEFAULT_LIST_SORT_ORDER = "list";
 
   /**
    * The offered orders. `param` is what the API's `sort` query parameter
@@ -34,7 +41,21 @@
   const SORT_ORDERS = [
     { id: "recent", label: "Newest", param: "recent", desc: "Newest first", asc: "Oldest first" },
     { id: "score", label: "Top score", param: "score", desc: "Highest first", asc: "Lowest first" },
+    // Lists only (`scope === "list"`): the order the assistant sent them in.
+    { id: "list", label: "Assistant's order", param: "list", desc: "As sent", asc: "Reversed", listOnly: true },
   ];
+
+  /**
+   * Which preference a caller means: a category's (the default, and all
+   * there was before lists) or an open assistant list's.
+   */
+  function isListScope(scope) {
+    return scope === "list";
+  }
+
+  function defaultSortOrder(scope) {
+    return isListScope(scope) ? DEFAULT_LIST_SORT_ORDER : DEFAULT_SORT_ORDER;
+  }
 
   /** The two directions. `param` is what the API's `dir` query parameter takes. */
   const SORT_DIRECTIONS = [
@@ -49,8 +70,9 @@
    */
   const SCORE_UNAVAILABLE_MESSAGE = "No ranking yet - run Rank now to sort by score.";
 
-  function isKnownSortOrder(id) {
-    return SORT_ORDERS.some((order) => order.id === id);
+  /** Whether `id` is an order offered in `scope` ("Assistant's order" is offered in a list only). */
+  function isKnownSortOrder(id, scope) {
+    return SORT_ORDERS.some((order) => order.id === id && (!order.listOnly || isListScope(scope)));
   }
 
   function isKnownSortDirection(id) {
@@ -62,20 +84,20 @@
    * not one we offer, or storage is unavailable/throws (private mode, blocked
    * site data).
    */
-  function readSortOrder(storage) {
+  function readSortOrder(storage, scope) {
     try {
-      const raw = storage.getItem(SORT_ORDER_KEY);
-      return isKnownSortOrder(raw) ? raw : DEFAULT_SORT_ORDER;
+      const raw = storage.getItem(isListScope(scope) ? LIST_SORT_ORDER_KEY : SORT_ORDER_KEY);
+      return isKnownSortOrder(raw, scope) ? raw : defaultSortOrder(scope);
     } catch (_) {
-      return DEFAULT_SORT_ORDER;
+      return defaultSortOrder(scope);
     }
   }
 
   /** Persist the order; an unknown id and a throwing storage are both no-ops. */
-  function writeSortOrder(storage, id) {
-    if (!isKnownSortOrder(id)) return;
+  function writeSortOrder(storage, id, scope) {
+    if (!isKnownSortOrder(id, scope)) return;
     try {
-      storage.setItem(SORT_ORDER_KEY, id);
+      storage.setItem(isListScope(scope) ? LIST_SORT_ORDER_KEY : SORT_ORDER_KEY, id);
     } catch (_) {
       /* private mode / blocked storage: ignore */
     }
@@ -84,9 +106,9 @@
   /**
    * The stored direction, with the same fallbacks as {@link readSortOrder}.
    */
-  function readSortDirection(storage) {
+  function readSortDirection(storage, scope) {
     try {
-      const raw = storage.getItem(SORT_DIRECTION_KEY);
+      const raw = storage.getItem(isListScope(scope) ? LIST_SORT_DIRECTION_KEY : SORT_DIRECTION_KEY);
       return isKnownSortDirection(raw) ? raw : DEFAULT_SORT_DIRECTION;
     } catch (_) {
       return DEFAULT_SORT_DIRECTION;
@@ -94,10 +116,10 @@
   }
 
   /** Persist the direction; an unknown id and a throwing storage are no-ops. */
-  function writeSortDirection(storage, id) {
+  function writeSortDirection(storage, id, scope) {
     if (!isKnownSortDirection(id)) return;
     try {
-      storage.setItem(SORT_DIRECTION_KEY, id);
+      storage.setItem(isListScope(scope) ? LIST_SORT_DIRECTION_KEY : SORT_DIRECTION_KEY, id);
     } catch (_) {
       /* private mode / blocked storage: ignore */
     }
@@ -165,9 +187,10 @@
    * ordering whose control is disabled - and the owner's stored choice is
    * left alone, so it returns by itself after the first run.
    */
-  function resolveSortOrder(id, ranking) {
-    const order = isKnownSortOrder(id) ? id : DEFAULT_SORT_ORDER;
-    return order === "score" && !scoreOrderAvailable(ranking) ? DEFAULT_SORT_ORDER : order;
+  function resolveSortOrder(id, ranking, scope) {
+    const fallback = defaultSortOrder(scope);
+    const order = isKnownSortOrder(id, scope) ? id : fallback;
+    return order === "score" && !scoreOrderAvailable(ranking) ? fallback : order;
   }
 
   /**
@@ -353,6 +376,9 @@
   const api = {
     SORT_ORDER_KEY,
     SORT_DIRECTION_KEY,
+    LIST_SORT_ORDER_KEY,
+    LIST_SORT_DIRECTION_KEY,
+    DEFAULT_LIST_SORT_ORDER,
     SCORE_AVAILABLE_KEY,
     DEFAULT_SORT_ORDER,
     DEFAULT_SORT_DIRECTION,

@@ -1386,6 +1386,12 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     },
   );
 
+  // Result lists an assistant sent with `show_in_app`, and the live stream that
+  // surfaces a new one in the open app right away. Created here, ahead of the
+  // bookmark routes, because a read toggle or a delete moves a list's counts
+  // and has to tell every open tab.
+  const assistantListEvents = new AssistantListEvents();
+
   // Set a bookmark's read state. Body { read: false } clears it (un-read),
   // read (or no body) marks it read; the timestamp is recorded only the first
   // time a bookmark is marked read. This is the toggle the status chip drives.
@@ -1397,6 +1403,8 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       const read = req.body?.read !== false;
       const updated = read ? db.markRead(id) : db.markUnread(id);
       if (!updated) return reply.code(404).send({ error: 'bookmark not found' });
+      // A list's unread badge reads this same flag: every open tab re-reads the index.
+      if (db.isInAssistantList(id)) assistantListEvents.publish({ type: 'changed' });
       return { bookmark: updated };
     },
   );
@@ -1468,8 +1476,11 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   app.delete<{ Params: { id: string } }>('/api/bookmarks/:id', async (req, reply) => {
     const id = Number.parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
+    const listed = db.isInAssistantList(id);
     const deleted = db.deleteBookmark(id);
     if (!deleted) return reply.code(404).send({ error: 'bookmark not found' });
+    // The post left every list it was in, so their counts moved.
+    if (listed) assistantListEvents.publish({ type: 'changed' });
     return reply.code(204).send();
   });
 
@@ -1638,12 +1649,10 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     };
   });
 
-  // Result lists an assistant sent with `show_in_app`, and the live stream that
-  // surfaces a new one in the open app right away.
-  const assistantListEvents = new AssistantListEvents();
-  installAssistantListRoutes(app, db, assistantListEvents, (bookmarks) => {
-    const rubricVersion = activeRubricVersion();
-    return toViewerBookmarks(db, bookmarks, db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id)), rubricVersion);
+  installAssistantListRoutes(app, db, assistantListEvents, {
+    rubricVersion: activeRubricVersion,
+    toBookmarks: (bookmarks, rubricVersion) =>
+      toViewerBookmarks(db, bookmarks, db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id)), rubricVersion),
   });
 
   // The MCP endpoint for AI assistants (reads, plus `show_in_app`), and its Settings routes.

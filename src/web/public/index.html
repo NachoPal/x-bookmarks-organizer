@@ -817,6 +817,12 @@
                 role="radiogroup"
                 aria-label="Sort bookmarks by"
               >
+                <!-- Offered only while an assistant's list is open, where it is
+                     the default: the order the list was sent in. -->
+                <label class="sort-opt" data-sort-order="list" hidden>
+                  <input class="sort-opt-input" type="radio" name="sort-field" value="list" />
+                  <span class="sort-opt-label">Assistant's order</span>
+                </label>
                 <label class="sort-opt" data-sort-order="recent">
                   <input
                     class="sort-opt-input"
@@ -853,18 +859,6 @@
               </div>
               <p id="sort-note" class="sort-note" hidden></p>
             </div>
-            <!-- The open assistant list's header: its note, what it holds,
-                 and the one action on it. The title itself is in the top bar,
-                 where a category's is, marked with the Lists icon. -->
-            <header id="assistant-list-header" class="assistant-list-header" hidden>
-              <p id="assistant-list-note" class="assistant-list-note" hidden></p>
-              <div class="assistant-list-row">
-                <p id="assistant-list-meta" class="assistant-list-meta"></p>
-                <button id="assistant-list-delete" class="btn btn-secondary assistant-list-delete" type="button">
-                  Delete list
-                </button>
-              </div>
-            </header>
             <div
               id="bookmark-list"
               class="bookmark-list"
@@ -1421,6 +1415,11 @@
          DRAWING of the chip's own `aria-label` - announcing it again would
          read the same numbers twice. -->
     <div id="score-detail" class="score-detail" hidden aria-hidden="true"></div>
+    <!-- One popover for every Lists-page info button: the list's note, its
+         count and when it was sent. On <body> for the same reason as
+         #score-detail (the sidebar clips its overflow); each button's own
+         description already says the same words, so this is aria-hidden. -->
+    <div id="list-info" class="list-info" hidden aria-hidden="true"></div>
 
     <script src="https://platform.twitter.com/widgets.js" async></script>
     <script src="vendor/marked.min.js" defer></script>
