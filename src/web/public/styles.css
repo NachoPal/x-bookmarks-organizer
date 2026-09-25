@@ -114,6 +114,9 @@
   --motion-med: 200ms;
   --motion-slow: 260ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
+  /* How far a Settings view travels as it slides in (issue #142): enough to
+     read as moving one level sideways, short enough to stay a quick cue. */
+  --settings-slide: 2.5rem;
 
   /* Category tree: the drag handle's column (roots only, issue #82) and the
      per-level indent. Children clear the handle AND step in past it, so a
@@ -965,9 +968,9 @@ body[data-resizing="sidebar"] {
 
 /* ============================================================
    Top-bar popovers (issues #37, #71)
-   The gear opens the settings panel (post size, order, categorization); the
-   sync icon beside it opens a smaller panel of the same style holding the
-   last-synced time and the Sync button.
+   The gear opens the settings panel (a drill-down menu, issue #142 - see
+   "Settings drill-down" below); the sync icon beside it opens a smaller panel
+   of the same style holding the last-synced time and the Sync button.
    ============================================================ */
 .settings-anchor {
   position: relative;
@@ -983,6 +986,9 @@ body[data-resizing="sidebar"] {
   max-height: calc(100vh - var(--header-offset) - 2 * var(--space-4));
   max-height: calc(100svh - var(--header-offset) - 2 * var(--space-4));
   overflow-y: auto;
+  /* A Settings view slides in sideways (issue #142): the travel must not
+     raise a horizontal scrollbar for the length of the animation. */
+  overflow-x: hidden;
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
@@ -1009,10 +1015,6 @@ body[data-resizing="sidebar"] {
   flex-direction: column;
   gap: var(--space-2);
 }
-.settings-label {
-  font-size: var(--text-small);
-  font-weight: 600;
-}
 .settings-hint {
   margin: 0;
   color: var(--color-text-muted);
@@ -1021,6 +1023,142 @@ body[data-resizing="sidebar"] {
 .settings-segmented {
   display: flex;
   width: 100%;
+}
+
+/* --- Settings drill-down (issue #142) -----------------------------------
+   The panel shows ONE view at a time: the root menu (one row per section,
+   each ending in a chevron) or a section's sub-page (a top-left Back and the
+   section's title over its controls). A view entering slides in from the
+   side it comes from - deeper from the right, back from the left - on
+   transform + opacity only; reduced motion keeps the fade and drops the
+   travel (see the block after this one). */
+.settings-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.settings-view[hidden] {
+  display: none;
+}
+.settings-view[data-enter="forward"] {
+  animation: settings-enter-forward var(--motion-med) var(--ease);
+}
+.settings-view[data-enter="back"] {
+  animation: settings-enter-back var(--motion-med) var(--ease);
+}
+@keyframes settings-enter-forward {
+  from {
+    opacity: 0;
+    transform: translateX(var(--settings-slide));
+  }
+}
+@keyframes settings-enter-back {
+  from {
+    opacity: 0;
+    transform: translateX(calc(-1 * var(--settings-slide)));
+  }
+}
+@keyframes settings-enter-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-view[data-enter] {
+    animation-name: settings-enter-fade;
+  }
+}
+
+/* The rows' hover wash needs padding, but their labels must line up with the
+   title above: the list is pulled out by exactly that padding. */
+.settings-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0 calc(-1 * var(--space-2));
+  padding: 0;
+  list-style: none;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 2.75rem;
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease);
+}
+.settings-row:hover {
+  background: var(--color-surface-2);
+}
+.settings-row:active {
+  background: var(--color-border);
+}
+.settings-row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+}
+.settings-row-value {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.settings-row-value:empty {
+  display: none;
+}
+.settings-row-chevron {
+  flex: 0 0 auto;
+  width: 1.1rem;
+  height: 1.1rem;
+  color: var(--color-text-muted);
+}
+.settings-row:hover .settings-row-chevron {
+  color: var(--color-text);
+}
+/* Back sits in the panel's top-left corner, and STAYS there: Categorization
+   is taller than the panel, and a way out that scrolled away with it would
+   leave only Escape. The header is pinned to the top of the panel's own
+   scroll (the negative `top` cancels the panel's padding) on the surface
+   color, so the content scrolls under it; the negative inline margins pull
+   the icon button out by its own inset so its glyph lines up with the
+   content's left edge. */
+.settings-subpage-header {
+  position: sticky;
+  top: calc(-1 * var(--space-4));
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) calc(-1 * var(--space-2));
+  padding: var(--space-2) var(--space-4) var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.settings-subpage-title {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-h2);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+/* The heading takes focus only so a screen reader announces the page it
+   landed on; it is not a control, so it draws no ring. Every control on the
+   page keeps the global :focus-visible ring. */
+.settings-subpage-title:focus {
+  outline: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-row {
+    transition: none;
+  }
 }
 
 /* --- Switch row: a labelled on/off setting inside the panel ------------- */
@@ -3836,12 +3974,8 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
 }
 
 /* --- AI assistants (MCP) ------------------------------------------------
-   Its own group under a rule: Save above belongs to Categorization only,
-   and everything here acts at once (the switch, copy, regenerate). */
-.settings-group-divided {
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--color-border);
-}
+   Its own Settings sub-page (issue #142): everything here acts at once (the
+   switch, copy, regenerate) - there is no Save. */
 .mcp-details {
   display: flex;
   flex-direction: column;

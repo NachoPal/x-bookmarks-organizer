@@ -515,9 +515,16 @@ that size is the PANEL's width (`width: 100%`), which is why there is no longer 
 remains. Save's status still stacks UNDER it rather than beside it, so a long "why it failed"
 message cannot squeeze the button.
 
-The **settings popover** (gear, issue #37) holds the post-size control plus the theme and
-category-color switches. It no longer holds the list's Order - that moved out to the floating sort
-selector in #97 (below), which is now the app's only sort UI.
+The **settings popover** (gear, issue #37) is a **drill-down menu** since issue #142: a root list
+of section rows (Post size, Categorization, AI assistants (MCP), each a button ending in a chevron,
+with a trailing current value where one is short) and one `.settings-subpage` per section with a
+sticky top-left Back and the section title. ONE view is un-hidden at a time (`initSettingsNav` in
+`app.js`); Escape in a sub-page goes back one level, a second one closes the panel; Settings always
+opens at the root. **Leaving a sub-page runs `releaseSettingsState`, the same cleanup closing
+Settings does** (drop unsaved categorization edits, drop a revealed MCP token) - a new section
+with transient state must hook in there. A new setting gets its own root row + sub-page, never a
+second group on an existing page. Theme and category colors are NOT in it (top bar / sidebar), and
+the list's Order moved out to the floating sort selector in #97 (below).
 Post size resizes the POST, not the app's chrome - scaling the viewer's own
 text was the first cut and is what browser zoom already does. It is one `--post-scale` multiplier
 applied as **`zoom` on `.bookmark-card`**: `zoom` and not `transform: scale`, because it scales the
