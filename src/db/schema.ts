@@ -85,6 +85,9 @@
  *   reference `bookmarks(id)` with `ON DELETE CASCADE`, so deleting a post
  *   takes it out of every list; a list itself is kept until the owner deletes
  *   it (no auto-pruning). `position` is the order the assistant gave.
+ *   `viewed_at` is when the owner first opened the list in the viewer (NULL =
+ *   never): the sidebar's "Lists" row counts the unviewed ones, so the count
+ *   agrees across tabs and reloads.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -210,7 +213,8 @@ CREATE TABLE IF NOT EXISTS assistant_lists (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   title      TEXT NOT NULL,
   note       TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  viewed_at  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS assistant_list_items (
@@ -317,6 +321,16 @@ export const CATEGORIES_ADDED_COLUMNS: { name: string; ddl: string }[] = [
  */
 export const ARTICLES_ADDED_COLUMNS: { name: string; ddl: string }[] = [
   { name: 'content_text', ddl: 'ALTER TABLE articles ADD COLUMN content_text TEXT' },
+];
+
+/**
+ * Columns added to `assistant_lists` after its original release: `viewed_at`
+ * (see the schema comment above). Lists stored before it existed were only
+ * ever "new" in the tab they arrived in, so they migrate as already viewed
+ * (`Database.migrate` back-fills them) rather than all turning up new at once.
+ */
+export const ASSISTANT_LISTS_ADDED_COLUMNS: { name: string; ddl: string }[] = [
+  { name: 'viewed_at', ddl: 'ALTER TABLE assistant_lists ADD COLUMN viewed_at TEXT' },
 ];
 
 export const BOOKMARKS_ADDED_COLUMNS: { name: string; ddl: string }[] = [

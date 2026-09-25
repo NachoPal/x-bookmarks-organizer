@@ -515,6 +515,14 @@ that size is the PANEL's width (`width: 100%`), which is why there is no longer 
 remains. Save's status still stacks UNDER it rather than beside it, so a long "why it failed"
 message cannot squeeze the button.
 
+**The sidebar is a drill-down too, in its OWN style** (not Settings'): a menu of two large icon
+rows - Categories, then Lists (the MCP result lists, with the unviewed count) - and one page each
+with a round Back (`initSidebarNav`/`showSidebarPage` in `app.js`, pure half `sidebar-nav.js`).
+The open page is `body[data-sidebar-page]`, persisted and applied by `#xbo-preboot`. Escape in a
+page goes back only while focus is inside the sidebar. Anything that needs the TREE while another
+page is open switches to Categories first: "Select a category", the top-bar search, and a card
+drag (which borrows it with `persist: false` and hands the page back after).
+
 The **settings popover** (gear, issue #37) is a **drill-down menu** since issue #142: a root list
 of section rows (Post size, Categorization, AI assistants (MCP), each a button ending in a chevron,
 with a trailing current value where one is short) and one `.settings-subpage` per section with a
@@ -1577,6 +1585,9 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   every flow that resets the pool (sync, rank, category delete) calls `refreshOpenList`. A new such
   flow must too. Titles/notes are an assistant's words: `textContent` only
   (`assistant-lists-view.test.ts` pins it). Pure half: `assistant-lists.js` (`XBOAssistantLists`).
+  "New" is SERVER state: `assistant_lists.viewed_at`, stamped by `POST /api/assistant-lists/:id/viewed`
+  on the first open (never by the GET), which publishes `changed` so every tab's count follows;
+  lists that predate the column migrate as viewed. The client marks it optimistically on open.
 - **Search** (`src/db/search.ts`): FTS5 table `bookmark_fts`, one row per bookmark, kept current by
   TRIGGERS on the six source tables (every trigger re-derives the affected documents from ONE SQL
   definition), so a new write path needs no index code. SQL cannot strip HTML, so

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import BetterSqlite3 from 'better-sqlite3';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database } from './database';
 import type { RawBookmark } from '../types';
@@ -44,6 +45,7 @@ describe('assistant result lists (storage)', () => {
       note: 'Why these',
       createdAt: '2026-09-25T01:00:00.000Z',
       count: 3,
+      viewed: false,
     });
     expect(db.getAssistantListBookmarks(second.id).map((b) => b.postId)).toEqual(['3', '1', '2']);
     expect(db.getAssistantLists().map((l) => l.id)).toEqual([second.id, first.id]);
@@ -96,6 +98,45 @@ describe('assistant result lists (storage)', () => {
       disk.close();
       const again = new Database(file);
       expect(again.getAssistantLists()).toEqual([made]);
+      again.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stamps a list viewed on its first open only', () => {
+    const list = db.createAssistantList({ title: 'A', note: null, bookmarkIds: [ids['1']!] });
+    const other = db.createAssistantList({ title: 'B', note: null, bookmarkIds: [ids['2']!] });
+    expect(db.markAssistantListViewed(list.id, WHEN)).toBe(true);
+    expect(db.markAssistantListViewed(list.id)).toBe(false); // already viewed: nothing changed
+    expect(db.markAssistantListViewed(999)).toBeUndefined();
+    expect(db.getAssistantList(list.id)!.viewed).toBe(true);
+    expect(db.getAssistantList(other.id)!.viewed).toBe(false);
+  });
+
+  it('migrates a list table from before viewed_at, counting its lists as already viewed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbo-lists-migrate-'));
+    try {
+      const file = path.join(dir, 'old.db');
+      const raw = new BetterSqlite3(file);
+      raw.exec(`
+        CREATE TABLE assistant_lists (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL
+        );
+        INSERT INTO assistant_lists (title, created_at) VALUES ('From before', '${WHEN}');
+      `);
+      raw.close();
+
+      const migrated = new Database(file);
+      expect(migrated.getAssistantLists()).toMatchObject([{ title: 'From before', viewed: true }]);
+      const cat = migrated.getOrCreateCategory('AI', null, WHEN).id;
+      migrated.storeCategorizedBatch([bm('9')], () => [cat], WHEN);
+      const fresh = migrated.createAssistantList({ title: 'New', note: null, bookmarkIds: [migrated.getBookmarkByPostId('9')!.id] });
+      migrated.close();
+
+      // Re-opening is a no-op: the back-fill ran once, so a later list stays unviewed.
+      const again = new Database(file);
+      expect(again.getAssistantList(fresh.id)!.viewed).toBe(false);
       again.close();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

@@ -410,7 +410,7 @@ export function showInApp(db: Database, args: ShowInAppArgs): { answer: object; 
   if (db.countAssistantLists() >= MAX_ASSISTANT_LISTS) {
     throw new ToolInputError(
       `The app already holds ${MAX_ASSISTANT_LISTS} assistant lists. Ask the owner to delete some ` +
-        '(sidebar > From your assistant) before sending another.',
+        '(sidebar > Lists) before sending another.',
     );
   }
 
@@ -424,7 +424,7 @@ export function showInApp(db: Database, args: ShowInAppArgs): { answer: object; 
       shown: list.count,
       ...(notFound.length > 0 ? { notFound } : {}),
       message:
-        `Sent ${posts} to the app as "${list.title}"; the owner sees it under "From your assistant".` +
+        `Sent ${posts} to the app as "${list.title}"; the owner sees it under "Lists" in the sidebar.` +
         (notFound.length > 0
           ? ` Left out ${notFound.length} not in the library: ${notFound.join(', ')}.`
           : ''),

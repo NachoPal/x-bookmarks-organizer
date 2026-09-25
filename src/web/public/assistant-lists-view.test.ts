@@ -4,10 +4,12 @@ import { describe, expect, it } from "vitest";
 import { JSDOM } from "jsdom";
 
 // Drives the REAL app.js + index.html in jsdom with a stubbed fetch and a fake
-// EventSource, to pin the "From your assistant" section: a list an assistant
-// sends with the MCP tool `show_in_app` arrives live (section row + toast,
-// never a yanked view), opens as ordinary pooled cards in the assistant's
-// order, renders its untrusted title/note as text only, and deletes with Undo.
+// EventSource, to pin the sidebar's Lists page: a list an assistant sends with
+// the MCP tool `show_in_app` arrives live (a row + toast, never a yanked
+// view), opens as ordinary pooled cards in the assistant's order, renders its
+// untrusted title/note as text only, and deletes with Undo. And the sidebar's
+// drill-down around it: the menu, the Categories and Lists pages, Back,
+// Escape, focus, the persisted page and the unviewed-lists count.
 
 const dir = __dirname;
 const read = (f: string) => readFileSync(join(dir, f), "utf8");
@@ -30,24 +32,32 @@ const bm = (id: number, isRead = false) => ({
 });
 
 const NOW = new Date().toISOString();
-const list = (id: number, title: string, ids: number[], note: string | null = null) => ({
+const list = (id: number, title: string, ids: number[], note: string | null = null, viewed = false) => ({
   id,
   title,
   note,
   createdAt: NOW,
   count: ids.length,
+  viewed,
   ids,
 });
 
 interface Opts {
   lists?: ReturnType<typeof list>[];
   openList?: number;
+  /** What `xbo:sidebar-page` holds at load. */
+  page?: string;
+  /** Start with the sidebar open (the stored default is closed). */
+  sidebarOpen?: boolean;
+  /** How many index reads fail (500) before the server answers. */
+  failLists?: number;
 }
 
 async function boot(opts: Opts = {}) {
   const calls: { url: string; method: string; body?: string }[] = [];
   const posts = [bm(1), bm(2, true), bm(3)];
   let lists = opts.lists ?? [];
+  let failLists = opts.failLists ?? 0;
   const dom = new JSDOM(read("index.html").replace(/<script[^>]*><\/script>/g, ""), {
     runScripts: "outside-only",
     url: "http://localhost/",
@@ -55,6 +65,8 @@ async function boot(opts: Opts = {}) {
   });
   const w = dom.window as any;
   if (opts.openList != null) w.localStorage.setItem("xbo:assistant-list", String(opts.openList));
+  if (opts.page != null) w.localStorage.setItem("xbo:sidebar-page", opts.page);
+  if (opts.sidebarOpen) w.localStorage.setItem("xbo:sidebar-collapsed", "0");
   w.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
   w.IntersectionObserver = class {
     observe() {}
@@ -80,7 +92,14 @@ async function boot(opts: Opts = {}) {
       for (const fn of this.listeners.get(type) ?? []) fn({ data: JSON.stringify(data) });
     }
   };
-  const summary = (l: ReturnType<typeof list>) => ({ id: l.id, title: l.title, note: l.note, createdAt: l.createdAt, count: l.ids.length });
+  const summary = (l: ReturnType<typeof list>) => ({
+    id: l.id,
+    title: l.title,
+    note: l.note,
+    createdAt: l.createdAt,
+    count: l.ids.length,
+    viewed: l.viewed,
+  });
   w.fetch = async (url: string, init?: { method?: string; body?: string }) => {
     const method = init?.method ?? "GET";
     calls.push({ url, method, body: init?.body });
@@ -101,11 +120,24 @@ async function boot(opts: Opts = {}) {
         sync: { available: true, lastSyncedAt: null, status: null },
       });
     }
-    if (url === "/api/assistant-lists" && method === "GET") return json({ lists: lists.map(summary) });
+    if (url === "/api/assistant-lists" && method === "GET") {
+      if (failLists > 0) {
+        failLists -= 1;
+        return json({ error: "boom" }, 500);
+      }
+      return json({ lists: lists.map(summary) });
+    }
     if (url === "/api/assistant-lists" && method === "DELETE") {
       const ids: number[] = JSON.parse(init!.body!).ids;
       lists = lists.filter((l) => !ids.includes(l.id));
       return json({ deleted: ids.length });
+    }
+    const viewed = url.match(/^\/api\/assistant-lists\/(\d+)\/viewed$/);
+    if (viewed && method === "POST") {
+      const found = lists.find((l) => l.id === Number(viewed[1]));
+      if (!found) return json({ error: "list not found" }, 404);
+      found.viewed = true;
+      return json({ list: summary(found) });
     }
     const one = url.match(/^\/api\/assistant-lists\/(\d+)$/);
     if (one) {
@@ -138,8 +170,11 @@ async function boot(opts: Opts = {}) {
     "tree-color.js",
     "view-persist.js",
     "breadcrumb.js",
+    "tree-move.js",
+    "card-drag.js",
     "categorization.js",
     "assistant-lists.js",
+    "sidebar-nav.js",
     "app.js",
   ]) {
     w.eval(read(f));
@@ -158,6 +193,10 @@ async function boot(opts: Opts = {}) {
     dropList: (id: number) => {
       lists = lists.filter((l) => l.id !== id);
     },
+    /** Another tab opened a list: the server's copy is viewed now. */
+    viewElsewhere: (id: number) => {
+      lists.find((l) => l.id === id)!.viewed = true;
+    },
   };
 }
 
@@ -170,17 +209,31 @@ const visibleIds = (doc: Document) =>
     .map((c) => (c as HTMLElement).dataset.bookmarkId);
 const rows = (doc: Document) =>
   Array.from(doc.querySelectorAll(".assistant-list-item")).map((b) => b.querySelector(".assistant-list-title")!.textContent);
-const section = (doc: Document) => doc.getElementById("assistant-lists") as HTMLElement;
+const listsState = (doc: Document) => doc.getElementById("assistant-lists-state")!.textContent!.trim();
+const page = (doc: Document) => doc.body.getAttribute("data-sidebar-page");
+const view = (doc: Document, name: string) => doc.querySelector(`[data-sidebar-view="${name}"]`) as HTMLElement;
+const homeRow = (doc: Document, name: string) =>
+  doc.querySelector(`.sidebar-home-row[data-sidebar-page="${name}"]`) as HTMLElement;
+const listsBadge = (doc: Document) => doc.querySelector("#sidebar-home-lists [data-unviewed-badge]") as HTMLElement;
+/** The badge's number, or null while it is hidden (nothing unviewed). */
+const unviewed = (doc: Document) => (listsBadge(doc).hidden ? null : listsBadge(doc).textContent);
+const key = (w: any, target: EventTarget, k: string) =>
+  target.dispatchEvent(new w.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
 const toastAction = (doc: Document, label: string) =>
   Array.from(doc.querySelectorAll(".toast-action")).find((b) => b.textContent === label) as HTMLElement | undefined;
 
-describe("From your assistant (MCP show_in_app lists)", () => {
-  it("is absent with no lists, and lists what the server holds, newest first", async () => {
+describe("Lists (MCP show_in_app lists)", () => {
+  it("says there are none yet, and lists what the server holds, newest first", async () => {
     const empty = await boot();
-    expect(section(empty.doc).hidden).toBe(true);
+    expect(rows(empty.doc)).toEqual([]);
+    expect(listsState(empty.doc)).toContain("No lists yet");
+    expect(empty.doc.getElementById("sidebar-home-meta-lists")!.textContent).toBe("None yet");
+    expect((empty.doc.getElementById("assistant-lists-clear") as HTMLElement).hidden).toBe(true);
     const { doc } = await boot({ lists: [list(1, "Older", [1]), { ...list(2, "Newer", [2]), createdAt: "2999-01-01T00:00:00Z" }] });
-    expect(section(doc).hidden).toBe(false);
     expect(rows(doc)).toEqual(["Newer", "Older"]);
+    expect(listsState(doc)).toBe("");
+    expect(doc.getElementById("sidebar-home-meta-lists")!.textContent).toBe("2 lists");
+    expect((doc.getElementById("assistant-lists-clear") as HTMLElement).hidden).toBe(false);
   });
 
   it("surfaces a list the moment it arrives, without leaving the open category", async () => {
@@ -202,7 +255,9 @@ describe("From your assistant (MCP show_in_app lists)", () => {
 
     toastAction(doc, "Open")!.click();
     await tick();
+    expect(page(doc)).toBe("lists"); // Open takes the sidebar to where the list is
     expect(calls.some((c) => c.url === "/api/assistant-lists/7")).toBe(true);
+    expect(calls.some((c) => c.url === "/api/assistant-lists/7/viewed" && c.method === "POST")).toBe(true);
     expect(doc.getElementById("content-title")!.textContent).toBe("Eval harnesses");
     expect(visibleIds(doc)).toEqual(["3", "1"]); // the assistant's order
     expect((doc.getElementById("assistant-list-header") as HTMLElement).hidden).toBe(false);
@@ -250,7 +305,8 @@ describe("From your assistant (MCP show_in_app lists)", () => {
     (doc.querySelector(".assistant-list-item") as HTMLElement).click();
     await tick();
     (doc.getElementById("assistant-list-delete") as HTMLElement).click();
-    expect(section(doc).hidden).toBe(true);
+    expect(rows(doc)).toEqual([]);
+    expect(listsState(doc)).toContain("No lists yet");
     expect(doc.getElementById("content-title")!.textContent).toBe("Select a category");
     toastAction(doc, "Undo")!.click();
     await tick(80);
@@ -284,8 +340,202 @@ describe("From your assistant (MCP show_in_app lists)", () => {
     dropList(9);
     stream().emit("changed");
     await tick();
-    expect(section(doc).hidden).toBe(true);
+    expect(rows(doc)).toEqual([]);
     expect(doc.getElementById("content-title")!.textContent).toBe("Select a category");
     expect(visibleIds(doc)).toEqual([]);
+  });
+});
+
+describe("Sidebar drill-down (menu, Categories, Lists)", () => {
+  it("opens on the menu, slides into a page on its heading, and Back returns to the row", async () => {
+    const { doc, w } = await boot({ sidebarOpen: true });
+    expect(page(doc)).toBe("root");
+    expect(view(doc, "root").hidden).toBe(false);
+    expect(view(doc, "categories").hidden).toBe(true);
+    expect(view(doc, "lists").hidden).toBe(true);
+    // The rows summarise their pages.
+    expect(doc.getElementById("sidebar-home-meta-categories")!.textContent).toBe("1 category");
+
+    homeRow(doc, "categories").click();
+    expect(page(doc)).toBe("categories");
+    expect(view(doc, "root").hidden).toBe(true);
+    expect(view(doc, "categories").hidden).toBe(false);
+    expect(view(doc, "categories").getAttribute("data-enter")).toBe("forward");
+    expect(doc.activeElement!.id).toBe("sidebar-title-categories");
+    expect(w.localStorage.getItem("xbo:sidebar-page")).toBe("categories");
+
+    (view(doc, "categories").querySelector("[data-sidebar-back]") as HTMLElement).click();
+    expect(page(doc)).toBe("root");
+    expect(view(doc, "root").getAttribute("data-enter")).toBe("back");
+    expect(doc.activeElement).toBe(homeRow(doc, "categories"));
+    expect(w.localStorage.getItem("xbo:sidebar-page")).toBe("root");
+
+    homeRow(doc, "lists").click();
+    expect(page(doc)).toBe("lists");
+    expect(doc.activeElement!.id).toBe("sidebar-title-lists");
+    (view(doc, "lists").querySelector("[data-sidebar-back]") as HTMLElement).click();
+    expect(doc.activeElement).toBe(homeRow(doc, "lists"));
+  });
+
+  it("keeps every drag, expand and count control of the tree on the Categories page", async () => {
+    const { doc } = await boot({ sidebarOpen: true, page: "categories" });
+    const cats = view(doc, "categories");
+    for (const sel of ["#tree", "#category-search", "#cat-editor-open", "#color-toggle", ".tree-node", ".tree-grip"]) {
+      expect(cats.querySelector(sel), sel).not.toBeNull();
+    }
+    expect(cats.querySelector(".tree-counts")!.textContent).toContain("3");
+  });
+
+  it("Escape goes back one level while focus is in the sidebar, then closes it", async () => {
+    const { doc, w } = await boot({ sidebarOpen: true });
+    homeRow(doc, "lists").click();
+    key(w, doc.activeElement!, "Escape");
+    expect(page(doc)).toBe("root");
+    expect(doc.activeElement).toBe(homeRow(doc, "lists"));
+    expect(doc.body.getAttribute("data-sidebar")).toBeNull(); // still open
+    key(w, doc.activeElement!, "Escape");
+    expect(doc.body.getAttribute("data-sidebar")).toBe("collapsed");
+  });
+
+  it("Escape from outside the sidebar closes it without leaving the page", async () => {
+    const { doc, w } = await boot({ sidebarOpen: true, page: "categories" });
+    (doc.getElementById("sidebar-toggle") as HTMLElement).focus();
+    key(w, doc.activeElement!, "Escape");
+    expect(doc.body.getAttribute("data-sidebar")).toBe("collapsed");
+    expect(page(doc)).toBe("categories");
+  });
+
+  it("an Escape that clears the category filter does not also go back", async () => {
+    const { doc, w } = await boot({ sidebarOpen: true, page: "categories" });
+    const search = doc.getElementById("category-search") as HTMLInputElement;
+    search.focus();
+    search.value = "Ca";
+    search.dispatchEvent(new w.Event("input", { bubbles: true }));
+    key(w, search, "Escape");
+    expect(search.value).toBe("");
+    expect(page(doc)).toBe("categories");
+    key(w, search, "Escape");
+    expect(page(doc)).toBe("root");
+  });
+
+  it("restores the page open before a reload, and falls back to the menu for anything else", async () => {
+    const lists = await boot({ page: "lists" });
+    expect(page(lists.doc)).toBe("lists");
+    expect(view(lists.doc, "lists").hidden).toBe(false);
+    expect(view(lists.doc, "lists").getAttribute("data-enter")).toBeNull(); // no slide on load
+    const junk = await boot({ page: "settings" });
+    expect(page(junk.doc)).toBe("root");
+  });
+
+  it("focuses where the owner is on the open page when the sidebar opens", async () => {
+    const { doc } = await boot({ page: "lists", lists: [list(1, "A", [1]), list(2, "B", [2])] });
+    (doc.getElementById("sidebar-toggle") as HTMLElement).click();
+    expect((doc.activeElement as HTMLElement).classList.contains("assistant-list-item")).toBe(true);
+  });
+
+  it("the Select-a-category prompt and the top-bar search go to the Categories page", async () => {
+    const { doc } = await boot({ page: "lists" });
+    (doc.querySelector("#content-title [data-open-categories]") as HTMLElement).click();
+    expect(page(doc)).toBe("categories");
+    homeRow(doc, "lists").click(); // back on another page…
+    (view(doc, "categories").querySelector("[data-sidebar-back]") as HTMLElement).click();
+    homeRow(doc, "lists").click();
+    (doc.getElementById("search-open") as HTMLElement).click();
+    expect(page(doc)).toBe("categories");
+    expect(doc.activeElement!.id).toBe("category-search");
+  });
+
+  it("counts lists never opened, from the server, so a reload agrees", async () => {
+    const { doc } = await boot({
+      lists: [list(1, "Seen", [1], null, true), list(2, "Fresh", [2]), list(3, "Also fresh", [3])],
+    });
+    expect(unviewed(doc)).toBe("2");
+    expect(homeRow(doc, "lists").getAttribute("aria-label")).toBe("Lists, 3 lists, 2 new");
+    expect(rows(doc)).toContain("Seen");
+    expect(doc.querySelectorAll(".assistant-list-new")).toHaveLength(2);
+    // Categories' Back carries the same count, so it is never out of sight.
+    const catBack = view(doc, "categories").querySelector("[data-sidebar-back]")!;
+    expect(catBack.getAttribute("aria-label")).toBe("Back to the menu, 2 new lists");
+    expect((catBack.querySelector("[data-unviewed-badge]") as HTMLElement).hidden).toBe(false);
+  });
+
+  it("a live arrival adds one, opening clears one, delete and Clear all drop them", async () => {
+    const { doc, stream, addList, calls } = await boot({ lists: [list(1, "Old", [1], null, true)] });
+    expect(unviewed(doc)).toBeNull();
+    stream().emit("created", addList(list(2, "First", [2])));
+    stream().emit("created", addList(list(3, "Second", [3])));
+    await tick();
+    expect(unviewed(doc)).toBe("2");
+
+    (doc.querySelector('.assistant-list-item[data-list-id="2"]') as HTMLElement).click();
+    expect(unviewed(doc)).toBe("1"); // at once, not after the round trip
+    await tick();
+    expect(unviewed(doc)).toBe("1");
+    expect(calls.filter((c) => c.url === "/api/assistant-lists/2/viewed")).toHaveLength(1);
+    // A second open of a viewed list writes nothing.
+    (doc.querySelector('.assistant-list-item[data-list-id="1"]') as HTMLElement).click();
+    await tick();
+    (doc.querySelector('.assistant-list-item[data-list-id="2"]') as HTMLElement).click();
+    await tick();
+    expect(calls.filter((c) => c.url.endsWith("/viewed"))).toHaveLength(1);
+
+    // Deleting the unviewed one drops the count while its Undo waits.
+    (doc.querySelector('.assistant-list-item[data-list-id="3"]') as HTMLElement).click();
+    await tick();
+    expect(unviewed(doc)).toBeNull(); // opened, so viewed
+    stream().emit("created", addList(list(4, "Third", [1])));
+    await tick();
+    expect(unviewed(doc)).toBe("1");
+    (doc.getElementById("assistant-lists-clear") as HTMLElement).click();
+    expect(unviewed(doc)).toBeNull();
+    expect(rows(doc)).toEqual([]);
+    toastAction(doc, "Undo")!.click();
+    await tick();
+    expect(unviewed(doc)).toBe("1");
+    (doc.getElementById("assistant-lists-clear") as HTMLElement).click();
+    await tick(120);
+    expect(unviewed(doc)).toBeNull();
+    expect(listsState(doc)).toContain("No lists yet");
+  });
+
+  it("a list viewed in another tab stops counting when the stream says the index changed", async () => {
+    const { doc, stream, viewElsewhere } = await boot({ lists: [list(5, "Elsewhere", [1])] });
+    expect(unviewed(doc)).toBe("1");
+    viewElsewhere(5);
+    stream().emit("changed");
+    await tick();
+    expect(unviewed(doc)).toBeNull();
+    expect(doc.querySelector(".assistant-list-new")).toBeNull();
+  });
+
+  it("a card drag borrows the Categories page for its drop target, then gives the page back", async () => {
+    const { doc, w } = await boot({ lists: [list(6, "Mine", [1, 2])], page: "lists", sidebarOpen: true });
+    (doc.querySelector(".assistant-list-item") as HTMLElement).click();
+    await tick();
+    const grip = doc.querySelector('.bookmark-card[data-bookmark-id="1"] .card-grip') as HTMLElement;
+    grip.setPointerCapture = () => {};
+    grip.releasePointerCapture = () => {};
+    const pointer = (type: string, x: number) =>
+      grip.dispatchEvent(new w.MouseEvent(type, { bubbles: true, clientX: x, clientY: 10 }));
+    pointer("pointerdown", 10);
+    pointer("pointermove", 80);
+    expect(page(doc)).toBe("categories");
+    pointer("pointerup", 80);
+    expect(page(doc)).toBe("lists");
+    expect(w.localStorage.getItem("xbo:sidebar-page")).toBe("lists");
+  });
+
+  it("says so when the lists cannot be read, with a way to try again", async () => {
+    const { doc } = await boot({ failLists: 1, lists: [list(1, "Waiting", [1])] });
+    expect(listsState(doc)).toContain("Couldn't load your lists.");
+    expect(rows(doc)).toEqual([]);
+    const retry = Array.from(doc.querySelectorAll("#assistant-lists-state button")).find(
+      (b) => b.textContent === "Try again",
+    ) as HTMLElement;
+    retry.click();
+    expect(listsState(doc)).toContain("Loading lists…");
+    await tick();
+    expect(rows(doc)).toEqual(["Waiting"]);
+    expect(listsState(doc)).toBe("");
   });
 });

@@ -4,8 +4,8 @@ import type { AssistantList, Database } from '../db/database';
 import type { StoredBookmark } from '../types';
 
 /**
- * Assistant result lists in the viewer: the routes the "From your assistant"
- * sidebar section reads and deletes through, and the live stream that puts a
+ * Assistant result lists in the viewer: the routes the sidebar's "Lists" page
+ * reads, marks viewed and deletes through, and the live stream that puts a
  * list an assistant just sent (MCP `show_in_app`, `src/mcp/tools.ts`) in front
  * of the owner without a reload.
  *
@@ -13,7 +13,7 @@ import type { StoredBookmark } from '../types';
  * list removes the list and nothing else.
  */
 
-/** What the live stream announces. `changed` = something was deleted; re-read the index. */
+/** What the live stream announces. `changed` = a list was deleted or viewed; re-read the index. */
 export type AssistantListEvent = { type: 'created'; list: AssistantList } | { type: 'changed' };
 
 /**
@@ -68,6 +68,19 @@ export function installAssistantListRoutes(
     const list = db.getAssistantList(id);
     if (!list) return reply.code(404).send({ error: 'list not found' });
     return { list, bookmarks: toBookmarks(db.getAssistantListBookmarks(id)) };
+  });
+
+  // The owner opened the list. A POST, not a side effect of the GET above:
+  // no route that writes may be a GET (the Origin guard skips GET/HEAD).
+  // Only a real change is announced, so every open tab's "Lists" count
+  // follows it without re-reading on every repeat open.
+  app.post<{ Params: { id: string } }>('/api/assistant-lists/:id/viewed', async (req, reply) => {
+    const id = parseId(req.params.id);
+    if (id === null) return reply.code(400).send({ error: 'invalid list id' });
+    const changed = db.markAssistantListViewed(id);
+    if (changed === undefined) return reply.code(404).send({ error: 'list not found' });
+    if (changed) events.publish({ type: 'changed' });
+    return { list: db.getAssistantList(id) };
   });
 
   app.delete<{ Params: { id: string } }>('/api/assistant-lists/:id', async (req, reply) => {

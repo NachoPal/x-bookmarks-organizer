@@ -14,7 +14,7 @@
          way. This block is the first thing in <body>, so the parser runs it
          before any of it can be painted. It is deliberately the ONLY place
          these storage keys are duplicated - sidebar-state.js, theme.js,
-         tree-color.js and sidebar-width.js stay the source of truth for
+         tree-color.js, sidebar-width.js and sidebar-nav.js stay the source of truth for
          reading, writing and defaulting, and `preboot.test.ts` executes THIS
          script against those modules so a key or a default cannot drift.
          `--post-scale` is not here on purpose: it only sizes `.bookmark-card`,
@@ -44,6 +44,12 @@
         if (read("xbo:sidebar-collapsed") !== "0") {
           document.body.setAttribute("data-sidebar", "collapsed");
         }
+        // The sidebar's drill-down page: the menu unless a known page is stored.
+        var page = read("xbo:sidebar-page");
+        document.body.setAttribute(
+          "data-sidebar-page",
+          page === "categories" || page === "lists" ? page : "root",
+        );
         if (read("xbo:tree-colors-enabled") === "1") {
           document.body.setAttribute("data-tree-colors", "on");
         }
@@ -63,113 +69,158 @@
 
     <nav id="sidebar" class="sidebar" aria-label="Lists and categories">
       <div class="sidebar-inner">
-        <!-- Result lists an AI assistant sent with the MCP tool `show_in_app`.
-             Hidden until there is one; newest first; collapsible. A list is a
-             view of posts, never a filing, so it lives beside the tree rather
-             than in it. Titles are the assistant's words: app.js sets them as
-             text only. -->
-        <section id="assistant-lists" class="assistant-lists" aria-labelledby="assistant-lists-heading" hidden>
-          <div class="assistant-lists-head">
-            <h2 id="assistant-lists-heading" class="assistant-lists-heading">
-              <button
-                id="assistant-lists-toggle"
-                class="assistant-lists-toggle"
-                type="button"
-                aria-expanded="true"
-                aria-controls="assistant-lists-body"
-              >
-                <span class="chev" aria-hidden="true">▶</span>
-                <span class="assistant-lists-heading-label">From your assistant</span>
-                <span id="assistant-lists-count" class="count-total"></span>
+        <!-- A drill-down: the menu (one large row per section) and one page
+             per section, each with a Back control. Which one shows is the
+             `data-sidebar-page` attribute on <body>, which the preboot script
+             above applies before the first paint (sidebar-nav.js owns the key
+             and the default); app.js also sets `hidden` on the others. -->
+        <div class="sidebar-view sidebar-home" data-sidebar-view="root">
+          <ul class="sidebar-home-list">
+            <li>
+              <button class="sidebar-home-row" type="button" data-sidebar-page="categories">
+                <span class="sidebar-home-icon" aria-hidden="true">
+                  <svg class="icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" focusable="false"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+                </span>
+                <span class="sidebar-home-text">
+                  <span class="sidebar-home-label">Categories</span>
+                  <span id="sidebar-home-meta-categories" class="sidebar-home-meta">Loading…</span>
+                </span>
+                <svg class="sidebar-home-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="9 6 15 12 9 18" /></svg>
               </button>
-            </h2>
-            <button id="assistant-lists-clear" class="btn btn-ghost assistant-lists-clear" type="button">
+            </li>
+            <li>
+              <!-- Result lists an AI assistant sent with the MCP tool
+                   `show_in_app`. The badge counts the ones never opened. -->
+              <button id="sidebar-home-lists" class="sidebar-home-row" type="button" data-sidebar-page="lists">
+                <span class="sidebar-home-icon" aria-hidden="true">
+                  <svg class="icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" focusable="false"><path d="M12 3l1.8 4.6L18.5 9.5l-4.7 1.9L12 16l-1.8-4.6L5.5 9.5l4.7-1.9z" /></svg>
+                </span>
+                <span class="sidebar-home-text">
+                  <span class="sidebar-home-label">Lists</span>
+                  <span id="sidebar-home-meta-lists" class="sidebar-home-meta">None yet</span>
+                </span>
+                <span class="sidebar-badge" data-unviewed-badge hidden></span>
+                <svg class="sidebar-home-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="9 6 15 12 9 18" /></svg>
+              </button>
+            </li>
+          </ul>
+        </div>
+
+        <section
+          id="sidebar-page-categories"
+          class="sidebar-view sidebar-page"
+          data-sidebar-view="categories"
+          aria-labelledby="sidebar-title-categories"
+        >
+          <div class="sidebar-page-header">
+            <button class="sidebar-back" type="button" data-sidebar-back aria-label="Back to the menu">
+              <svg class="icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="15 6 9 12 15 18" /></svg>
+              <span class="sidebar-back-badge" data-unviewed-badge aria-hidden="true" hidden></span>
+            </button>
+            <h2 id="sidebar-title-categories" class="sidebar-page-title" tabindex="-1">Categories</h2>
+          </div>
+          <div class="sidebar-search">
+            <label class="visually-hidden" for="category-search">Filter categories by name</label>
+            <div class="search-field">
+              <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
+                <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+              <input
+                id="category-search"
+                class="search-input"
+                type="search"
+                placeholder="Filter…"
+                autocomplete="off"
+                spellcheck="false"
+                aria-controls="tree"
+              />
+              <button
+                id="category-search-clear"
+                class="search-clear"
+                type="button"
+                aria-label="Clear category filter"
+                hidden
+              >
+                <span class="icon-x" aria-hidden="true"></span>
+              </button>
+            </div>
+            <!-- The tree's two tools share the filter's row, so the page header
+                 keeps its width for Back and the title. The editor (issue #101)
+                 sits to the LEFT of the colors toggle: editing the tree is a
+                 bigger deal than tinting it, so it leads the pair. -->
+            <button
+              id="cat-editor-open"
+              class="icon-btn"
+              type="button"
+              aria-haspopup="dialog"
+              aria-label="Edit categories"
+              title="Edit categories"
+            >
+              <svg class="icon-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linejoin="round"
+                />
+                <line x1="14.5" y1="7.5" x2="17.5" y2="10.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button
+              id="color-toggle"
+              class="icon-btn is-toggle"
+              type="button"
+              aria-pressed="false"
+              aria-label="Turn category colors on"
+            >
+              <svg class="icon-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  d="M12 3a9 9 0 0 0 0 18 2 2 0 0 0 2-2 1.9 1.9 0 0 0-.5-1.3 1.9 1.9 0 0 1-.5-1.3 2 2 0 0 1 2-2H17a4 4 0 0 0 4-4c0-3.9-4-7.4-9-7.4z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linejoin="round"
+                />
+                <circle cx="7.5" cy="11.5" r="1.3" fill="currentColor" />
+                <circle cx="11" cy="8" r="1.3" fill="currentColor" />
+                <circle cx="15.5" cy="9.5" r="1.3" fill="currentColor" />
+                <circle cx="7.5" cy="16" r="1.3" fill="currentColor" />
+              </svg>
+            </button>
+          </div>
+          <p id="tree-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
+          <p id="tree-move-help" class="visually-hidden">
+            Drag to move it. Or press Up or Down arrow to reorder it, Left arrow to move it out of its
+            parent, Right arrow to move it into the category above, or Enter to choose where it goes.
+          </p>
+          <div id="tree" class="tree">
+            <p class="state state-loading" role="status">Loading categories…</p>
+          </div>
+        </section>
+
+        <!-- A list is a view of posts, never a filing, so it has its own page
+             rather than a place in the tree. Titles are the assistant's
+             words: app.js sets them as text only. -->
+        <section
+          id="sidebar-page-lists"
+          class="sidebar-view sidebar-page"
+          data-sidebar-view="lists"
+          aria-labelledby="sidebar-title-lists"
+        >
+          <div class="sidebar-page-header">
+            <button class="sidebar-back" type="button" data-sidebar-back aria-label="Back to the menu">
+              <svg class="icon-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="15 6 9 12 15 18" /></svg>
+            </button>
+            <h2 id="sidebar-title-lists" class="sidebar-page-title" tabindex="-1">Lists</h2>
+            <button id="assistant-lists-clear" class="btn btn-ghost assistant-lists-clear" type="button" hidden>
               Clear all
             </button>
           </div>
-          <ul id="assistant-lists-body" class="assistant-lists-items"></ul>
+          <div id="assistant-lists-state" class="assistant-lists-state"></div>
+          <ul id="assistant-lists-body" class="assistant-lists-items" aria-labelledby="sidebar-title-lists"></ul>
         </section>
-        <div class="sidebar-topbar">
-          <h2 class="sidebar-heading">Categories</h2>
-          <!-- Opens the category editor (issue #101). Sits to the LEFT of the
-               colors toggle: editing the tree is a bigger deal than tinting
-               it, so it leads the pair. -->
-          <button
-            id="cat-editor-open"
-            class="icon-btn"
-            type="button"
-            aria-haspopup="dialog"
-            aria-label="Edit categories"
-            title="Edit categories"
-          >
-            <svg class="icon-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path
-                d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linejoin="round"
-              />
-              <line x1="14.5" y1="7.5" x2="17.5" y2="10.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-            </svg>
-          </button>
-          <button
-            id="color-toggle"
-            class="icon-btn is-toggle"
-            type="button"
-            aria-pressed="false"
-            aria-label="Turn category colors on"
-          >
-            <svg class="icon-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path
-                d="M12 3a9 9 0 0 0 0 18 2 2 0 0 0 2-2 1.9 1.9 0 0 0-.5-1.3 1.9 1.9 0 0 1-.5-1.3 2 2 0 0 1 2-2H17a4 4 0 0 0 4-4c0-3.9-4-7.4-9-7.4z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linejoin="round"
-              />
-              <circle cx="7.5" cy="11.5" r="1.3" fill="currentColor" />
-              <circle cx="11" cy="8" r="1.3" fill="currentColor" />
-              <circle cx="15.5" cy="9.5" r="1.3" fill="currentColor" />
-              <circle cx="7.5" cy="16" r="1.3" fill="currentColor" />
-            </svg>
-          </button>
-        </div>
-        <div class="sidebar-search">
-          <label class="visually-hidden" for="category-search">Filter categories by name</label>
-          <div class="search-field">
-            <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
-              <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-            </svg>
-            <input
-              id="category-search"
-              class="search-input"
-              type="search"
-              placeholder="Filter categories…"
-              autocomplete="off"
-              spellcheck="false"
-              aria-controls="tree"
-            />
-            <button
-              id="category-search-clear"
-              class="search-clear"
-              type="button"
-              aria-label="Clear category filter"
-              hidden
-            >
-              <span class="icon-x" aria-hidden="true"></span>
-            </button>
-          </div>
-        </div>
-        <p id="tree-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
-        <p id="tree-move-help" class="visually-hidden">
-          Drag to move it. Or press Up or Down arrow to reorder it, Left arrow to move it out of its
-          parent, Right arrow to move it into the category above, or Enter to choose where it goes.
-        </p>
-        <div id="tree" class="tree">
-          <p class="state state-loading" role="status">Loading categories…</p>
-        </div>
       </div>
       <!-- The drag-resizable right edge (issue #99). A real ARIA window
            splitter: focusable, arrow keys resize, Home/End go to the bounds,
@@ -183,7 +234,7 @@
         tabindex="0"
         aria-orientation="vertical"
         aria-controls="sidebar"
-        aria-label="Resize categories sidebar"
+        aria-label="Resize sidebar"
       ></div>
     </nav>
     <div id="viewer" class="viewer">
@@ -195,7 +246,7 @@
             type="button"
             aria-controls="sidebar"
             aria-expanded="true"
-            aria-label="Hide categories"
+            aria-label="Hide sidebar"
           >
             <span class="icon-menu" aria-hidden="true">
               <span class="menu-bar"></span>
@@ -1400,6 +1451,7 @@
     <script src="filter-cache.js" defer></script>
     <script src="view-persist.js" defer></script>
     <script src="assistant-lists.js" defer></script>
+    <script src="sidebar-nav.js" defer></script>
     <script src="sort-order.js" defer></script>
     <script src="ranking.js" defer></script>
     <script src="paid-spend.js" defer></script>
