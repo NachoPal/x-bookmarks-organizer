@@ -120,12 +120,9 @@ export interface BookmarkPageOptions {
   rubricVersion?: string;
 }
 
-/**
- * Ordering for {@link Database.getAssistantListBookmarks}: the category
- * orders plus `list`, the order the assistant sent (the default).
- */
+/** Ordering for {@link Database.getAssistantListBookmarks}: the category orders. */
 export interface AssistantListSortOptions {
-  sort?: BookmarkSortOrder | 'list';
+  sort?: BookmarkSortOrder;
   dir?: BookmarkSortDirection;
   /** As {@link BookmarkPageOptions.rubricVersion}. */
   rubricVersion?: string;
@@ -1582,11 +1579,9 @@ export class Database {
   }
 
   /**
-   * A list's bookmarks. By default in the order the assistant gave them
-   * (`sort: 'list'`); `recent` and `score` order them exactly as
-   * {@link getBookmarksForCategory} orders a category (unranked last in both
-   * directions, scores scoped to `rubricVersion`), and `dir: 'asc'` reverses
-   * the assistant's order.
+   * A list's bookmarks, ordered exactly as {@link getBookmarksForCategory}
+   * orders a category: `recent` (the default) or `score` (unranked last in
+   * both directions, scores scoped to `rubricVersion`).
    */
   getAssistantListBookmarks(id: number, opts: AssistantListSortOptions = {}): StoredBookmark[] {
     const asc = opts.dir === 'asc';
@@ -1594,16 +1589,11 @@ export class Database {
     const scoreJoin = scored
       ? `LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id${opts.rubricVersion ? ' AND sc.rubric_version = ?' : ''}`
       : '';
-    const order =
-      opts.sort === 'recent'
-        ? asc
-          ? 'b.ingested_at ASC, b.id ASC'
-          : 'b.ingested_at DESC, b.id DESC'
-        : scored
-          ? `sc.score IS NULL, sc.score ${asc ? 'ASC' : 'DESC'}, b.ingested_at DESC, b.id DESC`
-          : asc
-            ? 'i.position DESC, b.id DESC'
-            : 'i.position, b.id';
+    const order = scored
+      ? `sc.score IS NULL, sc.score ${asc ? 'ASC' : 'DESC'}, b.ingested_at DESC, b.id DESC`
+      : asc
+        ? 'b.ingested_at ASC, b.id ASC'
+        : 'b.ingested_at DESC, b.id DESC';
     const params: (number | string)[] = [];
     if (scored && opts.rubricVersion) params.push(opts.rubricVersion);
     params.push(id);

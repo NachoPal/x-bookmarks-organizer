@@ -80,11 +80,12 @@
  *   rather than to any row that happens to exist.
  * - `assistant_lists` + `assistant_list_items` are the result lists an AI
  *   assistant sends through the MCP tool `show_in_app` (`src/mcp/tools.ts`):
- *   a named, ordered set of bookmarks for the owner to look at in the viewer.
+ *   a named set of bookmarks for the owner to look at in the viewer.
  *   A list is only a VIEW - it never files, moves or deletes anything. Items
  *   reference `bookmarks(id)` with `ON DELETE CASCADE`, so deleting a post
  *   takes it out of every list; a list itself is kept until the owner deletes
- *   it (no auto-pruning). `position` is the order the assistant gave.
+ *   it (no auto-pruning). `position` records the order the assistant gave;
+ *   the viewer orders a list like a category (Newest / Top score) instead.
  *   `viewed_at` is when the owner first opened the list in the viewer (NULL =
  *   never): the sidebar's "Lists" row counts the unviewed ones, so the count
  *   agrees across tabs and reloads.

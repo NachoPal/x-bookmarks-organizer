@@ -380,7 +380,7 @@ to look at - nothing an assistant does can file, move, re-categorize or delete a
 | `list_categories` | The category tree with descriptions and counts. |
 | `list_category_bookmarks` | A category's bookmarks, paged. |
 | `library_stats` | Counts and when the library last synced. |
-| `show_in_app` | The one write: opens posts in the app as a named list. Takes `postIds` (ids or post URLs, up to 100, in the order to show them), a `title` (up to 80 characters) and an optional `note` (up to 500). Posts not in the library are reported and left out; a call where none is found creates nothing. |
+| `show_in_app` | The one write: opens posts in the app as a named list. Takes `postIds` (ids or post URLs, up to 100), a `title` (up to 80 characters) and an optional `note` (up to 500). Posts not in the library are reported and left out; a call where none is found creates nothing. |
 
 **Lists from your assistant.** A `show_in_app` list appears in the running app at once: a toast
 ("Your assistant sent 12 posts: Eval harnesses") with **Open**, and a row in the sidebar's **From

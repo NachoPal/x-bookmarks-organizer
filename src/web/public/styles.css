@@ -1718,9 +1718,6 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   display: inline-flex;
   min-width: 0;
 }
-.sort-opt[hidden] {
-  display: none;
-}
 /* Native radio drives selection + arrow-key navigation inside the
    radiogroup; kept off-screen but focusable, exactly as `.seg-input` is. */
 .sort-opt-input {

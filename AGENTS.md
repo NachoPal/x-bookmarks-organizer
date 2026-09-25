@@ -1596,9 +1596,10 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   routes publish `changed` when the post is in a list (`isInAssistantList`), which is how every
   tab's badges follow. The note / count / sent time live behind each row's info button
   (`#list-info`, one `<body>` popover); the list view has no header. A list is ordered by the
-  same `#sort-bar` under its OWN stored scope (`XBOSortOrder` `scope: "list"`, keys
-  `xbo:list-sort-*`), whose extra default order `list` = the assistant's order
-  (`GET /api/assistant-lists/:id?sort=&dir=`).
+  same `#sort-bar` with exactly a category's options and default (Newest / Top score), under its
+  OWN stored scope (`XBOSortOrder` `scope: "list"`, keys `xbo:list-sort-*`;
+  `GET /api/assistant-lists/:id?sort=&dir=`). There is deliberately no "assistant's order" option:
+  `show_in_app` accepts posts in any order and `position` is stored but never displayed.
 - **Search** (`src/db/search.ts`): FTS5 table `bookmark_fts`, one row per bookmark, kept current by
   TRIGGERS on the six source tables (every trigger re-derives the affected documents from ONE SQL
   definition), so a new write path needs no index code. SQL cannot strip HTML, so

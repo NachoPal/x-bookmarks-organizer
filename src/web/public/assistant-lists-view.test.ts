@@ -6,7 +6,7 @@ import { JSDOM } from "jsdom";
 // Drives the REAL app.js + index.html in jsdom with a stubbed fetch and a fake
 // EventSource, to pin the sidebar's Lists page: a list an assistant sends with
 // the MCP tool `show_in_app` arrives live (a row + toast, never a yanked
-// view), opens as ordinary pooled cards in the assistant's order, renders its
+// view), opens as ordinary pooled cards ordered like a category, renders its
 // untrusted title/note as text only, and deletes with Undo. And the sidebar's
 // drill-down around it: the menu, the Categories and Lists pages, Back,
 // Escape, focus, the persisted page and the unviewed-lists count.
@@ -51,6 +51,8 @@ interface Opts {
   sidebarOpen?: boolean;
   /** How many index reads fail (500) before the server answers. */
   failLists?: number;
+  /** What `xbo:list-sort-order` holds at load. */
+  listSort?: string;
 }
 
 async function boot(opts: Opts = {}) {
@@ -67,6 +69,7 @@ async function boot(opts: Opts = {}) {
   if (opts.openList != null) w.localStorage.setItem("xbo:assistant-list", String(opts.openList));
   if (opts.page != null) w.localStorage.setItem("xbo:sidebar-page", opts.page);
   if (opts.sidebarOpen) w.localStorage.setItem("xbo:sidebar-collapsed", "0");
+  if (opts.listSort != null) w.localStorage.setItem("xbo:list-sort-order", opts.listSort);
   w.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
   w.IntersectionObserver = class {
     observe() {}
@@ -145,7 +148,7 @@ async function boot(opts: Opts = {}) {
     if (one) {
       const found = lists.find((l) => l.id === Number(one[1]));
       if (!found) return json({ error: "list not found" }, 404);
-      // "recent" stands in as the higher id first; "list" is the assistant's order.
+      // "recent" stands in as the higher id first; anything else keeps the ids as given.
       let ids = one[2] === "recent" ? found.ids.slice().sort((a, b) => b - a) : found.ids.slice();
       if (one[3] === "asc") ids = ids.reverse();
       return json({ list: summary(found), bookmarks: ids.map((id) => posts.find((p) => p.id === id)) });
@@ -262,12 +265,12 @@ describe("Lists (MCP show_in_app lists)", () => {
     toastAction(doc, "Open")!.click();
     await tick();
     expect(page(doc)).toBe("lists"); // Open takes the sidebar to where the list is
-    expect(calls.some((c) => c.url === "/api/assistant-lists/7?sort=list&dir=desc")).toBe(true);
+    expect(calls.some((c) => c.url === "/api/assistant-lists/7?sort=recent&dir=desc")).toBe(true);
     expect(calls.some((c) => c.url === "/api/assistant-lists/7/viewed" && c.method === "POST")).toBe(true);
     expect(doc.getElementById("content-title")!.textContent).toBe("List: Eval harnesses");
     // Marked as a list by the sidebar's Lists icon, not by an eyebrow in the pane.
     expect(doc.querySelector("#content-title .topbar-list-icon")!.getAttribute("aria-hidden")).toBe("true");
-    expect(visibleIds(doc)).toEqual(["3", "1"]); // the assistant's order
+    expect(visibleIds(doc)).toEqual(["3", "1"]); // newest first
     expect((doc.getElementById("toolbar") as HTMLElement).hidden).toBe(true); // no tabs
     expect((doc.getElementById("sort-bar") as HTMLElement).hidden).toBe(false); // but it can be ordered
     expect(doc.querySelector('.assistant-list-item[aria-current="true"]')).not.toBeNull();
@@ -301,16 +304,15 @@ describe("Lists (MCP show_in_app lists)", () => {
     expect(visibleIds(doc)).toEqual(["1", "3"]);
     (doc.querySelector(".assistant-list-item") as HTMLElement).click();
     await tick();
-    expect(visibleIds(doc)).toEqual(["1", "2", "3"]); // the read post 2 too
+    expect(visibleIds(doc)).toEqual(["3", "2", "1"]); // the read post 2 too
     const card = doc.querySelector('.bookmark-card[data-bookmark-id="1"]') as HTMLElement;
     (card.querySelector(".read-pill") as HTMLElement).click();
     await tick(80);
-    expect(visibleIds(doc)).toEqual(["1", "2", "3"]);
+    expect(visibleIds(doc)).toEqual(["3", "2", "1"]);
     // Picking the category again brings its own tab back as it was.
     (doc.querySelector(".tree-node") as HTMLElement).click();
     await tick();
     expect(doc.getElementById("content-title")!.textContent).toBe("Cat");
-    expect(doc.querySelector('.sort-opt[data-sort-order="list"]')!.hasAttribute("hidden")).toBe(true);
   });
 
   it("deletes the open list with Undo, and only the ids it hid", async () => {
@@ -339,7 +341,7 @@ describe("Lists (MCP show_in_app lists)", () => {
   it("reopens the list that was open before a reload, and forgets one that is gone", async () => {
     const { doc } = await boot({ lists: [list(8, "Kept", [2, 3])], openList: 8 });
     expect(doc.getElementById("content-title")!.textContent).toBe("List: Kept");
-    expect(visibleIds(doc)).toEqual(["2", "3"]);
+    expect(visibleIds(doc)).toEqual(["3", "2"]);
 
     const gone = await boot({ lists: [], openList: 99 });
     expect(gone.doc.getElementById("content-title")!.textContent).not.toBe("List: Kept");
@@ -462,37 +464,46 @@ describe("Lists (MCP show_in_app lists)", () => {
     expect(row().querySelector(".count-total")!.textContent).toBe("3");
   });
 
-  it("orders a list with the category sort chip, defaulting to the assistant's order, remembered apart", async () => {
+  it("orders a list with the category sort chip and its default, remembered apart", async () => {
     const { doc, w, calls } = await boot({ lists: [list(1, "Evals", [2, 3, 1])] });
     (doc.querySelector(".assistant-list-item") as HTMLElement).click();
     await tick();
     const opt = (v: string) => doc.querySelector(`.sort-opt-input[value="${v}"]`) as HTMLInputElement;
-    expect(opt("list").parentElement!.hasAttribute("hidden")).toBe(false);
-    expect(opt("list").checked).toBe(true);
-    expect(doc.getElementById("sort-direction-label")!.textContent).toBe("As sent");
-    expect(visibleIds(doc)).toEqual(["2", "3", "1"]);
-
-    opt("recent").checked = true;
-    opt("recent").dispatchEvent(new w.Event("change"));
-    await tick();
+    // Exactly a category's options: no "Assistant's order".
+    expect([...doc.querySelectorAll<HTMLInputElement>(".sort-opt-input")].map((i) => i.value)).toEqual([
+      "recent",
+      "score",
+    ]);
+    expect(doc.querySelectorAll(".sort-opt[hidden]").length).toBe(0);
+    expect(opt("recent").checked).toBe(true);
+    expect(doc.getElementById("sort-direction-label")!.textContent).toBe("Newest first");
     expect(calls.at(-1)!.url).toBe("/api/assistant-lists/1?sort=recent&dir=desc");
     expect(visibleIds(doc)).toEqual(["3", "2", "1"]);
+
     (doc.getElementById("sort-direction") as HTMLElement).click();
     await tick();
     expect(calls.at(-1)!.url).toBe("/api/assistant-lists/1?sort=recent&dir=asc");
     expect(visibleIds(doc)).toEqual(["1", "2", "3"]);
-    expect(w.localStorage.getItem("xbo:list-sort-order")).toBe("recent");
+    expect(doc.getElementById("sort-direction-label")!.textContent).toBe("Oldest first");
     expect(w.localStorage.getItem("xbo:list-sort-direction")).toBe("asc");
     // Top score stays disabled with nothing ranked, as it is for a category.
     expect(opt("score").disabled).toBe(true);
 
-    // A category keeps its own ordering, and has no "Assistant's order".
+    // A category keeps its own ordering.
     (doc.querySelector(".tree-node") as HTMLElement).click();
     await tick();
-    expect(opt("list").parentElement!.hasAttribute("hidden")).toBe(true);
     expect(opt("recent").checked).toBe(true);
     expect(doc.getElementById("sort-direction-label")!.textContent).toBe("Newest first");
-    expect(w.localStorage.getItem("xbo:sort-order")).toBeNull();
+    expect(w.localStorage.getItem("xbo:sort-direction")).toBeNull();
+  });
+
+  it("opens a list stored under the retired assistant's order at Newest", async () => {
+    const { doc, calls } = await boot({ lists: [list(1, "Evals", [2, 3, 1])], listSort: "list" });
+    (doc.querySelector(".assistant-list-item") as HTMLElement).click();
+    await tick();
+    expect(calls.some((c) => c.url === "/api/assistant-lists/1?sort=recent&dir=desc")).toBe(true);
+    expect((doc.querySelector('.sort-opt-input[value="recent"]') as HTMLInputElement).checked).toBe(true);
+    expect(visibleIds(doc)).toEqual(["3", "2", "1"]);
   });
 
   it("leaves a list deleted in another tab when the stream says the index changed", async () => {
