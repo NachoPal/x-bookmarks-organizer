@@ -53,13 +53,33 @@ describe("XBOAssistantLists", () => {
     expect(lists.relativeTime("garbage", NOW)).toBe("");
   });
 
-  it("words the toast, the row and the header", () => {
+  it("words the toast and the row, whose name says what its count badges show", () => {
     const eval12 = list(7, ago(5 * 60_000), 12, "Eval harnesses");
     expect(lists.arrivalMessage(eval12)).toBe("Your assistant sent 12 posts: Eval harnesses");
-    expect(lists.itemMeta(eval12, NOW)).toBe("12 posts · 5 min ago");
-    expect(lists.itemLabel(eval12, NOW, true)).toBe("Eval harnesses, 12 posts · 5 min ago, new");
-    expect(lists.itemLabel(eval12, NOW, false)).toBe("Eval harnesses, 12 posts · 5 min ago");
-    expect(lists.headerMeta(eval12, NOW)).toBe("12 posts · sent 5 min ago");
+    expect(lists.itemLabel(eval12, true)).toBe("Eval harnesses, 12 posts, new");
+    expect(lists.itemLabel({ ...eval12, unread: 4 }, false)).toBe("Eval harnesses, 12 posts, 4 unread");
+    expect(lists.unreadCount({ ...eval12, unread: 4 })).toBe(4);
+    expect(lists.unreadCount(eval12)).toBe(0); // a server that sent no `unread`
+  });
+
+  it("tells the info button's note, count and sent time, relative and absolute", () => {
+    const at = ago(2 * 3_600_000);
+    const absolute = new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    const noted = { ...list(7, at, 6, "Evals"), note: "Why these", unread: 2 };
+    expect(lists.infoLines(noted, NOW)).toEqual({
+      note: "Why these",
+      posts: "6 posts, 2 unread",
+      sent: `Sent 2 h ago · ${absolute}`,
+    });
+    expect(lists.infoDescription(noted, NOW)).toBe(`Why these. 6 posts, 2 unread. Sent 2 h ago · ${absolute}.`);
+    // A note that already ends a sentence gets no second stop.
+    expect(lists.infoDescription({ ...noted, note: "Short ones." }, NOW)).toMatch(/^Short ones\. 6 posts/);
+    // No note, nothing unread: just what there is.
+    expect(lists.infoLines(list(8, at, 1), NOW)).toMatchObject({ note: null, posts: "1 post" });
+    // Past a week the relative time IS a date, so it is not said twice.
+    const old = ago(40 * 86_400_000);
+    const oldAbsolute = new Date(old).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    expect(lists.infoLines(list(9, old, 1), NOW).sent).toBe(`Sent ${oldAbsolute}`);
   });
 
   it("keeps the index newest first, replacing a list by id", () => {

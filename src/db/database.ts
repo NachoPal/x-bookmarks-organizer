@@ -120,6 +120,17 @@ export interface BookmarkPageOptions {
   rubricVersion?: string;
 }
 
+/**
+ * Ordering for {@link Database.getAssistantListBookmarks}: the category
+ * orders plus `list`, the order the assistant sent (the default).
+ */
+export interface AssistantListSortOptions {
+  sort?: BookmarkSortOrder | 'list';
+  dir?: BookmarkSortDirection;
+  /** As {@link BookmarkPageOptions.rubricVersion}. */
+  rubricVersion?: string;
+}
+
 /** Options for {@link Database.searchBookmarks}. Every filter is optional and they combine with AND. */
 export interface BookmarkSearchOptions {
   /** Free text; see `buildMatchQuery`. Omitted or empty lists the filtered set, newest post first. */
@@ -164,6 +175,11 @@ export interface AssistantList {
   note: string | null;
   createdAt: string;
   count: number;
+  /**
+   * How many of those posts are unread. Read state is per BOOKMARK, so this is
+   * the same flag a category's count reads - the two can never disagree.
+   */
+  unread: number;
   /** Whether the owner has opened it in the viewer yet (`assistant_lists.viewed_at`). */
   viewed: boolean;
 }
@@ -180,7 +196,9 @@ export interface LibraryStats {
 }
 
 const ASSISTANT_LIST_SELECT = `SELECT l.id, l.title, l.note, l.created_at, l.viewed_at,
-       (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count
+       (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count,
+       (SELECT COUNT(*) FROM assistant_list_items i JOIN bookmarks b ON b.id = i.bookmark_id
+         WHERE i.list_id = l.id AND b.read = 0) AS unread
   FROM assistant_lists l`;
 
 interface AssistantListRow {
@@ -190,10 +208,11 @@ interface AssistantListRow {
   created_at: string;
   viewed_at: string | null;
   count: number;
+  unread: number;
 }
 
 function toAssistantList(r: AssistantListRow): AssistantList {
-  return { id: r.id, title: r.title, note: r.note, createdAt: r.created_at, count: r.count, viewed: r.viewed_at !== null };
+  return { id: r.id, title: r.title, note: r.note, createdAt: r.created_at, count: r.count, unread: r.unread, viewed: r.viewed_at !== null };
 }
 
 interface BookmarkRow {
@@ -1562,17 +1581,47 @@ export class Database {
     return (this.db.prepare('SELECT COUNT(*) AS n FROM assistant_lists').get() as { n: number }).n;
   }
 
-  /** A list's bookmarks in the order the assistant gave them. */
-  getAssistantListBookmarks(id: number): StoredBookmark[] {
+  /**
+   * A list's bookmarks. By default in the order the assistant gave them
+   * (`sort: 'list'`); `recent` and `score` order them exactly as
+   * {@link getBookmarksForCategory} orders a category (unranked last in both
+   * directions, scores scoped to `rubricVersion`), and `dir: 'asc'` reverses
+   * the assistant's order.
+   */
+  getAssistantListBookmarks(id: number, opts: AssistantListSortOptions = {}): StoredBookmark[] {
+    const asc = opts.dir === 'asc';
+    const scored = opts.sort === 'score';
+    const scoreJoin = scored
+      ? `LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id${opts.rubricVersion ? ' AND sc.rubric_version = ?' : ''}`
+      : '';
+    const order =
+      opts.sort === 'recent'
+        ? asc
+          ? 'b.ingested_at ASC, b.id ASC'
+          : 'b.ingested_at DESC, b.id DESC'
+        : scored
+          ? `sc.score IS NULL, sc.score ${asc ? 'ASC' : 'DESC'}, b.ingested_at DESC, b.id DESC`
+          : asc
+            ? 'i.position DESC, b.id DESC'
+            : 'i.position, b.id';
+    const params: (number | string)[] = [];
+    if (scored && opts.rubricVersion) params.push(opts.rubricVersion);
+    params.push(id);
     const rows = this.db
       .prepare(
         `SELECT b.* FROM assistant_list_items i
          JOIN bookmarks b ON b.id = i.bookmark_id
+         ${scoreJoin}
          WHERE i.list_id = ?
-         ORDER BY i.position, b.id`,
+         ORDER BY ${order}`,
       )
-      .all(id) as BookmarkRow[];
+      .all(...params) as BookmarkRow[];
     return rows.map(toStoredBookmark);
+  }
+
+  /** Whether any assistant list holds this bookmark (so its read state moves a list's count). */
+  isInAssistantList(bookmarkId: number): boolean {
+    return !!this.db.prepare('SELECT 1 FROM assistant_list_items WHERE bookmark_id = ? LIMIT 1').get(bookmarkId);
   }
 
   /** Delete one list (never its posts). False when the id is unknown. */

@@ -13,7 +13,7 @@ import type { StoredBookmark } from '../types';
  * list removes the list and nothing else.
  */
 
-/** What the live stream announces. `changed` = a list was deleted or viewed; re-read the index. */
+/** What the live stream announces. `changed` = a list was deleted or viewed, or its counts moved; re-read the index. */
 export type AssistantListEvent = { type: 'created'; list: AssistantList } | { type: 'changed' };
 
 /**
@@ -48,27 +48,48 @@ function parseId(raw: string): number | null {
   return Number.isInteger(id) && String(id) === raw ? id : null;
 }
 
-/**
- * Serve the lists. `toBookmarks` turns stored rows into the viewer's card
- * shape (the same one a category page ships), so a list's cards behave like
- * every other card.
- */
+/** What the list routes need from the viewer that owns them. */
+export interface AssistantListRouteOptions {
+  /** The ACTIVE ranking preset's version, which both orders and labels scores (issue #102). */
+  rubricVersion: () => string;
+  /**
+   * Stored rows in the viewer's card shape (the same one a category page
+   * ships), so a list's cards behave like every other card.
+   */
+  toBookmarks: (bookmarks: StoredBookmark[], rubricVersion: string) => unknown[];
+}
+
+/** `?sort=`: the category orders, plus `list` (the assistant's order, and the default). */
+function parseListSort(raw: unknown): 'list' | 'recent' | 'score' {
+  return raw === 'recent' || raw === 'score' ? raw : 'list';
+}
+
+/** Serve the lists. */
 export function installAssistantListRoutes(
   app: FastifyInstance,
   db: Database,
   events: AssistantListEvents,
-  toBookmarks: (bookmarks: StoredBookmark[]) => unknown[],
+  options: AssistantListRouteOptions,
 ): void {
   app.get('/api/assistant-lists', async () => ({ lists: db.getAssistantLists() }));
 
-  // Every post at once: a list holds at most `SHOW_MAX_POSTS`, so there is no paging.
-  app.get<{ Params: { id: string } }>('/api/assistant-lists/:id', async (req, reply) => {
-    const id = parseId(req.params.id);
-    if (id === null) return reply.code(400).send({ error: 'invalid list id' });
-    const list = db.getAssistantList(id);
-    if (!list) return reply.code(404).send({ error: 'list not found' });
-    return { list, bookmarks: toBookmarks(db.getAssistantListBookmarks(id)) };
-  });
+  // Every post at once: a list holds at most `SHOW_MAX_POSTS`, so there is no
+  // paging - but it is still ordered here, like a category page, because a
+  // score order has to be the ACTIVE preset's.
+  app.get<{ Params: { id: string }; Querystring: { sort?: string; dir?: string } }>(
+    '/api/assistant-lists/:id',
+    async (req, reply) => {
+      const id = parseId(req.params.id);
+      if (id === null) return reply.code(400).send({ error: 'invalid list id' });
+      const list = db.getAssistantList(id);
+      if (!list) return reply.code(404).send({ error: 'list not found' });
+      const sort = parseListSort(req.query.sort);
+      const dir = req.query.dir === 'asc' ? 'asc' : 'desc';
+      const rubricVersion = options.rubricVersion();
+      const bookmarks = db.getAssistantListBookmarks(id, { sort, dir, rubricVersion });
+      return { list, sort, dir, bookmarks: options.toBookmarks(bookmarks, rubricVersion) };
+    },
+  );
 
   // The owner opened the list. A POST, not a side effect of the GET above:
   // no route that writes may be a GET (the Origin guard skips GET/HEAD).

@@ -156,6 +156,7 @@
   /* The score chip's breakdown popover: a fixed measure so every card's graph
      is the same size, held inside the viewport's gutters on a narrow screen. */
   --score-detail-width: 16.5rem;
+  --list-info-width: 17rem;
   --score-bar-height: 0.5rem;
   --content-measure: 44rem;
   /* Fixed card column width (like X, ~550-600px): every card renders at this
@@ -1717,6 +1718,9 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   display: inline-flex;
   min-width: 0;
 }
+.sort-opt[hidden] {
+  display: none;
+}
 /* Native radio drives selection + arrow-key navigation inside the
    radiogroup; kept off-screen but focusable, exactly as `.seg-input` is. */
 .sort-opt-input {
@@ -2120,8 +2124,10 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   align-items: flex-start;
   gap: var(--space-1);
 }
-/* The bin closes a list's row, like the category editor's: muted at rest,
-   danger once aimed at. Centered on the row's first line, 1.75rem hit area. */
+/* The row's trailing icon buttons: info, then the bin, which closes it like
+   the category editor's. Muted at rest; the bin turns danger once aimed at,
+   the info button accent. Centered on the row's first line, 1.75rem hit area. */
+.assistant-list-info,
 .assistant-list-bin {
   flex: 0 0 auto;
   display: inline-flex;
@@ -2146,19 +2152,35 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
 .assistant-list-bin:active {
   border-color: var(--color-danger);
 }
-.assistant-list-bin .icon-trash {
+.assistant-list-info:hover,
+.assistant-list-info:focus-visible,
+.assistant-list-info[data-open="true"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.assistant-list-info:active {
+  border-color: var(--color-accent);
+}
+.assistant-list-info:focus-visible,
+.assistant-list-bin:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+.assistant-list-bin .icon-trash,
+.assistant-list-info .icon-info {
   width: 1.05rem;
   height: 1.05rem;
 }
+/* One line like a tree row: the title (wrapping), the "New" marker, and the
+   category tree's own count badges. */
 .assistant-list-item {
   flex: 1 1 auto;
   min-width: 0;
   width: 100%;
   min-height: 2.75rem;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
+  align-items: flex-start;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   border: 0;
   border-radius: var(--radius-sm);
@@ -2181,70 +2203,80 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   color: var(--color-accent);
   box-shadow: none;
 }
-.assistant-list-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-2);
+.assistant-list-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: 1px;
+  overflow-wrap: break-word;
 }
 .assistant-list-title {
-  min-width: 0;
   font-weight: 600;
-  overflow-wrap: anywhere;
 }
 /* "New" is a word, not just a dot: it must not rely on color alone. */
 .assistant-list-new {
-  flex: 0 0 auto;
+  display: inline-block;
+  vertical-align: 1px;
   padding: 0 var(--space-2);
   border-radius: 999px;
-  background: var(--color-unread);
-  color: var(--color-accent-contrast);
+  /* Tinted, not filled: beside the filled unread count it must read as a
+     label, never as a second number. */
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
   font-size: 0.75rem;
   font-weight: 700;
   line-height: 1.4rem;
 }
-.assistant-list-meta {
-  color: var(--color-text-muted);
-  font-size: var(--text-small);
-  font-variant-numeric: tabular-nums;
+.assistant-list-item .tree-counts {
+  padding-top: 2px;
 }
-.assistant-list-item[aria-current="true"] .assistant-list-meta {
+.assistant-list-item[aria-current="true"] .count-total {
   color: var(--color-accent);
 }
 
-/* The open list's header in the content pane: its note, what it holds, and
-   Delete. As wide as the cards below it (their width is scaled by the post
-   size), so the column keeps one left edge. */
-.assistant-list-header {
-  width: 100%;
-  max-width: calc(var(--post-card-measure) * var(--post-scale));
-  margin: 0 auto var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+/* The info button's popover (#list-info, on <body>): the list's note, its
+   count and when it was sent. Built like the score chip's detail popover. */
+.list-info {
+  position: fixed;
+  z-index: var(--z-popover);
+  width: min(var(--list-info-width), calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease);
+}
+.list-info.is-open {
+  opacity: 1;
+}
+.list-info[hidden] {
+  display: none;
+}
+.list-info-title {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 /* The assistant's own words, kept as the plain text they are - line breaks
-   included - in a readable measure. */
-.assistant-list-note {
-  margin: 0;
-  max-width: 65ch;
-  color: var(--color-text);
-  line-height: var(--leading-body);
+   included. */
+.list-info-note {
+  margin: var(--space-2) 0 0;
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
-.assistant-list-row {
+.list-info-facts {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2) var(--space-3);
-}
-.assistant-list-meta {
-  margin: 0;
-}
-.assistant-list-delete {
-  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  margin: var(--space-2) 0 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ============================================================
@@ -3185,7 +3217,8 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   color: var(--color-text-muted);
 }
 @media (prefers-reduced-motion: reduce) {
-  .score-detail {
+  .score-detail,
+  .list-info {
     transition: none;
   }
 }

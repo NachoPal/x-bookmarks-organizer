@@ -45,11 +45,49 @@ describe('assistant result lists (storage)', () => {
       note: 'Why these',
       createdAt: '2026-09-25T01:00:00.000Z',
       count: 3,
+      unread: 3,
       viewed: false,
     });
     expect(db.getAssistantListBookmarks(second.id).map((b) => b.postId)).toEqual(['3', '1', '2']);
     expect(db.getAssistantLists().map((l) => l.id)).toEqual([second.id, first.id]);
     expect(db.countAssistantLists()).toBe(2);
+  });
+
+  it('counts unread posts off the same per-bookmark flag a category reads', () => {
+    const list = db.createAssistantList({ title: 'L', note: null, bookmarkIds: [ids['1']!, ids['3']!] }, WHEN);
+    expect(db.getAssistantList(list.id)).toMatchObject({ count: 2, unread: 2 });
+    db.markRead(ids['3']!);
+    expect(db.getAssistantList(list.id)).toMatchObject({ count: 2, unread: 1 });
+    expect(db.getAssistantLists()[0]).toMatchObject({ unread: 1 });
+    expect(db.isInAssistantList(ids['3']!)).toBe(true);
+    expect(db.isInAssistantList(ids['2']!)).toBe(false);
+  });
+
+  it('orders a list by the assistant (default), recency or score, either way', () => {
+    // Ingested 1 < 2 < 3 < 4 by id; the assistant sent 2, 4, 1.
+    const list = db.createAssistantList({ title: 'L', note: null, bookmarkIds: [ids['2']!, ids['4']!, ids['1']!] });
+    const order = (opts: Parameters<Database['getAssistantListBookmarks']>[1]) =>
+      db.getAssistantListBookmarks(list.id, opts).map((b) => b.postId);
+    expect(order({})).toEqual(['2', '4', '1']);
+    expect(order({ sort: 'list', dir: 'asc' })).toEqual(['1', '4', '2']);
+    expect(order({ sort: 'recent' })).toEqual(['4', '2', '1']);
+    expect(order({ sort: 'recent', dir: 'asc' })).toEqual(['1', '2', '4']);
+    const score = (postId: string, value: number, rubricVersion = 'v1') =>
+      db.saveBookmarkScore({
+        bookmarkId: ids[postId]!,
+        score: value,
+        confidence: 1,
+        dimensions: {},
+        model: 'm',
+        rubricVersion,
+        scoredAt: WHEN,
+      });
+    score('1', 0.9);
+    score('4', 0.2);
+    score('2', 0.99, 'other'); // another preset's verdict: unranked under v1
+    // Unranked last in BOTH directions, as in a category.
+    expect(order({ sort: 'score', rubricVersion: 'v1' })).toEqual(['1', '4', '2']);
+    expect(order({ sort: 'score', dir: 'asc', rubricVersion: 'v1' })).toEqual(['4', '1', '2']);
   });
 
   it('deleting a post takes it out of every list, and the list stays', () => {

@@ -442,3 +442,31 @@ describe("snapshot key stability across a reload (issue #104)", () => {
     expect(() => writeScoreOrderAvailable(throwingStorage(), true)).not.toThrow();
   });
 });
+
+describe("an assistant list's ordering (its own scope)", () => {
+  it("offers Assistant's order in a list only, as the list default, stored apart from a category's", () => {
+    expect(isKnownSortOrder("list")).toBe(false);
+    expect(isKnownSortOrder("list", "list")).toBe(true);
+    expect(isKnownSortOrder("recent", "list")).toBe(true);
+    const storage = fakeStorage();
+    expect(readSortOrder(storage, "list")).toBe("list");
+    writeSortOrder(storage, "list"); // not a category order: ignored
+    expect(readSortOrder(storage)).toBe(DEFAULT_SORT_ORDER);
+    writeSortOrder(storage, "recent", "list");
+    writeSortDirection(storage, "asc", "list");
+    expect(readSortOrder(storage, "list")).toBe("recent");
+    expect(readSortDirection(storage, "list")).toBe("asc");
+    expect(readSortOrder(storage)).toBe(DEFAULT_SORT_ORDER);
+    expect(readSortDirection(storage)).toBe(DEFAULT_SORT_DIRECTION);
+    expect(readSortOrder(throwingStorage(), "list")).toBe("list");
+  });
+
+  it("falls back to the assistant's order when a list's Top score cannot order anything", () => {
+    expect(resolveSortOrder("score", { scored: 0 }, "list")).toBe("list");
+    expect(resolveSortOrder("score", { scored: 2 }, "list")).toBe("score");
+    expect(resolveSortOrder("list", null)).toBe(DEFAULT_SORT_ORDER); // never for a category
+    expect(sortParam("list")).toBe("list");
+    expect(directionLabel("list", "desc")).toBe("As sent");
+    expect(directionLabel("list", "asc")).toBe("Reversed");
+  });
+});

@@ -103,6 +103,10 @@
   // arrive. Both are persisted through XBOSortOrder's guarded storage.
   let activeSort = "recent";
   let activeDir = "desc";
+  // An open assistant list's ordering: the same selector, but its own stored
+  // preference, whose default is "list" - the order the assistant sent.
+  let listSort = "list";
+  let listDir = "desc";
 
   // ---- lazy loading (paged, filtered, infinite scroll) ------------------
   // The selected category is loaded one batch at a time as the owner scrolls,
@@ -644,6 +648,8 @@
     // out of the tab order so keyboard focus never disappears into it.
     // (The scrim's visibility is pure CSS, so it can fade both ways.)
     sidebarEl.inert = collapsed;
+    // A list's info popover belongs to a row that just left the screen.
+    if (collapsed) closeListInfo();
 
     if (!options.silent) storeCollapsed(collapsed);
     if (options.silent || options.moveFocus === false) return;
@@ -760,6 +766,7 @@
     const nav = sidebarNav();
     if (!nav || !nav.isPage(page) || sidebarViews.length === 0) return;
     const from = sidebarPage;
+    if (from !== page) closeListInfo(); // its row is leaving with the page
     const scroller = sidebarEl.querySelector(".sidebar-inner");
     if (scroller && from !== page) sidebarPageScroll.set(from, scroller.scrollTop);
     sidebarPage = page;
@@ -1212,13 +1219,30 @@
    * checked, whether "Top score" is offered at all, and what the direction
    * toggle reads. Pure display - it never re-pages the list.
    */
+  /** Whose ordering the selector is showing: an open list's, or a category's. */
+  function sortScope() {
+    return activeList ? "list" : "category";
+  }
+
+  function currentSortField() {
+    return activeList ? listSort : activeSort;
+  }
+
+  function currentSortDir() {
+    return activeList ? listDir : activeDir;
+  }
+
   function renderSortBar() {
     const api = sortOrderApi();
     if (!api || !sortBarEl) return;
     const scoreOk = scoreOrderAvailable();
+    const field = currentSortField();
+    const dir = currentSortDir();
 
     for (const input of sortFieldInputs()) {
-      input.checked = input.value === activeSort;
+      // "Assistant's order" exists only in a list.
+      input.parentElement.hidden = !api.isKnownSortOrder(input.value, sortScope());
+      input.checked = input.value === field;
       const blocked = input.value === "score" && !scoreOk;
       input.disabled = blocked;
       // A disabled radio cannot take focus, so the title is the POINTER half
@@ -1238,18 +1262,19 @@
       else sortFieldEl.setAttribute("aria-describedby", "sort-note");
     }
 
-    sortBarEl.dataset.direction = activeDir;
-    if (sortDirLabelEl) sortDirLabelEl.textContent = api.directionLabel(activeSort, activeDir);
+    sortBarEl.dataset.direction = dir;
+    if (sortDirLabelEl) sortDirLabelEl.textContent = api.directionLabel(field, dir);
     if (sortDirBtn) {
-      const name = api.directionToggleLabel(activeSort, activeDir);
+      const name = api.directionToggleLabel(field, dir);
       sortDirBtn.setAttribute("aria-label", name);
       sortDirBtn.title = name;
     }
   }
 
   /**
-   * Show the selector exactly when the tab bar shows: both are controls OF an
-   * open category's list, and neither means anything without one (PR #95).
+   * Show the selector when the tab bar shows - both are controls OF an open
+   * category's list (PR #95) - and for an open assistant list, which has no
+   * tabs but can be ordered.
    */
   function updateSortBarVisibility(show) {
     if (sortBarEl) sortBarEl.hidden = !show;
@@ -1281,22 +1306,32 @@
   /** Switch the sort FIELD. */
   function selectSortOrder(id) {
     const api = sortOrderApi();
-    if (!api || id === activeSort || !api.isKnownSortOrder(id)) return;
+    const scope = sortScope();
+    if (!api || id === currentSortField() || !api.isKnownSortOrder(id, scope)) return;
     if (id === "score" && !scoreOrderAvailable()) return;
-    api.writeSortOrder(window.localStorage, id);
-    activeSort = id;
+    api.writeSortOrder(window.localStorage, id, scope);
+    if (activeList) listSort = id;
+    else activeSort = id;
     renderSortBar();
-    repageForSort();
+    resortCurrentView();
+  }
+
+  /** Re-order whatever is open: a list is re-read whole, a category re-paged. */
+  function resortCurrentView() {
+    if (activeList) void refreshOpenList();
+    else repageForSort();
   }
 
   /** Flip the DIRECTION the current field runs in. */
   function toggleSortDirection() {
     const api = sortOrderApi();
     if (!api) return;
-    activeDir = api.flipDirection(activeDir);
-    api.writeSortDirection(window.localStorage, activeDir);
+    const dir = api.flipDirection(currentSortDir());
+    api.writeSortDirection(window.localStorage, dir, sortScope());
+    if (activeList) listDir = dir;
+    else activeDir = dir;
     renderSortBar();
-    repageForSort();
+    resortCurrentView();
   }
 
   /**
@@ -1333,6 +1368,12 @@
       api.rememberedRanking(window.localStorage),
     );
     activeDir = api.readSortDirection(window.localStorage);
+    listSort = api.resolveSortOrder(
+      api.readSortOrder(window.localStorage, "list"),
+      api.rememberedRanking(window.localStorage),
+      "list",
+    );
+    listDir = api.readSortDirection(window.localStorage, "list");
     renderSortBar();
     for (const input of sortFieldInputs()) {
       input.addEventListener("change", () => {
@@ -1364,8 +1405,12 @@
     const resolved = api.resolveSortOrder(api.readSortOrder(window.localStorage), ranking);
     const changed = resolved !== activeSort;
     activeSort = resolved;
+    const listResolved = api.resolveSortOrder(api.readSortOrder(window.localStorage, "list"), ranking, "list");
+    const listChanged = listResolved !== listSort;
+    listSort = listResolved;
     renderSortBar();
-    if (changed) repageForSort();
+    if (changed) repageForSort(); // drops the category caches; fetches only with a category open
+    if (listChanged && activeList) void refreshOpenList();
   }
 
   // ---- category-color toggle ---------------------------------------------
@@ -2574,7 +2619,7 @@
     toolbarEl.hidden = !show;
     // The sort selector is a control OF the open category's list too, so it
     // comes and goes with the tabs rather than floating over an empty pane.
-    updateSortBarVisibility(show);
+    updateSortBarVisibility(show || !!activeList);
     if (show) {
       listRoot.setAttribute("role", "tabpanel");
       renderFilterTabs(); // re-establishes aria-labelledby on the active tab
@@ -9598,10 +9643,7 @@
   const assistantClearBtn = document.getElementById("assistant-lists-clear");
   const assistantItemsEl = document.getElementById("assistant-lists-body");
   const assistantStateEl = document.getElementById("assistant-lists-state");
-  const assistantHeaderEl = document.getElementById("assistant-list-header");
-  const assistantNoteEl = document.getElementById("assistant-list-note");
-  const assistantMetaEl = document.getElementById("assistant-list-meta");
-  const assistantDeleteBtn = document.getElementById("assistant-list-delete");
+  const listInfoEl = document.getElementById("list-info");
 
   /** Newest first, as the server sent them (plus live arrivals folded in). */
   let assistantLists = [];
@@ -9634,7 +9676,6 @@
       const fresh = assistantLists.find((l) => l.id === activeList.id);
       if (fresh) {
         activeList = fresh;
-        renderListHeader();
       } else if (!pendingListDeletes.has(activeList.id)) {
         // Deleted somewhere else (another tab): nothing left to show.
         leaveAssistantList();
@@ -9688,13 +9729,15 @@
     renderAssistantListsState(shown.length);
     assistantItemsEl.hidden = shown.length === 0;
 
-    // Keep the keyboard on the same row across a re-render (a live arrival
-    // or a count refresh must not throw focus to <body>).
+    // Keep the keyboard on the same control across a re-render (a live
+    // arrival or a count refresh must not throw focus to <body>).
     const focused = document.activeElement;
-    const focusedId =
-      focused && focused.classList && focused.classList.contains("assistant-list-item")
-        ? Number(focused.dataset.listId)
-        : null;
+    const focusedClass = ["assistant-list-item", "assistant-list-info", "assistant-list-bin"].find(
+      (c) => focused && focused.classList && focused.classList.contains(c),
+    );
+    const focusedId = focusedClass ? Number(focused.dataset.listId) : null;
+    const infoId = listInfoAnchor ? Number(listInfoAnchor.dataset.listId) : null;
+    const infoPinned = listInfoPinned;
     const now = Date.now();
     const rows = shown.map((list) => {
       const li = el("li");
@@ -9703,13 +9746,30 @@
       btn.dataset.listId = String(list.id);
       const isNew = !list.viewed;
       if (activeList && activeList.id === list.id) btn.setAttribute("aria-current", "true");
-      btn.setAttribute("aria-label", api.itemLabel(list, now, isNew));
-      const top = el("span", "assistant-list-top");
-      top.appendChild(el("span", "assistant-list-title", list.title));
-      if (isNew) top.appendChild(el("span", "assistant-list-new", "New"));
-      btn.append(top, el("span", "assistant-list-meta", api.itemMeta(list, now)));
+      btn.setAttribute("aria-label", api.itemLabel(list, isNew));
+      // "New" flows after the title's last word, so the title keeps the row's width.
+      const name = el("span", "assistant-list-name");
+      name.appendChild(el("span", "assistant-list-title", list.title));
+      // A plain space, not a margin, so a "New" wrapped to its own line starts flush.
+      if (isNew) name.append(" ", el("span", "assistant-list-new", "New"));
+      btn.append(name, listCounts(list));
       btn.title = list.title;
       btn.addEventListener("click", () => void openAssistantList(list.id));
+
+      const info = el("button", "assistant-list-info");
+      info.type = "button";
+      info.dataset.listId = String(list.id);
+      info.setAttribute("aria-label", `About ${list.title}`);
+      // What the popover draws, as the button's own description: a screen
+      // reader hears it on focus without the popover having to be open.
+      const descId = `assistant-list-info-${list.id}`;
+      const desc = el("span", null, api.infoDescription(list, now));
+      desc.id = descId;
+      desc.hidden = true;
+      info.setAttribute("aria-describedby", descId);
+      info.appendChild(infoIcon());
+      wireListInfo(info, list);
+
       const bin = el("button", "assistant-list-bin");
       bin.type = "button";
       bin.dataset.listId = String(list.id);
@@ -9717,27 +9777,162 @@
       bin.title = `Delete list ${list.title}`;
       bin.appendChild(trashIcon());
       bin.addEventListener("click", () => deleteAssistantLists([list]));
-      li.append(btn, bin);
+      li.append(btn, info, bin, desc);
       return li;
     });
     assistantItemsEl.replaceChildren(...rows);
     if (focusedId != null) {
-      const again = assistantItemsEl.querySelector(`[data-list-id="${focusedId}"]`);
+      const again = assistantItemsEl.querySelector(`.${focusedClass}[data-list-id="${focusedId}"]`);
       if (again) again.focus();
+    }
+    // An open popover follows its row into the new markup, with fresh words.
+    if (infoId != null) {
+      const anchor = assistantItemsEl.querySelector(`.assistant-list-info[data-list-id="${infoId}"]`);
+      const list = shown.find((l) => l.id === infoId);
+      if (anchor && list && !isCollapsed()) openListInfo(anchor, list, infoPinned);
+      else closeListInfo();
     }
     renderSidebarHome();
   }
 
-  function renderListHeader() {
-    if (!assistantHeaderEl) return;
-    if (!activeList) {
-      assistantHeaderEl.hidden = true;
-      return;
+  /**
+   * A list's total and unread badges: the category tree's own markup and
+   * styles (`.tree-counts`), fed by the server's per-bookmark read flags, so
+   * a list and a category holding the same post always agree.
+   */
+  function listCounts(list) {
+    const counts = el("span", "tree-counts");
+    const total = el("span", "count-total", String(list.count));
+    total.setAttribute("aria-label", `${list.count} bookmarks`);
+    counts.appendChild(total);
+    const unread = assistantApi().unreadCount(list);
+    if (unread > 0) {
+      const badge = el("span", "badge-unread", String(unread));
+      badge.setAttribute("aria-label", `${unread} unread`);
+      counts.appendChild(badge);
     }
-    assistantHeaderEl.hidden = false;
-    assistantNoteEl.textContent = activeList.note || "";
-    assistantNoteEl.hidden = !activeList.note;
-    assistantMetaEl.textContent = assistantApi().headerMeta(activeList, Date.now());
+    return counts;
+  }
+
+  function infoIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 20 20");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.classList.add("icon-info");
+    svg.innerHTML =
+      '<circle cx="10" cy="10" r="7.25" fill="none" stroke="currentColor" stroke-width="1.4" />' +
+      '<path d="M10 9v4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />' +
+      '<circle cx="10" cy="6.4" r="0.95" fill="currentColor" />';
+    return svg;
+  }
+
+  // ---- list info popover ---------------------------------------------------
+  // One popover for every info button (index.html's #list-info), opened by a
+  // mouse hover, by keyboard focus and by a press - hover alone would leave
+  // touch and keyboard out. A press PINS it (a mouse leaving no longer
+  // closes it); Escape, a press elsewhere or leaving the row's focus close it.
+  let listInfoAnchor = null;
+  let listInfoPinned = false;
+
+  function openListInfo(anchor, list, pinned) {
+    // Never for a row the owner cannot see (a closed drawer, or another page).
+    if (!listInfoEl || isCollapsed() || sidebarPage !== "lists") return;
+    const lines = assistantApi().infoLines(list, Date.now());
+    const nodes = [el("p", "list-info-title", list.title)];
+    if (lines.note) nodes.push(el("p", "list-info-note", lines.note));
+    const facts = el("p", "list-info-facts");
+    facts.appendChild(el("span", null, lines.posts));
+    if (lines.sent) facts.appendChild(el("span", null, lines.sent));
+    nodes.push(facts);
+    listInfoEl.replaceChildren(...nodes);
+    const opening = listInfoAnchor !== anchor;
+    if (listInfoAnchor && listInfoAnchor !== anchor) listInfoAnchor.removeAttribute("data-open");
+    listInfoAnchor = anchor;
+    listInfoPinned = !!pinned;
+    anchor.setAttribute("data-open", "true");
+    listInfoEl.hidden = false;
+    positionListInfo(anchor);
+    if (opening) {
+      listInfoEl.classList.remove("is-open");
+      requestAnimationFrame(() => {
+        if (listInfoAnchor === anchor) listInfoEl.classList.add("is-open");
+      });
+    }
+  }
+
+  /** Beside the button, on the content side of the sidebar; below it when there is no room. */
+  function positionListInfo(anchor) {
+    const gutter = 8;
+    const rect = anchor.getBoundingClientRect();
+    const width = listInfoEl.offsetWidth;
+    const height = listInfoEl.offsetHeight;
+    // Past the ROW's end, so it never covers the bin beside the button.
+    const rowEnd = anchor.parentElement ? anchor.parentElement.getBoundingClientRect().right : rect.right;
+    let left = Math.max(rect.right, rowEnd) + gutter;
+    let top = rect.top;
+    if (left + width > window.innerWidth - gutter) {
+      left = rect.right - width;
+      top = rect.bottom + gutter;
+      if (top + height > window.innerHeight - gutter) top = rect.top - gutter - height;
+    }
+    left = Math.max(gutter, Math.min(left, window.innerWidth - gutter - width));
+    top = Math.max(gutter, Math.min(top, window.innerHeight - gutter - height));
+    listInfoEl.style.left = `${Math.round(left)}px`;
+    listInfoEl.style.top = `${Math.round(top)}px`;
+  }
+
+  function closeListInfo(opts) {
+    if (!listInfoEl || listInfoAnchor === null) return;
+    const anchor = listInfoAnchor;
+    listInfoAnchor = null;
+    listInfoPinned = false;
+    anchor.removeAttribute("data-open");
+    listInfoEl.classList.remove("is-open");
+    listInfoEl.hidden = true;
+    listInfoEl.replaceChildren();
+    if (opts && opts.returnFocus && anchor.isConnected) anchor.focus();
+  }
+
+  function wireListInfo(button, list) {
+    button.addEventListener("pointerenter", (e) => {
+      if (e.pointerType === "mouse" && listInfoAnchor !== button) openListInfo(button, list, false);
+    });
+    button.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "mouse" && listInfoAnchor === button && !listInfoPinned) closeListInfo();
+    });
+    button.addEventListener("focus", () => {
+      // Keyboard focus only: a mouse press focuses too, and its click decides.
+      if (button.matches(":focus-visible") && listInfoAnchor !== button) openListInfo(button, list, false);
+    });
+    button.addEventListener("blur", () => {
+      if (listInfoAnchor === button) closeListInfo();
+    });
+    button.addEventListener("click", () => {
+      if (listInfoAnchor === button && listInfoPinned) closeListInfo();
+      else openListInfo(button, list, true);
+    });
+  }
+
+  function initListInfo() {
+    if (!listInfoEl) return;
+    const reflow = () => {
+      if (listInfoAnchor === null) return;
+      if (!listInfoAnchor.isConnected || isCollapsed()) closeListInfo();
+      else positionListInfo(listInfoAnchor);
+    };
+    window.addEventListener("scroll", reflow, true);
+    window.addEventListener("resize", reflow);
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || listInfoAnchor === null) return;
+      // The popover owns this Escape: it must not also step the sidebar back.
+      e.stopPropagation();
+      closeListInfo({ returnFocus: true });
+    }, true);
+    document.addEventListener("pointerdown", (e) => {
+      if (listInfoAnchor === null || listInfoAnchor.contains(e.target)) return;
+      closeListInfo();
+    });
   }
 
   /**
@@ -9777,8 +9972,9 @@
     if (!activeList) return false;
     activeList = null;
     if (window.XBOAssistantLists) assistantApi().writeOpenList(window.localStorage, null);
-    renderListHeader();
     renderAssistantLists();
+    renderSortBar(); // back to the category ordering
+    updateToolbarVisibility();
     return true;
   }
 
@@ -9816,8 +10012,8 @@
     assistantApi().writeOpenList(window.localStorage, id);
     renderAssistantLists();
     renderListTitle(activeList);
-    renderListHeader();
-    updateToolbarVisibility(); // no tabs, no sort: the list is its own order
+    renderSortBar(); // the list's own ordering
+    updateToolbarVisibility(); // no tabs; the sort selector stays
     if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
 
     const seq = ++requestSeq;
@@ -9836,7 +10032,9 @@
 
     let data;
     try {
-      data = await getJSON(`/api/assistant-lists/${id}`);
+      const api = sortOrderApi();
+      const query = api ? `?sort=${api.sortParam(listSort)}&dir=${api.dirParam(listDir)}` : "";
+      data = await getJSON(`/api/assistant-lists/${id}${query}`);
     } catch (err) {
       if (seq !== requestSeq) return;
       if (err.status === 404) {
@@ -9859,7 +10057,6 @@
     assistantLists = assistantApi().upsert(assistantLists, activeList);
     renderAssistantLists();
     renderListTitle(activeList);
-    renderListHeader();
 
     const bookmarks = Array.isArray(data.bookmarks) ? data.bookmarks : [];
     // A throwaway object: the card handlers adjust these, and they must never
@@ -10006,14 +10203,10 @@
     assistantClearBtn.addEventListener("click", () => {
       deleteAssistantLists(assistantApi().visible(assistantLists, pendingListDeletes));
     });
-    assistantDeleteBtn.addEventListener("click", () => {
-      if (activeList) deleteAssistantLists([activeList]);
-    });
     renderAssistantLists(); // the loading state, until the first read answers
-    // "5 min ago" should not still say so an hour later.
+    // "5 min ago" (the info button's words) should not still say so an hour later.
     window.setInterval(() => {
       if (sidebarPage === "lists") renderAssistantLists();
-      if (activeList) renderListHeader();
     }, 60_000);
     void loadAssistantLists();
     initAssistantListStream();
@@ -10047,6 +10240,7 @@
   initRubricEditor();
   initRankRulesPicker();
   initAssistantLists();
+  initListInfo();
   // Eager, not on first popover open: the picker needs the full preset list
   // before the owner can pick anything, and the ranking panel can be opened
   // before the editor ever is.

@@ -92,12 +92,14 @@ async function boot(opts: Opts = {}) {
       for (const fn of this.listeners.get(type) ?? []) fn({ data: JSON.stringify(data) });
     }
   };
+  // Unread is read off the posts' own flags, as the server's count is.
   const summary = (l: ReturnType<typeof list>) => ({
     id: l.id,
     title: l.title,
     note: l.note,
     createdAt: l.createdAt,
     count: l.ids.length,
+    unread: l.ids.filter((id) => !posts.find((p) => p.id === id)!.read).length,
     viewed: l.viewed,
   });
   w.fetch = async (url: string, init?: { method?: string; body?: string }) => {
@@ -139,11 +141,14 @@ async function boot(opts: Opts = {}) {
       found.viewed = true;
       return json({ list: summary(found) });
     }
-    const one = url.match(/^\/api\/assistant-lists\/(\d+)$/);
+    const one = url.match(/^\/api\/assistant-lists\/(\d+)(?:\?sort=(\w+)&dir=(\w+))?$/);
     if (one) {
       const found = lists.find((l) => l.id === Number(one[1]));
       if (!found) return json({ error: "list not found" }, 404);
-      return json({ list: summary(found), bookmarks: found.ids.map((id) => posts.find((p) => p.id === id)) });
+      // "recent" stands in as the higher id first; "list" is the assistant's order.
+      let ids = one[2] === "recent" ? found.ids.slice().sort((a, b) => b - a) : found.ids.slice();
+      if (one[3] === "asc") ids = ids.reverse();
+      return json({ list: summary(found), bookmarks: ids.map((id) => posts.find((p) => p.id === id)) });
     }
     if (/\/read$/.test(url)) {
       const id = Number(url.match(/bookmarks\/(\d+)\//)![1]);
@@ -161,6 +166,7 @@ async function boot(opts: Opts = {}) {
   };
   for (const f of [
     "tree-counts.js",
+    "sort-order.js",
     "read-toggle.js",
     "filter-cache.js",
     "theme.js",
@@ -256,16 +262,14 @@ describe("Lists (MCP show_in_app lists)", () => {
     toastAction(doc, "Open")!.click();
     await tick();
     expect(page(doc)).toBe("lists"); // Open takes the sidebar to where the list is
-    expect(calls.some((c) => c.url === "/api/assistant-lists/7")).toBe(true);
+    expect(calls.some((c) => c.url === "/api/assistant-lists/7?sort=list&dir=desc")).toBe(true);
     expect(calls.some((c) => c.url === "/api/assistant-lists/7/viewed" && c.method === "POST")).toBe(true);
     expect(doc.getElementById("content-title")!.textContent).toBe("List: Eval harnesses");
     // Marked as a list by the sidebar's Lists icon, not by an eyebrow in the pane.
     expect(doc.querySelector("#content-title .topbar-list-icon")!.getAttribute("aria-hidden")).toBe("true");
-    expect(doc.getElementById("assistant-list-header")!.textContent).not.toContain("From your assistant");
     expect(visibleIds(doc)).toEqual(["3", "1"]); // the assistant's order
-    expect((doc.getElementById("assistant-list-header") as HTMLElement).hidden).toBe(false);
-    expect(doc.getElementById("assistant-list-note")!.textContent).toBe("Why these two");
-    expect((doc.getElementById("toolbar") as HTMLElement).hidden).toBe(true); // no tabs, no sort
+    expect((doc.getElementById("toolbar") as HTMLElement).hidden).toBe(true); // no tabs
+    expect((doc.getElementById("sort-bar") as HTMLElement).hidden).toBe(false); // but it can be ordered
     expect(doc.querySelector('.assistant-list-item[aria-current="true"]')).not.toBeNull();
     expect(doc.querySelector('.tree-node[aria-current="true"]')).toBeNull();
     expect(doc.querySelector(".assistant-list-new")).toBeNull(); // seen now
@@ -273,12 +277,18 @@ describe("Lists (MCP show_in_app lists)", () => {
 
   it("renders an assistant's title and note as text, never as markup", async () => {
     const hostile = '<img src=x onerror="window.__pwned=1">';
-    const { doc, w } = await boot({ lists: [list(3, hostile, [1], `<b>bold</b>${hostile}`)] });
+    const { doc, w } = await boot({
+      lists: [list(3, hostile, [1], `<b>bold</b>${hostile}`)],
+      page: "lists",
+      sidebarOpen: true,
+    });
     (doc.querySelector(".assistant-list-item") as HTMLElement).click();
     await tick();
+    (doc.querySelector(".assistant-list-info") as HTMLElement).click();
     expect(doc.querySelector("img[src=x]")).toBeNull();
+    expect(doc.querySelector("b")).toBeNull();
     expect(doc.getElementById("content-title")!.textContent).toBe(`List: ${hostile}`);
-    expect(doc.getElementById("assistant-list-note")!.textContent).toBe(`<b>bold</b>${hostile}`);
+    expect(doc.querySelector(".list-info-note")!.textContent).toBe(`<b>bold</b>${hostile}`);
     expect(w.__pwned).toBeUndefined();
   });
 
@@ -300,14 +310,14 @@ describe("Lists (MCP show_in_app lists)", () => {
     (doc.querySelector(".tree-node") as HTMLElement).click();
     await tick();
     expect(doc.getElementById("content-title")!.textContent).toBe("Cat");
-    expect((doc.getElementById("assistant-list-header") as HTMLElement).hidden).toBe(true);
+    expect(doc.querySelector('.sort-opt[data-sort-order="list"]')!.hasAttribute("hidden")).toBe(true);
   });
 
-  it("deletes a list with Undo, and only the ids it hid", async () => {
+  it("deletes the open list with Undo, and only the ids it hid", async () => {
     const { doc, calls, stream, addList } = await boot({ lists: [list(5, "Doomed", [1])] });
     (doc.querySelector(".assistant-list-item") as HTMLElement).click();
     await tick();
-    (doc.getElementById("assistant-list-delete") as HTMLElement).click();
+    (doc.querySelector('.assistant-list-bin[data-list-id="5"]') as HTMLElement).click();
     expect(rows(doc)).toEqual([]);
     expect(listsState(doc)).toContain("No lists yet");
     expect(doc.getElementById("content-title")!.textContent).toBe("Select a category");
@@ -347,7 +357,7 @@ describe("Lists (MCP show_in_app lists)", () => {
     expect(rows(doc)).toEqual(["Keep"]);
     expect(unviewed(doc)).toBe("1");
     expect(doc.getElementById("sidebar-home-meta-lists")!.textContent).toBe("1 list");
-    expect(calls.some((c) => c.url === "/api/assistant-lists/2")).toBe(false); // never opened
+    expect(calls.some((c) => c.url.startsWith("/api/assistant-lists/2?"))).toBe(false); // never opened
     toastAction(doc, "Undo")!.click();
     await tick(80);
     expect(rows(doc)).toEqual(["Drop", "Keep"]);
@@ -358,6 +368,131 @@ describe("Lists (MCP show_in_app lists)", () => {
     const del = calls.find((c) => c.method === "DELETE")!;
     expect(JSON.parse(del.body!).ids).toEqual([1]);
     expect(rows(doc)).toEqual(["Drop"]);
+  });
+
+  it("an info button tells the note, count and sent time on focus, hover or press - never opening the list", async () => {
+    const { doc, w, calls } = await boot({ lists: [list(1, "Evals", [1, 2, 3], "Why these\nthree")], page: "lists", sidebarOpen: true });
+    const info = doc.querySelector('.assistant-list-info[data-list-id="1"]') as HTMLElement;
+    const popover = doc.getElementById("list-info") as HTMLElement;
+    expect(info.getAttribute("aria-label")).toBe("About Evals");
+    // The description a screen reader hears on focus says what the popover draws.
+    const desc = doc.getElementById(info.getAttribute("aria-describedby")!)!;
+    expect(desc.textContent).toMatch(/^Why these\nthree\. 3 posts, 2 unread\. Sent just now · .+\.$/);
+    expect(popover.hidden).toBe(true);
+
+    // Keyboard: focus opens it, Escape closes it and keeps focus on the button.
+    info.focus();
+    expect(popover.hidden).toBe(false);
+    expect(popover.querySelector(".list-info-title")!.textContent).toBe("Evals");
+    expect(popover.querySelector(".list-info-note")!.textContent).toBe("Why these\nthree");
+    const facts = Array.from(popover.querySelectorAll(".list-info-facts span")).map((n) => n.textContent);
+    expect(facts[0]).toBe("3 posts, 2 unread");
+    expect(facts[1]).toMatch(/^Sent just now · /);
+    key(w, info, "Escape");
+    expect(popover.hidden).toBe(true);
+    expect(doc.activeElement).toBe(info);
+    expect(page(doc)).toBe("lists"); // the Escape was the popover's, not the sidebar's
+
+    // Hover (a mouse) opens and leaving closes; a press pins it open.
+    info.blur();
+    info.dispatchEvent(new w.Event("pointerenter"));
+    Object.defineProperty(w.Event.prototype, "pointerType", { configurable: true, get: () => "mouse" });
+    info.dispatchEvent(new w.Event("pointerenter"));
+    expect(popover.hidden).toBe(false);
+    info.dispatchEvent(new w.Event("pointerleave"));
+    expect(popover.hidden).toBe(true);
+    info.click();
+    info.dispatchEvent(new w.Event("pointerleave"));
+    expect(popover.hidden).toBe(false);
+    delete w.Event.prototype.pointerType;
+    info.click();
+    expect(popover.hidden).toBe(true);
+    // Never for a row off screen: a closed sidebar drops it, and a press there opens nothing.
+    info.click();
+    expect(popover.hidden).toBe(false);
+    (doc.getElementById("sidebar-toggle") as HTMLElement).click();
+    expect(popover.hidden).toBe(true);
+    info.click();
+    expect(popover.hidden).toBe(true);
+    // Neither the info button nor the bin opens the list.
+    expect(calls.some((c) => c.url.startsWith("/api/assistant-lists/1?"))).toBe(false);
+    expect(doc.getElementById("content-title")!.textContent).not.toContain("List:");
+  });
+
+  it("drops the list view's header: no note, no count line, no Delete list button", async () => {
+    const { doc } = await boot({ lists: [list(1, "Evals", [1, 2], "A note")] });
+    (doc.querySelector(".assistant-list-item") as HTMLElement).click();
+    await tick();
+    expect(doc.getElementById("assistant-list-header")).toBeNull();
+    expect(doc.getElementById("assistant-list-delete")).toBeNull();
+    const pane = doc.querySelector(".content")!.textContent!;
+    expect(pane).not.toContain("A note");
+    expect(pane).not.toContain("Delete list");
+    expect(pane).not.toMatch(/2 posts/);
+    // And the row itself carries no "N posts · time" line.
+    expect(doc.querySelector(".assistant-list-meta")).toBeNull();
+  });
+
+  it("shows the category tree's total and unread badges, and follows a read toggle made in a category", async () => {
+    const { doc, stream } = await boot({ lists: [list(1, "Evals", [1, 2, 3])] });
+    const row = () => doc.querySelector('.assistant-list-item[data-list-id="1"]') as HTMLElement;
+    expect(row().querySelector(".tree-counts .count-total")!.textContent).toBe("3");
+    expect(row().querySelector(".tree-counts .badge-unread")!.textContent).toBe("2");
+    expect(row().getAttribute("aria-label")).toBe("Evals, 3 posts, 2 unread, new");
+
+    // Read a post from its CATEGORY; the server tells every tab the index moved.
+    (doc.querySelector(".tree-node") as HTMLElement).click();
+    await tick();
+    const card = doc.querySelector('.bookmark-card[data-bookmark-id="1"]') as HTMLElement;
+    (card.querySelector(".read-pill") as HTMLElement).click();
+    await tick(80);
+    stream().emit("changed");
+    await tick();
+    expect(row().querySelector(".badge-unread")!.textContent).toBe("1");
+
+    // And from the list view, the other way round.
+    row().click();
+    await tick();
+    const inList = doc.querySelector('.bookmark-card[data-bookmark-id="3"]') as HTMLElement;
+    (inList.querySelector(".read-pill") as HTMLElement).click();
+    await tick(80);
+    stream().emit("changed");
+    await tick();
+    expect(row().querySelector(".badge-unread")).toBeNull(); // nothing unread: no badge, like the tree
+    expect(row().querySelector(".count-total")!.textContent).toBe("3");
+  });
+
+  it("orders a list with the category sort chip, defaulting to the assistant's order, remembered apart", async () => {
+    const { doc, w, calls } = await boot({ lists: [list(1, "Evals", [2, 3, 1])] });
+    (doc.querySelector(".assistant-list-item") as HTMLElement).click();
+    await tick();
+    const opt = (v: string) => doc.querySelector(`.sort-opt-input[value="${v}"]`) as HTMLInputElement;
+    expect(opt("list").parentElement!.hasAttribute("hidden")).toBe(false);
+    expect(opt("list").checked).toBe(true);
+    expect(doc.getElementById("sort-direction-label")!.textContent).toBe("As sent");
+    expect(visibleIds(doc)).toEqual(["2", "3", "1"]);
+
+    opt("recent").checked = true;
+    opt("recent").dispatchEvent(new w.Event("change"));
+    await tick();
+    expect(calls.at(-1)!.url).toBe("/api/assistant-lists/1?sort=recent&dir=desc");
+    expect(visibleIds(doc)).toEqual(["3", "2", "1"]);
+    (doc.getElementById("sort-direction") as HTMLElement).click();
+    await tick();
+    expect(calls.at(-1)!.url).toBe("/api/assistant-lists/1?sort=recent&dir=asc");
+    expect(visibleIds(doc)).toEqual(["1", "2", "3"]);
+    expect(w.localStorage.getItem("xbo:list-sort-order")).toBe("recent");
+    expect(w.localStorage.getItem("xbo:list-sort-direction")).toBe("asc");
+    // Top score stays disabled with nothing ranked, as it is for a category.
+    expect(opt("score").disabled).toBe(true);
+
+    // A category keeps its own ordering, and has no "Assistant's order".
+    (doc.querySelector(".tree-node") as HTMLElement).click();
+    await tick();
+    expect(opt("list").parentElement!.hasAttribute("hidden")).toBe(true);
+    expect(opt("recent").checked).toBe(true);
+    expect(doc.getElementById("sort-direction-label")!.textContent).toBe("Newest first");
+    expect(w.localStorage.getItem("xbo:sort-order")).toBeNull();
   });
 
   it("leaves a list deleted in another tab when the stream says the index changed", async () => {

@@ -1591,6 +1591,14 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   "New" is SERVER state: `assistant_lists.viewed_at`, stamped by `POST /api/assistant-lists/:id/viewed`
   on the first open (never by the GET), which publishes `changed` so every tab's count follows;
   lists that predate the column migrate as viewed. The client marks it optimistically on open.
+  A list row shows the category tree's own `.tree-counts` badges from `AssistantList.unread`, read off
+  the per-BOOKMARK `read` flag, so it cannot disagree with a category; the read and delete bookmark
+  routes publish `changed` when the post is in a list (`isInAssistantList`), which is how every
+  tab's badges follow. The note / count / sent time live behind each row's info button
+  (`#list-info`, one `<body>` popover); the list view has no header. A list is ordered by the
+  same `#sort-bar` under its OWN stored scope (`XBOSortOrder` `scope: "list"`, keys
+  `xbo:list-sort-*`), whose extra default order `list` = the assistant's order
+  (`GET /api/assistant-lists/:id?sort=&dir=`).
 - **Search** (`src/db/search.ts`): FTS5 table `bookmark_fts`, one row per bookmark, kept current by
   TRIGGERS on the six source tables (every trigger re-derives the affected documents from ONE SQL
   definition), so a new write path needs no index code. SQL cannot strip HTML, so
