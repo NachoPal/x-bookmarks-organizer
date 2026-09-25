@@ -336,6 +336,30 @@ describe("Lists (MCP show_in_app lists)", () => {
     expect(gone.w.localStorage.getItem("xbo:assistant-list")).toBeNull();
   });
 
+  it("deletes one list from its own bin, with Undo, without opening it", async () => {
+    const { doc, calls } = await boot({ lists: [list(1, "Keep", [1]), list(2, "Drop", [2])] });
+    const bin = doc.querySelector('.assistant-list-bin[data-list-id="2"]') as HTMLElement;
+    expect(bin.getAttribute("aria-label")).toBe("Delete list Drop");
+    expect(bin.title).toBe("Delete list Drop");
+    expect(unviewed(doc)).toBe("2");
+    bin.click();
+    await tick(5);
+    expect(rows(doc)).toEqual(["Keep"]);
+    expect(unviewed(doc)).toBe("1");
+    expect(doc.getElementById("sidebar-home-meta-lists")!.textContent).toBe("1 list");
+    expect(calls.some((c) => c.url === "/api/assistant-lists/2")).toBe(false); // never opened
+    toastAction(doc, "Undo")!.click();
+    await tick(80);
+    expect(rows(doc)).toEqual(["Drop", "Keep"]);
+    expect(unviewed(doc)).toBe("2");
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    (doc.querySelector('.assistant-list-bin[data-list-id="1"]') as HTMLElement).click();
+    await tick(120);
+    const del = calls.find((c) => c.method === "DELETE")!;
+    expect(JSON.parse(del.body!).ids).toEqual([1]);
+    expect(rows(doc)).toEqual(["Drop"]);
+  });
+
   it("leaves a list deleted in another tab when the stream says the index changed", async () => {
     const { doc, stream, dropList } = await boot({ lists: [list(9, "Elsewhere", [1])] });
     (doc.querySelector(".assistant-list-item") as HTMLElement).click();

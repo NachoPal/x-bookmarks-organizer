@@ -9710,7 +9710,14 @@
       btn.append(top, el("span", "assistant-list-meta", api.itemMeta(list, now)));
       btn.title = list.title;
       btn.addEventListener("click", () => void openAssistantList(list.id));
-      li.appendChild(btn);
+      const bin = el("button", "assistant-list-bin");
+      bin.type = "button";
+      bin.dataset.listId = String(list.id);
+      bin.setAttribute("aria-label", `Delete list ${list.title}`);
+      bin.title = `Delete list ${list.title}`;
+      bin.appendChild(trashIcon());
+      bin.addEventListener("click", () => deleteAssistantLists([list]));
+      li.append(btn, bin);
       return li;
     });
     assistantItemsEl.replaceChildren(...rows);

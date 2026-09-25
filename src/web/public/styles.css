@@ -1053,8 +1053,8 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   display: flex;
   flex-direction: column;
   /* Edge to edge: the rows are the menu, not tiles inside it. The column's
-     top padding is the only space above the first one. */
-  margin: 0 calc(-1 * var(--sidebar-pad-end)) 0 calc(-1 * var(--sidebar-pad-start));
+     top padding is cancelled too: the first row starts at the column's top. */
+  margin: calc(-1 * var(--space-4)) calc(-1 * var(--sidebar-pad-end)) 0 calc(-1 * var(--sidebar-pad-start));
   padding: 0;
   list-style: none;
 }
@@ -2115,7 +2115,44 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   flex-direction: column;
   gap: 2px;
 }
+.assistant-lists-items > li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+/* The bin closes a list's row, like the category editor's: muted at rest,
+   danger once aimed at. Centered on the row's first line, 1.75rem hit area. */
+.assistant-list-bin {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin-top: var(--space-2);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.assistant-list-bin:hover,
+.assistant-list-bin:focus-visible {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+.assistant-list-bin:active {
+  border-color: var(--color-danger);
+}
+.assistant-list-bin .icon-trash {
+  width: 1.05rem;
+  height: 1.05rem;
+}
 .assistant-list-item {
+  flex: 1 1 auto;
+  min-width: 0;
   width: 100%;
   min-height: 2.75rem;
   display: flex;
