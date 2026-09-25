@@ -57,6 +57,7 @@ import type { RankWiring } from './rank-job';
 import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 import type { PaidPass, RoleSpend } from './paid-spend';
 import { SummaryFailureBackoff } from './summary-backoff';
+import { installMcpEndpoint, MCP_PATH } from '../mcp/http';
 
 /** Directory holding the built static viewer assets (relative to this file). */
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -442,13 +443,17 @@ function allowedHostsFor(port: number): Set<string> {
  * down rather than inventing a port it cannot know.
  */
 function installLocalOriginGuard(app: FastifyInstance): void {
+  // `/mcp` (the AI-assistant endpoint) is an API too: a browser page has no
+  // more business reaching it cross-site than it has reaching `/api/`.
+  const isGuardedPath = (p: string | undefined) =>
+    !!p && (p.startsWith('/api/') || p === MCP_PATH || p.startsWith(`${MCP_PATH}?`) || p.startsWith(`${MCP_PATH}/`));
+
   app.addHook('onRequest', async (req, reply) => {
     // Judged on the route matched as well as the raw path, so a
     // percent-encoded or otherwise disguised path cannot reach an `/api/`
     // handler around it.
     const site = req.headers['sec-fetch-site'];
-    const isApi = req.url.startsWith('/api/') || req.routeOptions.url?.startsWith('/api/') === true;
-    if ((site === 'cross-site' || site === 'same-site') && isApi) {
+    if ((site === 'cross-site' || site === 'same-site') && (isGuardedPath(req.url) || isGuardedPath(req.routeOptions.url))) {
       return reply.code(403).send({ error: CROSS_ORIGIN_MESSAGE });
     }
 
@@ -1631,6 +1636,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       hasMore: offset + bookmarks.length < total,
     };
   });
+
+  // The read-only MCP endpoint for AI assistants, and its Settings routes.
+  installMcpEndpoint(app, db);
 
   return app;
 }
