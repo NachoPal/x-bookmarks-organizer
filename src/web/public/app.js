@@ -1970,8 +1970,10 @@
         if (!cardGesture().passedSlop(drag.origin, drag.pointer)) return;
         begin();
       }
-      positionGhost(ev.clientX, ev.clientY);
+      // Aim first: the ghost's label (and so its width) changes with the
+      // target, and it is clamped to the viewport by that width.
       hoverTreeDrop(drag, ev.clientX, ev.clientY);
+      positionGhost(ev.clientX, ev.clientY);
     };
 
     const finish = (ev, cancelled) => {
@@ -4045,8 +4047,13 @@
 
   function positionGhost(x, y) {
     if (!moveGhostEl) return;
-    // transform-only so following the pointer never triggers layout.
-    moveGhostEl.style.transform = `translate3d(${x + 14}px, ${y + 14}px, 0)`;
+    // transform-only so following the pointer never triggers layout. Kept
+    // inside the viewport: on a phone the pointer is often near the right
+    // edge, and a ghost cut off there hides the very name it is showing.
+    const gutter = 8;
+    const left = Math.max(gutter, Math.min(x + 14, window.innerWidth - moveGhostEl.offsetWidth - gutter));
+    const top = Math.max(gutter, Math.min(y + 14, window.innerHeight - moveGhostEl.offsetHeight - gutter));
+    moveGhostEl.style.transform = `translate3d(${left}px, ${top}px, 0)`;
   }
 
   function clearDropTarget(drag) {

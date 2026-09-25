@@ -122,6 +122,9 @@
   /* Where a drop line starts inside a row: the sidebar's rows begin at their
      grip; the editor's begin after the bin column (set on .ced-row). */
   --drop-line-inset: 0rem;
+  /* How far a child row starts right of its parent's row (the nested list's
+     margin + padding) - where "after an open parent" draws its line. */
+  --drop-nest-step: calc(var(--space-1) + var(--tree-indent));
   --tree-indent: var(--space-4);
 
   /* Layout */
@@ -1765,7 +1768,7 @@ body.is-tree-drop-invalid * {
   bottom: -2px;
 }
 .drop-after.drop-nested::after {
-  left: calc(var(--drop-line-inset) + var(--tree-indent) + var(--tree-grip-width));
+  left: calc(var(--drop-line-inset) + var(--drop-nest-step));
 }
 /* INSIDE: the whole row is outlined and tinted. */
 .drop-inside {
@@ -4601,14 +4604,19 @@ body.is-card-dragging .tree-node {
    the owner would be chasing the row they were aiming at. Full screen on a
    phone (below). */
 .cat-editor-panel {
-  width: min(72rem, 100%);
+  width: min(64rem, 100%);
   height: 100%;
+}
+/* The panel is wide; its prose is not. */
+.cat-editor-panel .setup-step-hint {
+  max-width: 72ch;
 }
 .cat-editor-tree {
   /* The bin/control column and the per-level step every row and every add
      row is laid out from - one source, so they cannot fall out of line. */
   --ced-control: 1.75rem;
   --ced-step: var(--tree-indent);
+  --drop-nest-step: var(--ced-step);
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -4773,6 +4781,8 @@ body.is-card-dragging .tree-node {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  min-width: 0;
+  text-align: start;
   min-height: 2rem;
   padding: var(--space-1) var(--space-2);
   border: 1px dashed var(--color-border-strong);
