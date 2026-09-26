@@ -546,11 +546,29 @@
   }
 
   /**
+   * End the load-time loading state `#xbo-preboot` puts up when there is a
+   * saved view to reopen (`body[data-restoring]`): from here on the pane
+   * shows whatever was actually rendered, the "Nothing selected yet"
+   * landing included.
+   */
+  function endViewRestore() {
+    document.body.removeAttribute("data-restoring");
+  }
+
+  /**
    * On load: reopen the persisted category + tab, from the persisted pages
    * when there are any. A category that no longer exists falls back to the
    * empty "Select a category" state - never an error.
    */
   async function restoreLastView() {
+    try {
+      await reopenSavedView();
+    } finally {
+      endViewRestore();
+    }
+  }
+
+  async function reopenSavedView() {
     const saved = window.XBOViewPersist && window.XBOViewPersist.readSelection(window.localStorage);
     // On a phone, restoring a category auto-dismisses the drawer anyway
     // (`selectCategory` does it) - but only once the tree has loaded, which
@@ -9330,6 +9348,7 @@
     );
     box.firstChild.setAttribute("aria-hidden", "true");
     listEl.replaceChildren(box);
+    endViewRestore(); // the landing is now the real state, not a load artefact
   }
 
   function buildFirstRun() {

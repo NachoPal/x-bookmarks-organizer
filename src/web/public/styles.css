@@ -3369,6 +3369,20 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   border-style: solid;
   border-color: var(--color-danger);
 }
+/* A reload restoring the saved view (`body[data-restoring]`, set before the
+   first paint by #xbo-preboot and cleared by app.js once the view is back):
+   a loading state in place of the "Nothing selected yet" landing and the top
+   bar's "Select a category" prompt, neither of which is true yet. */
+.state-restoring,
+body[data-restoring] .state-welcome {
+  display: none;
+}
+body[data-restoring] .state-restoring {
+  display: flex;
+}
+body[data-restoring] .topbar-prompt {
+  visibility: hidden;
+}
 /* Rich empty / welcome state in the content area. */
 .state-welcome {
   display: flex;

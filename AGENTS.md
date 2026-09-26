@@ -403,7 +403,13 @@ of truth - and `preboot.test.ts` pulls the script out of `index.html` and EXECUT
 modules, so a key typo or a flipped default fails a test rather than shipping. Anything that only
 styles content fetched later (`--post-scale`, which sizes `.bookmark-card`) does NOT belong here:
 there is nothing on screen yet for it to flash. Put new visible-at-load state in this block, not
-just in `app.js`. **It also suppresses MOTION for that first frame** (issue #100): it sets
+just in `app.js`. **It also decides whether a reload will RESTORE a view**: when `view-persist.js`'s
+saved selection names a category or `assistant-lists.js` has an open list, it sets
+`body[data-restoring]`, which CSS turns into a `.state-restoring` spinner in place of the static
+"Nothing selected yet" landing and the "Select a category" prompt; `app.js`'s `restoreLastView`
+clears it (`endViewRestore`) once the restore settles, so the landing only ever shows when there is
+nothing to restore. The `#toolbar` (tabs) ships `hidden` for the same reason.
+**It also suppresses MOTION for that first frame** (issue #100): it sets
 `data-preboot` on `<html>`, a blanket `transition: none !important; animation: none !important`
 in `styles.css`, which `app.js` clears after two `requestAnimationFrame`s (scheduled FIRST in its
 IIFE, so a later throw cannot leave the page motionless). Applying the state before the paint was
