@@ -383,10 +383,14 @@ to look at - nothing an assistant does can file, move, re-categorize or delete a
 | `show_in_app` | The one write: opens posts in the app as a named list. Takes `postIds` (ids or post URLs, up to 100), a `title` (up to 80 characters) and an optional `note` (up to 500). Posts not in the library are reported and left out; a call where none is found creates nothing. |
 
 **Lists from your assistant.** A `show_in_app` list appears in the running app at once: a toast
-("Your assistant sent 12 posts: Eval harnesses") with **Open**, and a row in the sidebar's **From
-your assistant** section (newest first, collapsible). Your current view is never switched for you.
-Opening a list shows its posts as ordinary cards - read, favorite, summary and move all work - under
-the assistant's note, with **Delete list** (and **Clear all** in the section; both offer Undo).
+("Your assistant sent 12 posts: Eval harnesses") with **Open**, and a row at the top of the
+sidebar's **Lists** page. Your current view is never switched for you. The page has the same
+**Filter…** box as Categories (it matches a list's title or the assistant's note), and each row a
+drag handle: drag it, or press Up/Down on it, to put your lists in your own order - kept on the
+server, so every tab and reload agrees (the handles rest while a filter narrows the page).
+Opening a list shows its posts as ordinary cards - read, favorite, summary and move all work -
+ordered like a category. Each row has an info button (the note, count and when it was sent) and a
+bin, and the page has **Clear all**; both offer Undo.
 Deleting a list never deletes a post; deleting a post removes it from every list. Lists stay until
 you delete them (the app holds up to 200; past that the tool asks you to make room), and a library
 reset clears them with the bookmarks. If the app was closed, the list is there on the next load.

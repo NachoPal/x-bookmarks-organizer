@@ -47,6 +47,7 @@ describe('assistant result lists (storage)', () => {
       count: 3,
       unread: 3,
       viewed: false,
+      position: 0,
     });
     expect(db.getAssistantListBookmarks(second.id).map((b) => b.postId)).toEqual(['3', '2', '1']);
     expect(db.getAssistantLists().map((l) => l.id)).toEqual([second.id, first.id]);
@@ -149,6 +150,76 @@ describe('assistant result lists (storage)', () => {
     expect(db.markAssistantListViewed(999)).toBeUndefined();
     expect(db.getAssistantList(list.id)!.viewed).toBe(true);
     expect(db.getAssistantList(other.id)!.viewed).toBe(false);
+  });
+
+  it('puts a new list first and moves a list before another, or last, re-numbering densely', () => {
+    const make = (title: string) => db.createAssistantList({ title, note: null, bookmarkIds: [ids['1']!] }, WHEN);
+    const a = make('A');
+    const b = make('B');
+    const c = make('C');
+    const d = make('D');
+    const order = () => db.getAssistantLists().map((l) => l.title);
+    expect(order()).toEqual(['D', 'C', 'B', 'A']); // same timestamp: still the newest first
+    expect(db.moveAssistantList(d.id, a.id)).toBe('moved');
+    expect(order()).toEqual(['C', 'B', 'D', 'A']);
+    expect(db.moveAssistantList(c.id, null)).toBe('moved');
+    expect(order()).toEqual(['B', 'D', 'A', 'C']);
+    expect(db.getAssistantLists().map((l) => l.position)).toEqual([0, 1, 2, 3]);
+    // Where it already is, or before itself: nothing to write.
+    expect(db.moveAssistantList(b.id, d.id)).toBe('unchanged');
+    expect(db.moveAssistantList(c.id, null)).toBe('unchanged');
+    expect(db.moveAssistantList(a.id, a.id)).toBe('unchanged');
+    expect(db.moveAssistantList(999, a.id)).toBe('no-list');
+    expect(db.moveAssistantList(a.id, 999)).toBe('no-anchor');
+    expect(order()).toEqual(['B', 'D', 'A', 'C']);
+    // A list sent afterwards goes above the owner's arrangement, which it leaves alone.
+    make('E');
+    expect(order()).toEqual(['E', 'B', 'D', 'A', 'C']);
+    // Deleting leaves a gap the next move closes.
+    db.deleteAssistantList(d.id);
+    expect(db.moveAssistantList(b.id, null)).toBe('moved');
+    expect(db.getAssistantLists().map((l) => [l.title, l.position])).toEqual([
+      ['E', 0],
+      ['A', 1],
+      ['C', 2],
+      ['B', 3],
+    ]);
+  });
+
+  it('migrates a list table from before position, keeping the newest-first order', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xbo-lists-position-'));
+    try {
+      const file = path.join(dir, 'old.db');
+      const raw = new BetterSqlite3(file);
+      raw.exec(`
+        CREATE TABLE assistant_lists (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL, viewed_at TEXT
+        );
+        INSERT INTO assistant_lists (title, created_at) VALUES ('Oldest', '2026-01-01T00:00:00.000Z');
+        INSERT INTO assistant_lists (title, created_at) VALUES ('Newest', '2026-03-01T00:00:00.000Z');
+        INSERT INTO assistant_lists (title, created_at) VALUES ('Middle', '2026-02-01T00:00:00.000Z');
+        INSERT INTO assistant_lists (title, created_at) VALUES ('Middle twin', '2026-02-01T00:00:00.000Z');
+      `);
+      raw.close();
+
+      const migrated = new Database(file);
+      expect(migrated.getAssistantLists().map((l) => [l.title, l.position])).toEqual([
+        ['Newest', 0],
+        ['Middle twin', 1],
+        ['Middle', 2],
+        ['Oldest', 3],
+      ]);
+      const oldest = migrated.getAssistantLists()[3]!;
+      migrated.moveAssistantList(oldest.id, migrated.getAssistantLists()[0]!.id);
+      migrated.close();
+
+      // Re-opening does not re-number: the owner's move is kept.
+      const again = new Database(file);
+      expect(again.getAssistantLists().map((l) => l.title)).toEqual(['Oldest', 'Newest', 'Middle twin', 'Middle']);
+      again.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('migrates a list table from before viewed_at, counting its lists as already viewed', () => {

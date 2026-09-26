@@ -2117,9 +2117,32 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   gap: 2px;
 }
 .assistant-lists-items > li {
+  position: relative; /* anchors a drag's before/after line (.drop-before / .drop-after) */
   display: flex;
   align-items: flex-start;
   gap: var(--space-1);
+}
+.assistant-lists-items.is-reordering {
+  user-select: none;
+}
+/* The category tree's move handle, at the list row's full height so the
+   dots sit on the title's first line. */
+.tree-grip.assistant-list-grip {
+  height: 2.75rem;
+}
+/* While the filter narrows the page a position means nothing: the handle
+   stays (its tooltip and description say why) but reads as unavailable -
+   a not-allowed cursor, no hover or press feedback, and a faded glyph. */
+.tree-grip.assistant-list-grip[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+.tree-grip.assistant-list-grip[aria-disabled="true"] svg {
+  opacity: 0.4;
+}
+.tree-grip.assistant-list-grip[aria-disabled="true"]:hover,
+.tree-grip.assistant-list-grip[aria-disabled="true"]:active {
+  background: transparent;
+  color: var(--color-text-muted);
 }
 /* The row's trailing icon buttons: info, then the bin, which closes it like
    the category editor's. Muted at rest; the bin turns danger once aimed at,
@@ -2489,15 +2512,18 @@ body[data-tree-colors="on"] .tree-node[data-parity="1"] {
   overflow-wrap: anywhere;
   padding-top: 1px;
 }
-/* Highlighted substring of a category name that matches the search query. */
-.tree-label mark {
+/* Highlighted substring of a category name (or a list's title, on the
+   Lists page) that matches the page's filter. */
+.tree-label mark,
+.assistant-list-title mark {
   padding: 0 1px;
   border-radius: 3px;
   background: var(--color-accent-soft);
   color: var(--color-accent);
   font-weight: 700;
 }
-.tree-node[aria-current="true"] .tree-label mark {
+.tree-node[aria-current="true"] .tree-label mark,
+.assistant-list-item[aria-current="true"] .assistant-list-title mark {
   background: transparent;
   color: inherit;
 }

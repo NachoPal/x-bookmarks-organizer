@@ -5,7 +5,7 @@ import type { StoredBookmark } from '../types';
 
 /**
  * Assistant result lists in the viewer: the routes the sidebar's "Lists" page
- * reads, marks viewed and deletes through, and the live stream that puts a
+ * reads, marks viewed, reorders and deletes through, and the live stream that puts a
  * list an assistant just sent (MCP `show_in_app`, `src/mcp/tools.ts`) in front
  * of the owner without a reload.
  *
@@ -13,7 +13,7 @@ import type { StoredBookmark } from '../types';
  * list removes the list and nothing else.
  */
 
-/** What the live stream announces. `changed` = a list was deleted or viewed, or its counts moved; re-read the index. */
+/** What the live stream announces. `changed` = a list was deleted, viewed or moved, or its counts moved; re-read the index. */
 export type AssistantListEvent = { type: 'created'; list: AssistantList } | { type: 'changed' };
 
 /**
@@ -103,6 +103,32 @@ export function installAssistantListRoutes(
     if (changed) events.publish({ type: 'changed' });
     return { list: db.getAssistantList(id) };
   });
+
+  // The owner dragged a list (or moved it with an arrow key) on the Lists
+  // page: `{ beforeId }` puts it just before that list, `null` last. A PUT,
+  // so the Origin guard covers it; only a real change is announced, which is
+  // how every other open tab follows the new order.
+  app.put<{ Params: { id: string }; Body?: { beforeId?: unknown } }>(
+    '/api/assistant-lists/:id/position',
+    async (req, reply) => {
+      const id = parseId(req.params.id);
+      if (id === null) return reply.code(400).send({ error: 'invalid list id' });
+      const body = req.body;
+      const beforeId = body && typeof body === 'object' ? body.beforeId : undefined;
+      if (!(beforeId === null || (Number.isInteger(beforeId) && (beforeId as number) > 0))) {
+        return reply
+          .code(400)
+          .send({ error: 'Send { "beforeId": <list id> } to place it before that list, or null to place it last.' });
+      }
+      const outcome = db.moveAssistantList(id, beforeId as number | null);
+      if (outcome === 'no-list') return reply.code(404).send({ error: 'That list is no longer here.' });
+      if (outcome === 'no-anchor') {
+        return reply.code(409).send({ error: 'The list it was going next to is no longer here. Try again.' });
+      }
+      if (outcome === 'moved') events.publish({ type: 'changed' });
+      return { lists: db.getAssistantLists() };
+    },
+  );
 
   app.delete<{ Params: { id: string } }>('/api/assistant-lists/:id', async (req, reply) => {
     const id = parseId(req.params.id);
