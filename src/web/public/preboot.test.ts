@@ -20,6 +20,9 @@ const {
   MAX_SIDEBAR_WIDTH,
 } = require("./sidebar-width.js");
 const { readPage, PAGE_KEY, PAGES } = require("./sidebar-nav.js");
+const { readSelection, SELECTION_KEY } = require("./view-persist.js");
+const { readOpenList } = require("./assistant-lists.js");
+const OPEN_LIST_KEY = "xbo:assistant-list";
 
 /** The inline script's source, straight out of the shipped page. */
 function prebootSource(): string {
@@ -172,6 +175,40 @@ describe("pre-paint state application (issue #104)", () => {
       expect(runPreboot(stored).bodyAttrs["data-sidebar-page"]).toBe(readPage(storageOver(stored)));
     }
     expect(runPreboot({}, { throwing: true }).bodyAttrs["data-sidebar-page"]).toBe("root");
+  });
+
+  it("puts up the loading state exactly when app.js will reopen a saved view", () => {
+    // The regression: a reload painted the "Nothing selected yet" landing and
+    // its tabs before `restoreLastView` brought the saved view back. The
+    // attribute swaps the landing for a spinner; it must agree with what the
+    // owning modules read, or a first visit would sit on a spinner forever
+    // (until app.js cleared it) and a restore would still flash the landing.
+    const cases: Record<string, string>[] = [
+      {},
+      { [SELECTION_KEY]: JSON.stringify({ categoryId: 7, filter: "favorite" }) },
+      { [SELECTION_KEY]: JSON.stringify({ categoryId: null, filter: "all" }) },
+      { [SELECTION_KEY]: JSON.stringify({ categoryId: "7" }) },
+      { [SELECTION_KEY]: "not json" },
+      { [SELECTION_KEY]: "null" },
+      { [OPEN_LIST_KEY]: "3" },
+      { [OPEN_LIST_KEY]: "0" },
+      { [OPEN_LIST_KEY]: "-2" },
+      { [OPEN_LIST_KEY]: "1.5" },
+      { [OPEN_LIST_KEY]: "abc" },
+      { [SELECTION_KEY]: JSON.stringify({ categoryId: null }), [OPEN_LIST_KEY]: "4" },
+    ];
+    for (const stored of cases) {
+      const storage = storageOver(stored);
+      const selection = readSelection(storage);
+      const reopens = (selection != null && selection.categoryId != null) || readOpenList(storage) != null;
+      expect(runPreboot(stored).bodyAttrs["data-restoring"], JSON.stringify(stored)).toBe(
+        reopens ? "view" : undefined,
+      );
+    }
+    // Blocked storage restores nothing, so it shows the landing straight away.
+    expect(
+      runPreboot({ [OPEN_LIST_KEY]: "3" }, { throwing: true }).bodyAttrs["data-restoring"],
+    ).toBeUndefined();
   });
 
   it("falls back to the defaults, without throwing, when storage is blocked", () => {

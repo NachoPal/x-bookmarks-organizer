@@ -14,7 +14,8 @@
          way. This block is the first thing in <body>, so the parser runs it
          before any of it can be painted. It is deliberately the ONLY place
          these storage keys are duplicated - sidebar-state.js, theme.js,
-         tree-color.js, sidebar-width.js and sidebar-nav.js stay the source of truth for
+         tree-color.js, sidebar-width.js, sidebar-nav.js, view-persist.js and
+         assistant-lists.js stay the source of truth for
          reading, writing and defaulting, and `preboot.test.ts` executes THIS
          script against those modules so a key or a default cannot drift.
          `--post-scale` is not here on purpose: it only sizes `.bookmark-card`,
@@ -52,6 +53,23 @@
         );
         if (read("xbo:tree-colors-enabled") === "1") {
           document.body.setAttribute("data-tree-colors", "on");
+        }
+        // A reload that will reopen a saved category (view-persist.js) or an
+        // assistant list (assistant-lists.js) shows a loading state until
+        // `app.js` has restored it, never the "Nothing selected yet" landing
+        // and its tabs for the moment before. `app.js` drops the attribute
+        // once the restore settles, which is also what brings the landing
+        // back when the saved view no longer exists.
+        var restoring = false;
+        try {
+          var selection = JSON.parse(read("xbo:selection"));
+          restoring = !!selection && typeof selection === "object" && Number.isInteger(selection.categoryId);
+        } catch (_) {
+          restoring = false; // a garbled record restores nothing
+        }
+        var listId = Number(read("xbo:assistant-list"));
+        if (restoring || (Number.isInteger(listId) && listId > 0)) {
+          document.body.setAttribute("data-restoring", "view");
         }
         var width = Number.parseFloat(read("xbo:sidebar-width"));
         if (Number.isFinite(width)) {
@@ -714,7 +732,10 @@
 
     <div class="app-body">
       <div class="main-column">
-        <div id="toolbar" class="toolbar">
+        <!-- Hidden until a category is open (updateToolbarVisibility in
+             app.js): the tabs are views OF one category, so a load must
+             never paint them over the empty landing first. -->
+        <div id="toolbar" class="toolbar" hidden>
           <div
             id="filter-tabs"
             class="filter-tabs"
@@ -888,6 +909,12 @@
               aria-labelledby="filter-tab-all"
               aria-live="polite"
             >
+              <!-- Shown instead of the landing below while a reload restores
+                   the saved view (`data-restoring`, set by #xbo-preboot). -->
+              <div class="state state-loading state-restoring" role="status">
+                <span class="list-spinner" aria-hidden="true"></span>
+                <span>Loading…</span>
+              </div>
               <div class="state state-empty state-welcome state-prompt" role="button" tabindex="0" data-open-categories aria-controls="sidebar">
                 <span class="state-icon" aria-hidden="true">🔖</span>
                 <p class="state-title">Nothing selected yet</p>
