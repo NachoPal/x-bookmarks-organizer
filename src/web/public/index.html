@@ -218,6 +218,34 @@
               Clear all
             </button>
           </div>
+          <!-- The same filter as the Categories page's, kept apart from it:
+               each page narrows only its own rows. Hidden while there are no
+               lists to narrow. -->
+          <div id="list-search-row" class="sidebar-search" hidden>
+            <label class="visually-hidden" for="list-search">Filter lists by title or note</label>
+            <div class="search-field">
+              <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
+                <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+              <input
+                id="list-search"
+                class="search-input"
+                type="search"
+                placeholder="Filter…"
+                autocomplete="off"
+                spellcheck="false"
+                aria-controls="assistant-lists-body"
+              />
+              <button id="list-search-clear" class="search-clear" type="button" aria-label="Clear list filter" hidden>
+                <span class="icon-x" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+          <p id="lists-announcer" class="visually-hidden" role="status" aria-live="polite"></p>
+          <p id="list-move-help" class="visually-hidden">
+            Drag to move it, or press Up or Down arrow to move it one place.
+          </p>
           <div id="assistant-lists-state" class="assistant-lists-state"></div>
           <ul id="assistant-lists-body" class="assistant-lists-items" aria-labelledby="sidebar-title-lists"></ul>
         </section>

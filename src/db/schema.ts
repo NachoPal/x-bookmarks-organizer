@@ -88,7 +88,9 @@
  *   the viewer orders a list like a category (Newest / Top score) instead.
  *   `viewed_at` is when the owner first opened the list in the viewer (NULL =
  *   never): the sidebar's "Lists" row counts the unviewed ones, so the count
- *   agrees across tabs and reloads.
+ *   agrees across tabs and reloads. `assistant_lists.position` is where the
+ *   owner put the list on the Lists page (ascending; a new list goes first,
+ *   and a drag or an arrow key re-numbers them), so every tab shows one order.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -215,7 +217,8 @@ CREATE TABLE IF NOT EXISTS assistant_lists (
   title      TEXT NOT NULL,
   note       TEXT,
   created_at TEXT NOT NULL,
-  viewed_at  TEXT
+  viewed_at  TEXT,
+  position   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS assistant_list_items (
@@ -326,12 +329,14 @@ export const ARTICLES_ADDED_COLUMNS: { name: string; ddl: string }[] = [
 
 /**
  * Columns added to `assistant_lists` after its original release: `viewed_at`
- * (see the schema comment above). Lists stored before it existed were only
- * ever "new" in the tab they arrived in, so they migrate as already viewed
- * (`Database.migrate` back-fills them) rather than all turning up new at once.
+ * and `position` (see the schema comment above). Lists stored before
+ * `viewed_at` existed were only ever "new" in the tab they arrived in, so they
+ * migrate as already viewed; lists stored before `position` keep the
+ * newest-first order they were shown in. `Database.migrate` back-fills both.
  */
 export const ASSISTANT_LISTS_ADDED_COLUMNS: { name: string; ddl: string }[] = [
   { name: 'viewed_at', ddl: 'ALTER TABLE assistant_lists ADD COLUMN viewed_at TEXT' },
+  { name: 'position', ddl: 'ALTER TABLE assistant_lists ADD COLUMN position INTEGER NOT NULL DEFAULT 0' },
 ];
 
 export const BOOKMARKS_ADDED_COLUMNS: { name: string; ddl: string }[] = [

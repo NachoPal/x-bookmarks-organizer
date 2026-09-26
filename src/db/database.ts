@@ -179,6 +179,8 @@ export interface AssistantList {
   unread: number;
   /** Whether the owner has opened it in the viewer yet (`assistant_lists.viewed_at`). */
   viewed: boolean;
+  /** Where it sits on the Lists page, ascending (`assistant_lists.position`). */
+  position: number;
 }
 
 /** Library-wide counts for the MCP server's `library_stats`. */
@@ -192,7 +194,7 @@ export interface LibraryStats {
   newestPostAt: string | null;
 }
 
-const ASSISTANT_LIST_SELECT = `SELECT l.id, l.title, l.note, l.created_at, l.viewed_at,
+const ASSISTANT_LIST_SELECT = `SELECT l.id, l.title, l.note, l.created_at, l.viewed_at, l.position,
        (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count,
        (SELECT COUNT(*) FROM assistant_list_items i JOIN bookmarks b ON b.id = i.bookmark_id
          WHERE i.list_id = l.id AND b.read = 0) AS unread
@@ -204,13 +206,26 @@ interface AssistantListRow {
   note: string | null;
   created_at: string;
   viewed_at: string | null;
+  position: number;
   count: number;
   unread: number;
 }
 
 function toAssistantList(r: AssistantListRow): AssistantList {
-  return { id: r.id, title: r.title, note: r.note, createdAt: r.created_at, count: r.count, unread: r.unread, viewed: r.viewed_at !== null };
+  return {
+    id: r.id,
+    title: r.title,
+    note: r.note,
+    createdAt: r.created_at,
+    count: r.count,
+    unread: r.unread,
+    viewed: r.viewed_at !== null,
+    position: r.position,
+  };
 }
+
+/** The Lists page's order: the owner's arrangement, newest first among equals. */
+const ASSISTANT_LIST_ORDER = 'ORDER BY l.position ASC, l.created_at DESC, l.id DESC';
 
 interface BookmarkRow {
   id: number;
@@ -490,8 +505,20 @@ export class Database {
     this.addMissingColumns('bookmarks', BOOKMARKS_ADDED_COLUMNS);
     this.addMissingColumns('categories', CATEGORIES_ADDED_COLUMNS);
     this.addMissingColumns('articles', ARTICLES_ADDED_COLUMNS);
-    if (this.addMissingColumns('assistant_lists', ASSISTANT_LISTS_ADDED_COLUMNS).includes('viewed_at')) {
+    const listColumns = this.addMissingColumns('assistant_lists', ASSISTANT_LISTS_ADDED_COLUMNS);
+    if (listColumns.includes('viewed_at')) {
       this.db.prepare('UPDATE assistant_lists SET viewed_at = created_at').run();
+    }
+    if (listColumns.includes('position')) {
+      // Number them in the newest-first order the Lists page showed until now.
+      this.db
+        .prepare(
+          `UPDATE assistant_lists SET position = (
+             SELECT COUNT(*) FROM assistant_lists o
+              WHERE o.created_at > assistant_lists.created_at
+                 OR (o.created_at = assistant_lists.created_at AND o.id > assistant_lists.id))`,
+        )
+        .run();
     }
     this.rekeyBookmarkScores();
     this.backfillArticleText();
@@ -1527,16 +1554,18 @@ export class Database {
 
   /**
    * Store a result list: `bookmarkIds` in the order given (callers dedupe and
-   * validate them). One transaction, so a list never exists half-written.
+   * validate them), FIRST on the Lists page - every other list steps down
+   * one. One transaction, so a list never exists half-written.
    */
   createAssistantList(
     list: { title: string; note: string | null; bookmarkIds: number[] },
     when: string = new Date().toISOString(),
   ): AssistantList {
     const id = this.db.transaction(() => {
+      this.db.prepare('UPDATE assistant_lists SET position = position + 1').run();
       const listId = Number(
         this.db
-          .prepare('INSERT INTO assistant_lists (title, note, created_at) VALUES (?, ?, ?)')
+          .prepare('INSERT INTO assistant_lists (title, note, created_at, position) VALUES (?, ?, ?, 0)')
           .run(list.title, list.note, when).lastInsertRowid,
       );
       const insert = this.db.prepare(
@@ -1548,12 +1577,36 @@ export class Database {
     return this.getAssistantList(id)!;
   }
 
-  /** Every list, newest first, each with how many of its posts still exist. */
+  /** Every list in the Lists page's order, each with how many of its posts still exist. */
   getAssistantLists(): AssistantList[] {
-    const rows = this.db
-      .prepare(`${ASSISTANT_LIST_SELECT} ORDER BY l.created_at DESC, l.id DESC`)
-      .all() as AssistantListRow[];
+    const rows = this.db.prepare(`${ASSISTANT_LIST_SELECT} ${ASSISTANT_LIST_ORDER}`).all() as AssistantListRow[];
     return rows.map(toAssistantList);
+  }
+
+  /**
+   * Put list `id` just before list `beforeId` on the Lists page (`null`: last),
+   * re-numbering every list in one transaction so the order is always dense
+   * and never half-applied. An anchor is used rather than an index so a list
+   * that arrives meanwhile (it goes first) cannot shift where this one lands.
+   * `'moved'` / `'unchanged'`, or which id was not found.
+   */
+  moveAssistantList(id: number, beforeId: number | null): 'moved' | 'unchanged' | 'no-list' | 'no-anchor' {
+    return this.db.transaction(() => {
+      const order = (
+        this.db.prepare(`SELECT l.id FROM assistant_lists l ${ASSISTANT_LIST_ORDER}`).all() as { id: number }[]
+      ).map((r) => r.id);
+      const from = order.indexOf(id);
+      if (from === -1) return 'no-list';
+      if (beforeId !== null && !order.includes(beforeId)) return 'no-anchor';
+      if (beforeId === id) return 'unchanged';
+      const rest = order.filter((other) => other !== id);
+      const to = beforeId === null ? rest.length : rest.indexOf(beforeId);
+      rest.splice(to, 0, id);
+      if (rest.every((other, i) => other === order[i])) return 'unchanged';
+      const update = this.db.prepare('UPDATE assistant_lists SET position = ? WHERE id = ?');
+      rest.forEach((other, position) => update.run(position, other));
+      return 'moved';
+    })();
   }
 
   getAssistantList(id: number): AssistantList | undefined {

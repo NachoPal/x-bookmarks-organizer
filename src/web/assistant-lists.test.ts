@@ -222,6 +222,60 @@ describe('assistant result lists in the viewer', () => {
     expect(db.getAssistantList(list.id)!.viewed).toBe(false);
   });
 
+  it('reorders a list before another or last, streams the change, and puts a sent list on top', async () => {
+    const a = db.createAssistantList({ title: 'A', note: null, bookmarkIds: [id('1')] }, WHEN);
+    const b = db.createAssistantList({ title: 'B', note: null, bookmarkIds: [id('2')] }, WHEN);
+    const c = db.createAssistantList({ title: 'C', note: null, bookmarkIds: [id('3')] }, WHEN);
+    const move = (listId: number | string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(`${base}/api/assistant-lists/${listId}/position`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const titles = () => db.getAssistantLists().map((l) => l.title);
+    expect(titles()).toEqual(['C', 'B', 'A']);
+    const stream = await openStream(`${base}${ASSISTANT_LIST_EVENTS_PATH}`);
+    try {
+      const res = await move(a.id, { beforeId: c.id });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lists: { title: string; position: number }[] };
+      expect(body.lists.map((l) => [l.title, l.position])).toEqual([
+        ['A', 0],
+        ['C', 1],
+        ['B', 2],
+      ]);
+      expect((await stream.next()).event).toBe('changed');
+
+      // A move to where it already is writes and announces nothing: the next
+      // event is the following real move.
+      expect((await move(a.id, { beforeId: c.id })).status).toBe(200);
+      expect((await move(a.id, { beforeId: null })).status).toBe(200);
+      expect((await stream.next()).event).toBe('changed');
+      expect(titles()).toEqual(['C', 'B', 'A']);
+
+      const { listId } = await showInApp({ postIds: ['1'], title: 'Sent now' });
+      expect((await stream.next()).event).toBe('created');
+      expect(titles()).toEqual(['Sent now', 'C', 'B', 'A']);
+      expect(db.getAssistantList(listId)!.position).toBe(0);
+    } finally {
+      stream.close();
+    }
+
+    // Validation: every refusal leaves the order alone.
+    const before = titles();
+    for (const bad of [{}, { beforeId: 'x' }, { beforeId: 1.5 }, { beforeId: -1 }, { index: 0 }, null]) {
+      expect((await move(b.id, bad)).status, JSON.stringify(bad)).toBe(400);
+    }
+    expect((await move('abc', { beforeId: null })).status).toBe(400);
+    expect((await move(999, { beforeId: null })).status).toBe(404);
+    const vanished = await move(b.id, { beforeId: 999 });
+    expect(vanished.status).toBe(409);
+    expect(((await vanished.json()) as { error: string }).error).toMatch(/no longer here/);
+    // A cross-origin page cannot rearrange the owner's lists.
+    expect((await move(b.id, { beforeId: null }, { origin: 'https://evil.example' })).status).toBe(403);
+    expect(titles()).toEqual(before);
+  });
+
   it('streams a list to the open app the moment show_in_app creates it, and a delete as a change', async () => {
     const stream = await openStream(`${base}${ASSISTANT_LIST_EVENTS_PATH}`);
     expect(stream.res.headers.get('content-type')).toMatch(/^text\/event-stream/);

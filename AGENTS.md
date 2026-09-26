@@ -638,7 +638,9 @@ must not double-adjust a shared ancestor.
 
 **Every category is movable, at any level** (issue #82 did roots; now any depth), from a grip on
 EVERY row of the sidebar AND the category editor (hidden while a search filters the sidebar). One
-engine in `app.js` (`startTreeDrag`/`hoverTreeDrop`/`commitCategoryMove`) drives both surfaces:
+engine in `app.js` (`startTreeDrag`/`hoverTreeDrop`/`commitCategoryMove`) drives both surfaces
+(its pointer half, `startRowDrag`, also drives the Lists page's flat reorder - a new draggable
+surface supplies a `spec` rather than a second drag loop):
 pointer drag with before/after/inside zones, hover-expand, a "can't drop here" cue (danger styling
 + the reason in the ghost); on the focused grip Up/Down reorder, Left moves out of the parent,
 Right into the sibling above, Enter (or a press that never became a drag) opens the move picker in
@@ -1588,6 +1590,10 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   every flow that resets the pool (sync, rank, category delete) calls `refreshOpenList`. A new such
   flow must too. Titles/notes are an assistant's words: `textContent` only
   (`assistant-lists-view.test.ts` pins it). Pure half: `assistant-lists.js` (`XBOAssistantLists`).
+  The Lists page's ORDER is server state too: `assistant_lists.position` (a new list is inserted
+  at 0, every other shifts down), moved by `PUT /api/assistant-lists/:id/position { beforeId }` -
+  an anchor, not an index, so a list arriving mid-move cannot shift where it lands - which
+  publishes `changed`. The page's filter (title or note) is per-page and disables the handles.
   "New" is SERVER state: `assistant_lists.viewed_at`, stamped by `POST /api/assistant-lists/:id/viewed`
   on the first open (never by the GET), which publishes `changed` so every tab's count follows;
   lists that predate the column migrate as viewed. The client marks it optimistically on open.

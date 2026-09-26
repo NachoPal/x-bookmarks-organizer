@@ -53,6 +53,8 @@ interface Opts {
   failLists?: number;
   /** What `xbo:list-sort-order` holds at load. */
   listSort?: string;
+  /** How many reorders the server refuses (409) before it accepts one. */
+  failMoves?: number;
 }
 
 async function boot(opts: Opts = {}) {
@@ -60,6 +62,7 @@ async function boot(opts: Opts = {}) {
   const posts = [bm(1), bm(2, true), bm(3)];
   let lists = opts.lists ?? [];
   let failLists = opts.failLists ?? 0;
+  let failMoves = opts.failMoves ?? 0;
   const dom = new JSDOM(read("index.html").replace(/<script[^>]*><\/script>/g, ""), {
     runScripts: "outside-only",
     url: "http://localhost/",
@@ -96,7 +99,9 @@ async function boot(opts: Opts = {}) {
     }
   };
   // Unread is read off the posts' own flags, as the server's count is.
+  // The fake server holds the lists in their Lists-page order: `position` is the index.
   const summary = (l: ReturnType<typeof list>) => ({
+    position: lists.indexOf(l),
     id: l.id,
     title: l.title,
     note: l.note,
@@ -136,6 +141,19 @@ async function boot(opts: Opts = {}) {
       const ids: number[] = JSON.parse(init!.body!).ids;
       lists = lists.filter((l) => !ids.includes(l.id));
       return json({ deleted: ids.length });
+    }
+    const moved = url.match(/^\/api\/assistant-lists\/(\d+)\/position$/);
+    if (moved && method === "PUT") {
+      if (failMoves > 0) {
+        failMoves -= 1;
+        return json({ error: "The list it was going next to is no longer here. Try again." }, 409);
+      }
+      const found = lists.find((l) => l.id === Number(moved[1]))!;
+      const { beforeId } = JSON.parse(init!.body!);
+      const rest = lists.filter((l) => l !== found);
+      rest.splice(beforeId === null ? rest.length : rest.findIndex((l) => l.id === beforeId), 0, found);
+      lists = rest;
+      return json({ lists: lists.map(summary) });
     }
     const viewed = url.match(/^\/api\/assistant-lists\/(\d+)\/viewed$/);
     if (viewed && method === "POST") {
@@ -195,9 +213,15 @@ async function boot(opts: Opts = {}) {
     doc,
     calls,
     stream: () => sources[0],
+    /** show_in_app: a new list goes first, as on the real server. */
     addList: (l: ReturnType<typeof list>) => {
-      lists = [...lists, l];
+      lists = [l, ...lists];
       return summary(l);
+    },
+    serverOrder: () => lists.map((l) => l.title),
+    /** Another tab reordered the lists. */
+    reorderElsewhere: (ids: number[]) => {
+      lists = ids.map((id) => lists.find((l) => l.id === id)!);
     },
     dropList: (id: number) => {
       lists = lists.filter((l) => l.id !== id);
@@ -232,14 +256,15 @@ const toastAction = (doc: Document, label: string) =>
   Array.from(doc.querySelectorAll(".toast-action")).find((b) => b.textContent === label) as HTMLElement | undefined;
 
 describe("Lists (MCP show_in_app lists)", () => {
-  it("says there are none yet, and lists what the server holds, newest first", async () => {
+  it("says there are none yet, and lists what the server holds in the server's order", async () => {
     const empty = await boot();
     expect(rows(empty.doc)).toEqual([]);
     expect(listsState(empty.doc)).toContain("No lists yet");
     expect(empty.doc.getElementById("sidebar-home-meta-lists")!.textContent).toBe("None yet");
     expect((empty.doc.getElementById("assistant-lists-clear") as HTMLElement).hidden).toBe(true);
+    // The owner's arrangement wins over the dates: the older list was moved up.
     const { doc } = await boot({ lists: [list(1, "Older", [1]), { ...list(2, "Newer", [2]), createdAt: "2999-01-01T00:00:00Z" }] });
-    expect(rows(doc)).toEqual(["Newer", "Older"]);
+    expect(rows(doc)).toEqual(["Older", "Newer"]);
     expect(listsState(doc)).toBe("");
     expect(doc.getElementById("sidebar-home-meta-lists")!.textContent).toBe("2 lists");
     expect((doc.getElementById("assistant-lists-clear") as HTMLElement).hidden).toBe(false);
@@ -362,7 +387,7 @@ describe("Lists (MCP show_in_app lists)", () => {
     expect(calls.some((c) => c.url.startsWith("/api/assistant-lists/2?"))).toBe(false); // never opened
     toastAction(doc, "Undo")!.click();
     await tick(80);
-    expect(rows(doc)).toEqual(["Drop", "Keep"]);
+    expect(rows(doc)).toEqual(["Keep", "Drop"]); // back in its place
     expect(unviewed(doc)).toBe("2");
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
     (doc.querySelector('.assistant-list-bin[data-list-id="1"]') as HTMLElement).click();
@@ -696,6 +721,189 @@ describe("Sidebar drill-down (menu, Categories, Lists)", () => {
     pointer("pointerup", 80);
     expect(page(doc)).toBe("lists");
     expect(w.localStorage.getItem("xbo:sidebar-page")).toBe("lists");
+  });
+
+  it("filters the Lists page by title or note, live, apart from the Categories filter", async () => {
+    const { doc, w } = await boot({
+      page: "lists",
+      sidebarOpen: true,
+      lists: [list(1, "Eval harnesses", [1]), list(2, "Cooking", [2], "Mostly EVAL recipes"), list(3, "Rust", [3])],
+    });
+    const search = doc.getElementById("list-search") as HTMLInputElement;
+    const clear = doc.getElementById("list-search-clear") as HTMLElement;
+    expect((doc.getElementById("list-search-row") as HTMLElement).hidden).toBe(false);
+    expect(view(doc, "lists").contains(search)).toBe(true);
+    expect(search.getAttribute("placeholder")).toBe("Filter…");
+    expect(doc.querySelector('label[for="list-search"]')!.textContent).toBe("Filter lists by title or note");
+    expect(clear.hidden).toBe(true);
+
+    const type = (value: string) => {
+      search.value = value;
+      search.dispatchEvent(new w.Event("input", { bubbles: true }));
+    };
+    type("eVaL");
+    expect(rows(doc)).toEqual(["Eval harnesses", "Cooking"]);
+    expect(clear.hidden).toBe(false);
+    expect(doc.querySelector(".assistant-list-title mark")!.textContent).toBe("Eval");
+    // The Categories page is untouched by it, and the other way round.
+    expect((doc.getElementById("category-search") as HTMLInputElement).value).toBe("");
+    expect(doc.querySelectorAll(".tree-node")).toHaveLength(1);
+
+    type("golang");
+    expect(rows(doc)).toEqual([]);
+    expect(listsState(doc)).toBe("No lists match “golang”.");
+    expect((doc.getElementById("assistant-lists-body") as HTMLElement).hidden).toBe(true);
+
+    clear.click();
+    expect(search.value).toBe("");
+    expect(doc.activeElement).toBe(search);
+    expect(rows(doc)).toEqual(["Eval harnesses", "Cooking", "Rust"]);
+    expect(listsState(doc)).toBe("");
+
+    // Escape clears the query first, and only then steps back.
+    type("rust");
+    key(w, search, "Escape");
+    expect(search.value).toBe("");
+    expect(rows(doc)).toHaveLength(3);
+    expect(page(doc)).toBe("lists");
+    key(w, search, "Escape");
+    expect(page(doc)).toBe("root");
+  });
+
+  it("hides the filter while there are no lists to narrow", async () => {
+    const { doc } = await boot({ page: "lists", sidebarOpen: true });
+    expect((doc.getElementById("list-search-row") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("reorders a list by dragging its handle, with the drop line and Undo", async () => {
+    const { doc, w, calls, serverOrder } = await boot({
+      page: "lists",
+      sidebarOpen: true,
+      lists: [list(1, "A", [1]), list(2, "B", [2]), list(3, "C", [3])],
+    });
+    const grip = doc.querySelector('.assistant-list-grip[data-list-id="1"]') as HTMLElement;
+    expect(grip.getAttribute("aria-label")).toBe("Move “A”");
+    expect(grip.title).toBe("Drag to reorder, or press Up or Down");
+    expect(grip.parentElement!.firstElementChild).toBe(grip); // the row's left end
+    grip.setPointerCapture = () => {};
+    grip.releasePointerCapture = () => {};
+    // jsdom has no layout: every row is 40px tall, and the pointer is over row C.
+    const rowOf = (id: number) => doc.querySelector(`#assistant-lists-body > li[data-move-id="${id}"]`) as HTMLElement;
+    for (const li of Array.from(doc.querySelectorAll("#assistant-lists-body > li"))) {
+      (li as HTMLElement).getBoundingClientRect = () => ({ top: 100, height: 40, bottom: 140, left: 0, right: 200, width: 200 }) as DOMRect;
+    }
+    doc.elementFromPoint = () => rowOf(3).querySelector(".assistant-list-item");
+    const pointer = (type: string, y: number) =>
+      grip.dispatchEvent(new w.MouseEvent(type, { bubbles: true, clientX: 10, clientY: y }));
+    pointer("pointerdown", 100);
+    pointer("pointermove", 135); // the bottom half of C: after it
+    expect(rowOf(3).classList.contains("drop-after")).toBe(true);
+    expect(rowOf(1).classList.contains("is-move-source")).toBe(true);
+    expect(doc.getElementById("move-ghost")!.textContent).toBe("Move afterC");
+    pointer("pointerup", 135);
+    await tick();
+    expect(rowOf(3).classList.contains("drop-after")).toBe(false);
+    const put = calls.find((c) => c.method === "PUT")!;
+    expect(put.url).toBe("/api/assistant-lists/1/position");
+    expect(JSON.parse(put.body!)).toEqual({ beforeId: null });
+    expect(rows(doc)).toEqual(["B", "C", "A"]);
+    expect(serverOrder()).toEqual(["B", "C", "A"]);
+    expect(doc.querySelector(".toast")!.textContent).toContain("Moved “A” to 3 of 3.");
+
+    toastAction(doc, "Undo")!.click();
+    await tick();
+    expect(JSON.parse(calls.filter((c) => c.method === "PUT")[1]!.body!)).toEqual({ beforeId: 2 });
+    expect(rows(doc)).toEqual(["A", "B", "C"]);
+    expect(serverOrder()).toEqual(["A", "B", "C"]);
+  });
+
+  it("reorders from the keyboard with Up and Down on the focused handle", async () => {
+    const { doc, w, calls } = await boot({
+      page: "lists",
+      sidebarOpen: true,
+      lists: [list(1, "A", [1]), list(2, "B", [2]), list(3, "C", [3])],
+    });
+    const grip = () => doc.querySelector('.assistant-list-grip[data-list-id="2"]') as HTMLElement;
+    const announcer = doc.getElementById("lists-announcer")!;
+    grip().focus();
+    key(w, grip(), "ArrowUp");
+    await tick();
+    expect(rows(doc)).toEqual(["B", "A", "C"]);
+    expect(announcer.textContent).toBe("Moved “B” to 1 of 3.");
+    expect(doc.activeElement).toBe(grip()); // the keyboard stays on the handle it moved
+    expect(doc.querySelector(".toast")).toBeNull(); // the next arrow key is the undo
+    key(w, grip(), "ArrowUp");
+    await tick();
+    expect(announcer.textContent).toBe("“B” is already first.");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+    key(w, grip(), "ArrowDown");
+    key(w, grip(), "ArrowDown");
+    await tick();
+    // One move at a time: the second press landed while the first was saving.
+    await tick();
+    key(w, grip(), "ArrowDown");
+    await tick();
+    expect(rows(doc)).toEqual(["A", "C", "B"]);
+    expect(announcer.textContent).toBe("Moved “B” to 3 of 3.");
+  });
+
+  it("says why a reorder failed and keeps the order", async () => {
+    const { doc, w } = await boot({
+      page: "lists",
+      sidebarOpen: true,
+      failMoves: 1,
+      lists: [list(1, "A", [1]), list(2, "B", [2])],
+    });
+    const grip = doc.querySelector('.assistant-list-grip[data-list-id="2"]') as HTMLElement;
+    key(w, grip, "ArrowUp");
+    await tick();
+    expect(rows(doc)).toEqual(["A", "B"]);
+    expect(doc.querySelector(".toast")!.textContent).toContain("no longer here");
+  });
+
+  it("keeps the handles while filtering but moves nothing, and says why", async () => {
+    const { doc, w, calls } = await boot({
+      page: "lists",
+      sidebarOpen: true,
+      lists: [list(1, "Alpha", [1]), list(2, "Beta", [2]), list(3, "Alphabet", [3])],
+    });
+    const search = doc.getElementById("list-search") as HTMLInputElement;
+    search.value = "alpha";
+    search.dispatchEvent(new w.Event("input", { bubbles: true }));
+    const grip = doc.querySelector('.assistant-list-grip[data-list-id="3"]') as HTMLElement;
+    expect(grip.getAttribute("aria-disabled")).toBe("true");
+    expect(grip.title).toBe("Clear the filter to reorder lists");
+    expect(doc.getElementById("list-move-help")!.textContent).toBe("Clear the filter to reorder lists.");
+    key(w, grip, "ArrowUp");
+    grip.dispatchEvent(new w.MouseEvent("pointerdown", { bubbles: true, clientX: 10, clientY: 10 }));
+    grip.dispatchEvent(new w.MouseEvent("pointermove", { bubbles: true, clientX: 10, clientY: 90 }));
+    expect(doc.body.classList.contains("is-tree-dragging")).toBe(false);
+    grip.dispatchEvent(new w.MouseEvent("pointerup", { bubbles: true, clientX: 10, clientY: 90 }));
+    await tick();
+    expect(doc.getElementById("lists-announcer")!.textContent).toBe("Clear the filter to reorder lists");
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(rows(doc)).toEqual(["Alpha", "Alphabet"]);
+
+    search.value = "";
+    search.dispatchEvent(new w.Event("input", { bubbles: true }));
+    const again = doc.querySelector('.assistant-list-grip[data-list-id="3"]') as HTMLElement;
+    expect(again.hasAttribute("aria-disabled")).toBe(false);
+    expect(again.title).toBe("Drag to reorder, or press Up or Down");
+  });
+
+  it("follows a reorder made in another tab, and puts a list that arrives on top", async () => {
+    const { doc, stream, addList, reorderElsewhere } = await boot({
+      page: "lists",
+      sidebarOpen: true,
+      lists: [list(1, "A", [1]), list(2, "B", [2])],
+    });
+    reorderElsewhere([2, 1]);
+    stream().emit("changed");
+    await tick();
+    expect(rows(doc)).toEqual(["B", "A"]);
+    stream().emit("created", addList(list(3, "Fresh", [3])));
+    await tick();
+    expect(rows(doc)).toEqual(["Fresh", "B", "A"]);
   });
 
   it("says so when the lists cannot be read, with a way to try again", async () => {

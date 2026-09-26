@@ -1965,6 +1965,7 @@
 
   /** One category move in flight at a time: a second would race the first's order. */
   let treeMoveBusy = false;
+  /** The row drag in flight - a category's or a list's (`startRowDrag`) - or null. */
   let treeDrag = null;
 
   const treeMove = () => window.XBOTreeMove;
@@ -2235,7 +2236,42 @@
   }
 
   function startTreeDrag(e, grip, node, surface) {
-    if (treeDrag || cardDrag || treeMoveBusy || !treeMove()) return;
+    if (!treeMove()) return;
+    const editorSurface = surface === "editor";
+    startRowDrag(e, grip, {
+      node,
+      surface,
+      container: editorSurface ? catEditorTreeEl : treeEl,
+      scroller: editorSurface ? catEditorTreeEl : treeEl.closest(".sidebar-inner"),
+      busy: () => treeMoveBusy,
+      hover: hoverTreeDrop,
+      clear: clearTreeDrop,
+      idle: (drag) => setTreeGhost(drag, null),
+      press: () => openCategoryMovePicker(node, grip, surface),
+      drop: (drag) => {
+        if (drag.problem) {
+          showTreeMoveError(drag.problem.message, surface);
+          return;
+        }
+        void commitCategoryMove(node, drag.target, { surface }).then((result) => {
+          if (!result.ok) showTreeMoveError(result.error, surface);
+        });
+      },
+    });
+  }
+
+  /**
+   * The pointer half of every row drag - the category tree's (sidebar and
+   * editor) and the Lists page's: pointer capture, the slop that tells a
+   * press from a drag, the ghost, edge auto-scroll, Escape to cancel, and the
+   * cleanup. What a row under the pointer MEANS belongs to the surface's
+   * `spec`: `hover(drag, x, y)` aims (setting `drag.target`/`drag.problem`
+   * and drawing the indicator), `clear(drag)` takes the indicator down,
+   * `idle(drag)` labels the ghost before anything is aimed at, `press()` is
+   * a press that never became a drag, and `drop(drag)` a release on a target.
+   */
+  function startRowDrag(e, grip, spec) {
+    if (treeDrag || cardDrag || spec.busy()) return;
     if (e.button !== undefined && e.button !== 0) return;
     e.preventDefault();
     try {
@@ -2243,14 +2279,10 @@
     } catch (_) {
       /* no active pointer to capture (synthetic event); moves still bubble to the document */
     }
-    const editorSurface = surface === "editor";
-    const container = editorSurface ? catEditorTreeEl : treeEl;
+    const container = spec.container;
     const drag = {
-      node,
+      ...spec,
       grip,
-      surface,
-      container,
-      scroller: editorSurface ? catEditorTreeEl : treeEl.closest(".sidebar-inner"),
       source: grip.closest("li"),
       origin: { x: e.clientX, y: e.clientY },
       pointer: { x: e.clientX, y: e.clientY },
@@ -2270,7 +2302,7 @@
       container.classList.add("is-reordering");
       document.body.classList.add("is-tree-dragging");
       if (moveGhostEl) moveGhostEl.hidden = false;
-      setTreeGhost(drag, null);
+      spec.idle(drag);
       positionGhost(drag.pointer.x, drag.pointer.y);
       const tick = () => {
         if (treeDrag !== drag) return;
@@ -2289,7 +2321,7 @@
       }
       // Aim first: the ghost's label (and so its width) changes with the
       // target, and it is clamped to the viewport by that width.
-      hoverTreeDrop(drag, ev.clientX, ev.clientY);
+      spec.hover(drag, ev.clientX, ev.clientY);
       positionGhost(ev.clientX, ev.clientY);
     };
 
@@ -2305,8 +2337,9 @@
         /* capture already gone */
       }
       if (drag.raf != null) window.cancelAnimationFrame(drag.raf);
-      const { target, problem, started } = drag;
-      clearTreeDrop(drag);
+      const { target, started } = drag;
+      const aimed = { ...drag };
+      spec.clear(drag);
       if (drag.source) drag.source.classList.remove("is-move-source");
       container.classList.remove("is-reordering");
       document.body.classList.remove("is-tree-dragging", "is-tree-drop-invalid");
@@ -2315,21 +2348,15 @@
         moveGhostEl.classList.remove("is-over", "is-invalid");
       }
       treeDrag = null;
+      if (spec.done) spec.done();
       if (cancelled) return;
-      // A press that never became a drag is a press: the picker, so the grip
-      // is never a control that does nothing when you click it.
+      // A press that never became a drag is a press, so the grip is never a
+      // control that does nothing when you click it.
       if (!started) {
-        openCategoryMovePicker(node, grip, surface);
+        spec.press();
         return;
       }
-      if (!target) return;
-      if (problem) {
-        showTreeMoveError(problem.message, surface);
-        return;
-      }
-      void commitCategoryMove(node, target, { surface }).then((result) => {
-        if (!result.ok) showTreeMoveError(result.error, surface);
-      });
+      if (target) spec.drop(aimed);
     };
 
     const onUp = (ev) => {
@@ -9624,10 +9651,11 @@
   // ---- Lists: result lists sent over MCP ----------------------------------
   // An AI assistant connected to the MCP endpoint can hand the owner a set of
   // posts with `show_in_app` (e.g. "find my bookmarks about eval harnesses").
-  // Each arrives as a named list on the sidebar's Lists page, newest first;
+  // Each arrives as a named list at the top of the sidebar's Lists page,
+  // where the owner can filter them and drag them into their own order;
   // opening one shows its posts as ordinary pooled cards (read, favorite,
-  // summary, move and delete all work as anywhere else) in the order the
-  // assistant gave. A list is only a VIEW: deleting it never deletes a post.
+  // summary, move and delete all work as anywhere else), ordered like a
+  // category's. A list is only a VIEW: deleting it never deletes a post.
   // It arrives LIVE through a same-origin event stream and is announced with
   // a toast whose Open action is the only thing that changes the view - the
   // owner's current view is never yanked. Whether a list has been opened is
@@ -9641,9 +9669,18 @@
   const assistantItemsEl = document.getElementById("assistant-lists-body");
   const assistantStateEl = document.getElementById("assistant-lists-state");
   const listInfoEl = document.getElementById("list-info");
+  const listSearchRow = document.getElementById("list-search-row");
+  const listSearchInput = document.getElementById("list-search");
+  const listSearchClear = document.getElementById("list-search-clear");
+  const listsAnnouncer = document.getElementById("lists-announcer");
+  const listMoveHelp = document.getElementById("list-move-help");
 
-  /** Newest first, as the server sent them (plus live arrivals folded in). */
+  /** In the Lists page's order, as the server sent them (plus live arrivals folded in, first). */
   let assistantLists = [];
+  /** One reorder in flight at a time: a second would race the first's order. */
+  let listMoveBusy = false;
+  /** A re-render that arrived mid-drag, held until the drag lets go of its row. */
+  let listsRenderDeferred = false;
   /** Lists whose delete is waiting out its undo window: hidden, not yet gone. */
   const pendingListDeletes = new Set();
   /** "loading" until the first read answers, then "ready" - or "error" if it never did. */
@@ -9682,8 +9719,13 @@
     renderAssistantLists();
   }
 
+  /** The Lists page's filter query, as typed (empty when there is none). */
+  function listQuery() {
+    return listSearchInput ? listSearchInput.value.trim() : "";
+  }
+
   /** The page's loading / error / empty line; empty when there are rows to show. */
-  function renderAssistantListsState(count) {
+  function renderAssistantListsState(count, matched) {
     if (assistantListsState === "loading") {
       stateMessage(assistantStateEl, "loading", "Loading lists…");
       return;
@@ -9715,29 +9757,49 @@
       assistantStateEl.replaceChildren(box);
       return;
     }
+    if (matched === 0) {
+      stateMessage(assistantStateEl, "empty", assistantApi().noMatchMessage(listQuery()));
+      return;
+    }
     assistantStateEl.replaceChildren();
   }
 
   function renderAssistantLists() {
     if (!assistantItemsEl || !window.XBOAssistantLists) return;
+    // Re-rendering mid-drag would take the dragged row out from under the
+    // pointer; the drag re-renders as it lets go.
+    if (treeDrag && treeDrag.surface === "lists") {
+      listsRenderDeferred = true;
+      return;
+    }
     const api = assistantApi();
     const shown = api.visible(assistantLists, pendingListDeletes);
+    const query = listQuery();
+    const filtering = query.length > 0;
+    const matched = api.filter(shown, query);
     assistantClearBtn.hidden = shown.length === 0;
-    renderAssistantListsState(shown.length);
-    assistantItemsEl.hidden = shown.length === 0;
+    if (listSearchRow) listSearchRow.hidden = shown.length === 0;
+    renderAssistantListsState(shown.length, matched.length);
+    assistantItemsEl.hidden = matched.length === 0;
+    if (listMoveHelp) {
+      listMoveHelp.textContent = filtering
+        ? "Clear the filter to reorder lists."
+        : "Drag to move it, or press Up or Down arrow to move it one place.";
+    }
 
     // Keep the keyboard on the same control across a re-render (a live
     // arrival or a count refresh must not throw focus to <body>).
     const focused = document.activeElement;
-    const focusedClass = ["assistant-list-item", "assistant-list-info", "assistant-list-bin"].find(
+    const focusedClass = ["assistant-list-item", "assistant-list-grip", "assistant-list-info", "assistant-list-bin"].find(
       (c) => focused && focused.classList && focused.classList.contains(c),
     );
     const focusedId = focusedClass ? Number(focused.dataset.listId) : null;
     const infoId = listInfoAnchor ? Number(listInfoAnchor.dataset.listId) : null;
     const infoPinned = listInfoPinned;
     const now = Date.now();
-    const rows = shown.map((list) => {
+    const rows = matched.map((list) => {
       const li = el("li");
+      li.dataset.moveId = String(list.id);
       const btn = el("button", "assistant-list-item");
       btn.type = "button";
       btn.dataset.listId = String(list.id);
@@ -9746,7 +9808,9 @@
       btn.setAttribute("aria-label", api.itemLabel(list, isNew));
       // "New" flows after the title's last word, so the title keeps the row's width.
       const name = el("span", "assistant-list-name");
-      name.appendChild(el("span", "assistant-list-title", list.title));
+      const title = el("span", "assistant-list-title");
+      appendHighlighted(title, list.title, query.toLowerCase());
+      name.appendChild(title);
       // A plain space, not a margin, so a "New" wrapped to its own line starts flush.
       if (isNew) name.append(" ", el("span", "assistant-list-new", "New"));
       btn.append(name, listCounts(list));
@@ -9774,7 +9838,7 @@
       bin.title = `Delete list ${list.title}`;
       bin.appendChild(trashIcon());
       bin.addEventListener("click", () => deleteAssistantLists([list]));
-      li.append(btn, info, bin, desc);
+      li.append(createListGrip(list, filtering), btn, info, bin, desc);
       return li;
     });
     assistantItemsEl.replaceChildren(...rows);
@@ -9809,6 +9873,200 @@
       counts.appendChild(badge);
     }
     return counts;
+  }
+
+  // ---- reordering lists ------------------------------------------------------
+  // The category tree's handle and drag engine (`startRowDrag`), on a flat
+  // page: drop before or after a row, or Up/Down on the focused handle. The
+  // arithmetic is assistant-lists.js; `PUT /api/assistant-lists/:id/position`
+  // persists it, and its `changed` event carries the order to other tabs.
+  // While the filter narrows the page the handles stay, but say why they
+  // cannot move anything: a place among SOME lists means nothing.
+
+  function announceLists(message) {
+    if (listsAnnouncer) listsAnnouncer.textContent = message;
+  }
+
+  function createListGrip(list, filtering) {
+    const api = assistantApi();
+    const grip = el("button", "tree-grip assistant-list-grip");
+    grip.type = "button";
+    grip.dataset.listId = String(list.id);
+    grip.setAttribute("aria-label", `Move “${list.title}”`);
+    grip.setAttribute("aria-describedby", "list-move-help");
+    grip.title = api.gripHint(filtering);
+    grip.innerHTML = GRIP_SVG;
+    if (filtering) {
+      grip.setAttribute("aria-disabled", "true");
+      grip.addEventListener("click", () => announceLists(api.gripHint(true)));
+      grip.addEventListener("keydown", (e) => {
+        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+        e.preventDefault();
+        announceLists(api.gripHint(true));
+      });
+      return grip;
+    }
+    grip.addEventListener("keydown", (e) => onListGripKeydown(e, list));
+    grip.addEventListener("pointerdown", (e) => startListDrag(e, grip, list));
+    // A pointer press is settled by the drag engine; a keyboard click (detail 0) lands here.
+    grip.addEventListener("click", (e) => {
+      if (e.detail === 0) announceLists(listMoveHelp ? listMoveHelp.textContent : "");
+    });
+    return grip;
+  }
+
+  /** The rows on screen, in order: every list not waiting out a delete's Undo, through the filter. */
+  function shownLists() {
+    const api = assistantApi();
+    return api.filter(api.visible(assistantLists, pendingListDeletes), listQuery());
+  }
+
+  function onListGripKeydown(e, list) {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (listMoveBusy) return;
+    const api = assistantApi();
+    const target = api.keyboardTarget(assistantLists, shownLists(), list.id, e.key);
+    if (!target) {
+      announceLists(api.keyboardEdge(list, e.key));
+      return;
+    }
+    void commitListMove(list, target, { focusGrip: true, undo: false }).then((result) => {
+      if (!result.ok) showListMoveError(result.error);
+    });
+  }
+
+  function showListMoveError(message) {
+    announceLists(message);
+    showToast(message);
+  }
+
+  /**
+   * Carry out a reorder and adopt the order the server answers with. A drop
+   * offers Undo in the toast: the same route run backwards, to the place
+   * captured before the move. Resolves to `{ ok }` or `{ ok: false, error }`.
+   */
+  async function commitListMove(list, target, opts) {
+    const options = opts || {};
+    const api = assistantApi();
+    if (api.isNoOp(assistantLists, list.id, target)) return { ok: true };
+    if (listMoveBusy) return { ok: false, error: "Another move is still being saved." };
+    const before = api.currentPlace(assistantLists, list.id);
+    listMoveBusy = true;
+    let body;
+    try {
+      const res = await fetch(`/api/assistant-lists/${list.id}/position`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ beforeId: target.beforeId }),
+      });
+      body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not move that list.");
+    } catch (err) {
+      listMoveBusy = false;
+      return { ok: false, error: err.message || "Could not move that list." };
+    }
+    listMoveBusy = false;
+    if (Array.isArray(body.lists)) {
+      assistantLists = api.sorted(body.lists);
+      if (activeList) activeList = assistantLists.find((l) => l.id === activeList.id) || activeList;
+    }
+    renderAssistantLists();
+    const message = `Moved “${list.title}” to ${api.placeLabel(shownLists(), list.id)}.`;
+    announceLists(message);
+    if (options.focusGrip) {
+      const grip = assistantItemsEl.querySelector(`.assistant-list-grip[data-list-id="${list.id}"]`);
+      if (grip) grip.focus();
+    }
+    if (options.undo !== false && before) {
+      showToast(message, {
+        actions: [
+          {
+            label: "Undo",
+            onClick: () =>
+              void commitListMove(list, before, { undo: false }).then((result) => {
+                if (!result.ok) showListMoveError(result.error);
+              }),
+          },
+        ],
+      });
+    }
+    return { ok: true };
+  }
+
+  /** Aim a list drag at the row under the pointer: a line before or after it. */
+  function hoverListDrop(drag, x, y) {
+    const api = assistantApi();
+    const under = document.elementFromPoint(x, y);
+    const row = under && under.closest ? under.closest("[data-move-id]") : null;
+    if (!row || !drag.container.contains(row)) {
+      clearTreeDrop(drag);
+      setTreeGhost(drag, null);
+      return;
+    }
+    const overId = Number(row.dataset.moveId);
+    const rect = row.getBoundingClientRect();
+    const zone = api.dropZone(rect.top, rect.height, y);
+    if (row === drag.row && zone === drag.zone) return;
+    clearTreeDrop(drag);
+    drag.row = row;
+    drag.zone = zone;
+    const target = api.dropTarget(assistantLists, drag.node.id, overId, zone);
+    if (!target) {
+      setTreeGhost(drag, null);
+      return;
+    }
+    drag.target = target;
+    row.classList.add(`drop-${zone}`);
+    const over = assistantLists.find((l) => l.id === overId);
+    setTreeGhost(drag, { target, problem: null, zone, overId, overName: over ? over.title : "" });
+  }
+
+  function startListDrag(e, grip, list) {
+    startRowDrag(e, grip, {
+      node: { id: list.id, name: list.title },
+      surface: "lists",
+      container: assistantItemsEl,
+      scroller: assistantItemsEl.closest(".sidebar-inner"),
+      busy: () => listMoveBusy,
+      hover: hoverListDrop,
+      clear: clearTreeDrop,
+      idle: (drag) => setTreeGhost(drag, null),
+      press: () => announceLists(listMoveHelp ? listMoveHelp.textContent : ""),
+      drop: (drag) =>
+        void commitListMove(list, drag.target, {}).then((result) => {
+          if (!result.ok) showListMoveError(result.error);
+        }),
+      done: () => {
+        if (!listsRenderDeferred) return;
+        listsRenderDeferred = false;
+        renderAssistantLists();
+      },
+    });
+  }
+
+  function initListSearch() {
+    if (!listSearchInput) return;
+    const update = () => {
+      listSearchClear.hidden = listQuery().length === 0;
+      renderAssistantLists();
+    };
+    listSearchInput.addEventListener("input", update);
+    listSearchClear.addEventListener("click", () => {
+      listSearchInput.value = "";
+      update();
+      listSearchInput.focus();
+    });
+    // Escape clears the query without also stepping the sidebar back.
+    listSearchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && listSearchInput.value.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        listSearchInput.value = "";
+        update();
+      }
+    });
   }
 
   function infoIcon() {
@@ -10197,6 +10455,7 @@
 
   function initAssistantLists() {
     if (!assistantItemsEl || !window.XBOAssistantLists) return;
+    initListSearch();
     assistantClearBtn.addEventListener("click", () => {
       deleteAssistantLists(assistantApi().visible(assistantLists, pendingListDeletes));
     });
