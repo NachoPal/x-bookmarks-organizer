@@ -380,6 +380,8 @@ to look at - nothing an assistant does can file, move, re-categorize or delete a
 | `list_categories` | The category tree with descriptions and counts. |
 | `list_category_bookmarks` | A category's bookmarks, paged. |
 | `library_stats` | Counts and when the library last synced. |
+| `list_lists` | Every list in the app (the ones `show_in_app` makes): id, title, note, post count and created date - no posts. |
+| `get_list` | One list by id with all its posts in list order: author, handle, full text, URL, posted and saved dates. |
 | `show_in_app` | The one write: opens posts in the app as a named list. Takes `postIds` (ids or post URLs, up to 100), a `title` (up to 80 characters) and an optional `note` (up to 500). Posts not in the library are reported and left out; a call where none is found creates nothing. |
 
 **Lists from your assistant.** A `show_in_app` list appears in the running app at once: a toast

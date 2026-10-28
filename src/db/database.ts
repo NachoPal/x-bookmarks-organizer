@@ -122,7 +122,8 @@ export interface BookmarkPageOptions {
 
 /** Ordering for {@link Database.getAssistantListBookmarks}: the category orders. */
 export interface AssistantListSortOptions {
-  sort?: BookmarkSortOrder;
+  /** `list` is the order the posts were put in the list (`assistant_list_items.position`); `dir` does not apply. */
+  sort?: BookmarkSortOrder | 'list';
   dir?: BookmarkSortDirection;
   /** As {@link BookmarkPageOptions.rubricVersion}. */
   rubricVersion?: string;
@@ -1634,11 +1635,23 @@ export class Database {
   /**
    * A list's bookmarks, ordered exactly as {@link getBookmarksForCategory}
    * orders a category: `recent` (the default) or `score` (unranked last in
-   * both directions, scores scoped to `rubricVersion`).
+   * both directions, scores scoped to `rubricVersion`) - or `list`, the order
+   * the posts were put in the list, which only the MCP `get_list` reads.
    */
   getAssistantListBookmarks(id: number, opts: AssistantListSortOptions = {}): StoredBookmark[] {
     const asc = opts.dir === 'asc';
     const scored = opts.sort === 'score';
+    if (opts.sort === 'list') {
+      const rows = this.db
+        .prepare(
+          `SELECT b.* FROM assistant_list_items i
+           JOIN bookmarks b ON b.id = i.bookmark_id
+           WHERE i.list_id = ?
+           ORDER BY i.position ASC, b.id ASC`,
+        )
+        .all(id) as BookmarkRow[];
+      return rows.map(toStoredBookmark);
+    }
     const scoreJoin = scored
       ? `LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id${opts.rubricVersion ? ' AND sc.rubric_version = ?' : ''}`
       : '';

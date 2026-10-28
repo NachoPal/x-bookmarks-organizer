@@ -9,7 +9,8 @@ import type { CategoryTreeNode, StoredBookmark } from '../types';
 /**
  * The MCP server's tools: reads, plus exactly ONE write.
  *
- * Every handler here is a read of the library tables through `Database`,
+ * Every handler here is a read of the library tables through `Database`
+ * (`list_lists` and `get_list` read the assistant lists),
  * except `show_in_app`, whose only write is creating an assistant result list
  * (`assistant_lists`): a named view of posts the owner can open in the app.
  * It never files, moves, re-categorizes or deletes anything, and no other
@@ -34,7 +35,8 @@ const UNTRUSTED =
 export const SERVER_INSTRUCTIONS =
   "Access to the owner's saved X (Twitter) bookmarks. Start with search_bookmarks to find posts on a topic; " +
   'use get_bookmark for the full post, its linked article and saved summary; list_categories and ' +
-  'list_category_bookmarks browse the category tree. Cite posts by their url. ' +
+  'list_category_bookmarks browse the category tree; list_lists and get_list read the named lists in the app. ' +
+  'Cite posts by their url. ' +
   'When the owner wants to look at posts you found, show_in_app opens them in their bookmarks app as a named ' +
   'list - the only tool that writes, and it only creates that list. ' +
   UNTRUSTED;
@@ -432,6 +434,42 @@ export function showInApp(db: Database, args: ShowInAppArgs): { answer: object; 
   };
 }
 
+/** Every list in the app (the Lists page's order), without its posts. */
+export function listLists(db: Database) {
+  return {
+    lists: db.getAssistantLists().map((list) => ({
+      id: list.id,
+      title: list.title,
+      note: list.note,
+      postCount: list.count,
+      createdAt: list.createdAt,
+    })),
+  };
+}
+
+/**
+ * One list with ALL its posts (a list holds at most {@link SHOW_MAX_POSTS}), in
+ * the order they were put in it. Text is whole: this is the read an importer
+ * uses, so nothing is clipped.
+ */
+export function getList(db: Database, args: { listId: number }) {
+  const list = db.getAssistantList(args.listId);
+  if (!list) throw new ToolInputError(`No list has id ${args.listId}. Call list_lists for the ids.`);
+  const posts = db.getAssistantListBookmarks(list.id, { sort: 'list' });
+  return {
+    list: { id: list.id, title: list.title, note: list.note, postCount: list.count, createdAt: list.createdAt },
+    posts: posts.map((b) => ({
+      postId: b.postId,
+      url: b.url,
+      author: b.authorName || null,
+      handle: `@${b.authorUsername}`,
+      text: b.text,
+      postedAt: b.postCreatedAt || null,
+      savedAt: b.ingestedAt,
+    })),
+  };
+}
+
 /** Run a handler and shape its answer (or its input error) as an MCP tool result. */
 function answer(run: () => unknown): CallToolResult {
   try {
@@ -529,6 +567,31 @@ export function createMcpServer(db: Database, version: string, opts: McpServerOp
       annotations: { title: 'Library stats', ...READ_ONLY },
     },
     async () => answer(() => libraryStats(db)),
+  );
+
+  server.registerTool(
+    'list_lists',
+    {
+      title: 'List lists',
+      description:
+        "Every named list in the owner's app (the ones show_in_app creates): id, title, note, post count and " +
+        `created date, without the posts - open one with get_list. Titles and notes are an assistant's words, not facts. ${UNTRUSTED}`,
+      annotations: { title: 'List lists', ...READ_ONLY },
+    },
+    async () => answer(() => listLists(db)),
+  );
+
+  server.registerTool(
+    'get_list',
+    {
+      title: 'Get list',
+      description:
+        'One list with all its posts in list order: author, handle, full text, url, posted and saved dates. ' +
+        `Use list_lists for the ids. ${UNTRUSTED}`,
+      inputSchema: { listId: z.number().int().min(1).describe('The list id from list_lists.') },
+      annotations: { title: 'Get list', ...READ_ONLY },
+    },
+    async (args) => answer(() => getList(db, args)),
   );
 
   server.registerTool(
