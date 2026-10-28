@@ -120,14 +120,16 @@ describe('the MCP endpoint', () => {
     return { isError: result.isError === true, text, json: () => JSON.parse(text) };
   }
 
-  it('lists five read-only tools and one non-destructive write, show_in_app', async () => {
+  it('lists seven read-only tools and one non-destructive write, show_in_app', async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       'get_bookmark',
+      'get_list',
       'library_stats',
       'list_categories',
       'list_category_bookmarks',
+      'list_lists',
       'search_bookmarks',
       'show_in_app',
     ]);
@@ -136,7 +138,7 @@ describe('the MCP endpoint', () => {
       expect(tool.annotations?.destructiveHint).toBe(false);
     }
     expect(tools.find((t) => t.name === 'show_in_app')!.description).toMatch(/only creates that list/);
-    for (const name of ['search_bookmarks', 'get_bookmark', 'list_category_bookmarks']) {
+    for (const name of ['search_bookmarks', 'get_bookmark', 'list_category_bookmarks', 'list_lists', 'get_list']) {
       expect(tools.find((t) => t.name === name)!.description).toMatch(/untrusted third-party content/);
     }
     expect(client.getInstructions()).toMatch(/untrusted/);
@@ -264,6 +266,112 @@ describe('the MCP endpoint', () => {
     for (const secret of [REFRESH_TOKEN, token, db.getState(MCP_ACCESS_KEY)!, 'claude-cli', 'configuredAt', 'tokenHash']) {
       expect(everything).not.toContain(secret);
     }
+  });
+
+  describe('list_lists and get_list', () => {
+    const dumpEverything = () =>
+      JSON.stringify([db.getAllBookmarks(), db.getAllCategories(), db.getAssistantLists(), readMcpAccess(db)]);
+    const ids = (...postIds: string[]) => postIds.map((p) => db.getBookmarkByPostId(p)!.id);
+
+    it('list_lists answers an empty library of lists', async () => {
+      const client = await connect();
+      expect((await call(client, 'list_lists')).json()).toEqual({ lists: [] });
+      await client.close();
+    });
+
+    it('list_lists returns every list with id, title, note, post count and created date, no posts', async () => {
+      const a = db.createAssistantList({ title: 'Older', note: 'First one', bookmarkIds: ids('1', '2') });
+      const b = db.createAssistantList({ title: 'Newer', note: null, bookmarkIds: ids('3') });
+      const client = await connect();
+      const res = await call(client, 'list_lists');
+      const answer = res.json();
+      // The Lists page's order: a new list goes first.
+      expect(answer.lists.map((l: { id: number }) => l.id)).toEqual([b.id, a.id]);
+      expect(answer.lists[1]).toEqual({
+        id: a.id,
+        title: 'Older',
+        note: 'First one',
+        postCount: 2,
+        createdAt: a.createdAt,
+      });
+      expect(answer.lists[0]).toMatchObject({ title: 'Newer', note: null, postCount: 1 });
+      expect(res.text).not.toContain('Sourdough');
+      await client.close();
+    });
+
+    it('get_list returns the posts in list order with author, handle, full text, url and dates', async () => {
+      const list = db.createAssistantList({ title: 'Mine', note: 'Why', bookmarkIds: ids('4', '1', '3') });
+      const long = 'x'.repeat(LIST_TEXT_CHARS * 3);
+      const client = await connect();
+      const answer = (await call(client, 'get_list', { listId: list.id })).json();
+      expect(answer.list).toEqual({ id: list.id, title: 'Mine', note: 'Why', postCount: 3, createdAt: list.createdAt });
+      // Neither newest-first nor by id: exactly the order the list was made in.
+      expect(answer.posts.map((p: { postId: string }) => p.postId)).toEqual(['4', '1', '3']);
+      expect(answer.posts[1]).toMatchObject({
+        postId: '1',
+        url: 'https://x.com/user1/status/1',
+        author: 'User 1',
+        handle: '@user1',
+        text: 'Great read on harness design https://t.co/link1',
+        postedAt: '2024-01-01T00:00:00.000Z',
+        savedAt: WHEN,
+      });
+      // Whole text, never the clipped list-entry form.
+      db.createAssistantList({ title: 'Long', note: null, bookmarkIds: ids('2') });
+      db.storeCategorizedBatch([bm('5', long, { postCreatedAt: '2024-05-01T00:00:00.000Z' })], () => [], WHEN);
+      const longList = db.createAssistantList({ title: 'Long text', note: null, bookmarkIds: ids('5') });
+      const full = (await call(client, 'get_list', { listId: longList.id })).json();
+      expect(full.posts[0].text).toBe(long);
+      expect(full.posts[0].textTruncated).toBeUndefined();
+      await client.close();
+    });
+
+    it('get_list answers an empty list, and a list whose posts were deleted, with no posts', async () => {
+      const empty = db.createAssistantList({ title: 'Empty', note: null, bookmarkIds: [] });
+      const gone = db.createAssistantList({ title: 'Gone', note: null, bookmarkIds: ids('2') });
+      db.deleteBookmark(ids('2')[0]!);
+      const client = await connect();
+      for (const list of [empty, gone]) {
+        const answer = (await call(client, 'get_list', { listId: list.id })).json();
+        expect(answer.list.postCount).toBe(0);
+        expect(answer.posts).toEqual([]);
+      }
+      await client.close();
+    });
+
+    it('get_list answers an unknown id as a tool error that points at list_lists', async () => {
+      const client = await connect();
+      const res = await call(client, 'get_list', { listId: 9999 });
+      expect(res.isError).toBe(true);
+      expect(res.text).toMatch(/No list has id 9999.*list_lists/);
+      // A malformed id is refused by the schema, not guessed at.
+      await expect(client.callTool({ name: 'get_list', arguments: { listId: 'abc' } })).resolves.toMatchObject({ isError: true });
+      await client.close();
+    });
+
+    it('writes nothing, and sits behind the same token as every other tool', async () => {
+      const list = db.createAssistantList({ title: 'Mine', note: null, bookmarkIds: ids('1') });
+      const before = dumpEverything();
+      const client = await connect();
+      await call(client, 'list_lists');
+      await call(client, 'get_list', { listId: list.id });
+      await client.close();
+      expect(dumpEverything()).toBe(before);
+
+      const raw = (name: string, headers: Record<string, string>) =>
+        fetch(`${base}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { listId: list.id } } }),
+        });
+      for (const name of ['list_lists', 'get_list']) {
+        expect((await raw(name, {})).status).toBe(401);
+        expect((await raw(name, { authorization: `Bearer ${token}x` })).status).toBe(401);
+        expect((await raw(name, { authorization: `Bearer ${token}` })).status).toBe(200);
+      }
+      setMcpEnabled(db, false);
+      expect((await raw('get_list', { authorization: `Bearer ${token}` })).status).toBe(404);
+    });
   });
 
   describe('show_in_app', () => {

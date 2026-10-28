@@ -1577,7 +1577,9 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   the token. Settings UI: the "AI assistants (MCP)" group in the gear panel, words and snippets in the
   pure `mcp-settings.js` (`XBOMcpSettings`), snippet URL from the port the server actually bound.
 - **Read-only contract with exactly ONE write** (`tools.ts`): every tool is a `(db, args)` read
-  returning compact JSON with bounded pages and `truncated` flags, except `show_in_app`, whose only
+  returning compact JSON with bounded pages and `truncated` flags (`get_list` returns a whole list
+  - at most `SHOW_MAX_POSTS` - with full post text, in the order the posts were put in it:
+  `getAssistantListBookmarks`'s `sort: 'list'`), except `show_in_app`, whose only
   write is creating an assistant result list (`assistant_lists` + `assistant_list_items`, see
   below) - never a filing, move, re-categorize or delete. No other tool may write, and none may read
   `run_state` beyond `getLastSyncedAt` - settings, the X refresh token, keys and the MCP token must
@@ -1610,8 +1612,9 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   (`#list-info`, one `<body>` popover); the list view has no header. A list is ordered by the
   same `#sort-bar` with exactly a category's options and default (Newest / Top score), under its
   OWN stored scope (`XBOSortOrder` `scope: "list"`, keys `xbo:list-sort-*`;
-  `GET /api/assistant-lists/:id?sort=&dir=`). There is deliberately no "assistant's order" option:
-  `show_in_app` accepts posts in any order and `position` is stored but never displayed.
+  `GET /api/assistant-lists/:id?sort=&dir=`). There is deliberately no "assistant's order" option
+  in the viewer: `show_in_app` accepts posts in any order and `position` is never displayed there -
+  only the MCP `get_list` reads it.
 - **Search** (`src/db/search.ts`): FTS5 table `bookmark_fts`, one row per bookmark, kept current by
   TRIGGERS on the six source tables (every trigger re-derives the affected documents from ONE SQL
   definition), so a new write path needs no index code. SQL cannot strip HTML, so
