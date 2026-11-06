@@ -1035,7 +1035,9 @@ bookmark/article content, so treat it as hostile input, never trusted markup. `m
 `dompurify` are vendored as plain `<script>` globals under `src/web/public/vendor/` (copied
 into `dist/` by `copy-assets.js` like every other public asset) rather than loaded from a CDN,
 matching how the rest of the viewer ships; re-vendor by copying `node_modules/marked/lib/marked.umd.js`
-and `node_modules/dompurify/dist/purify.min.js`. `render-markdown.test.ts` exercises the same
+and `node_modules/dompurify/dist/purify.min.js` (minus the `sourceMappingURL` line) on EVERY bump of
+either package - `npm audit` cannot see these copies, so `vendor.test.ts` fails until they match
+the installed builds. `render-markdown.test.ts` exercises the same
 module in Node via `jsdom` (added as a devDependency solely for this - `DOMPurify` needs a real
 DOM and silently no-ops against `linkedom`, unlike the rest of this codebase's browser-JS tests
 which avoid a DOM dependency entirely) plus real `marked`/`dompurify`, injected as its offline
