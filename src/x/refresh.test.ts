@@ -8,7 +8,7 @@ import type { RawBookmark } from '../types';
 import { mapBookmarks } from './article';
 import type { BookmarkPage, XClient } from './client';
 import { mediaFixturePage } from './media.fixtures';
-import { X_OWNED_READ_USD, X_POST_READ_USD, bookmarkReadCost } from './pricing';
+import { X_OWNED_READ_USD, X_POST_READ_USD, bookmarkReadCost, formatCostRange } from './pricing';
 import { estimateRefresh, refreshBookmarks } from './refresh';
 
 const WHEN = '2026-09-01T00:00:00.000Z';
@@ -189,6 +189,9 @@ describe('estimateRefresh', () => {
     const cost = bookmarkReadCost(303, 100);
     expect(cost.low).toBeCloseTo(0.303);
     expect(cost.high).toBeCloseTo(0.803);
+    expect(formatCostRange(cost)).toBe('$0.30-$0.81');
+    expect(formatCostRange({ low: 0.01, high: 0.01 })).toBe('about $0.01');
+    expect(formatCostRange({ low: 0.001, high: 0.004 })).toBe('under $0.01');
   });
 
   it('a small library tests on what it has', () => {

@@ -28,19 +28,20 @@ const STATE = {
 
 describe("XBORefresh - what a refresh costs and says", () => {
   it("formats an estimate as a range, a single figure, or under a cent", () => {
-    expect(refresh.costText({ low: 0.303, high: 0.803 })).toBe("$0.30-$0.80");
+    expect(refresh.costText({ low: 0.303, high: 0.803 })).toBe("$0.30-$0.81");
     expect(refresh.costText({ low: 0.01, high: 0.01 })).toBe("about $0.01");
+    expect(refresh.costText({ low: 0.01, high: 0.015 })).toBe("$0.01-$0.02"); // the top of the range rounds up
     expect(refresh.costText({ low: 0.002, high: 0.004 })).toBe("under $0.01");
   });
 
   it("states each scope's reads and cost under its button", () => {
     expect(refresh.scopeLine(STATE, "newest")).toBe("Reads 10 posts from X · $0.01-$0.03");
-    expect(refresh.scopeLine(STATE, "all")).toBe("Reads 303 posts from X · $0.30-$0.80");
+    expect(refresh.scopeLine(STATE, "all")).toBe("Reads 303 posts from X · $0.30-$0.81");
   });
 
   it("names the price before the scope in the confirmation", () => {
     const all = STATE.estimates.all;
-    expect(refresh.confirmCost(all)).toMatch(/^Estimated \$0\.30-\$0\.80, billed by X\. .*\$0\.001 per post/);
+    expect(refresh.confirmCost(all)).toMatch(/^Estimated \$0\.30-\$0\.81, billed by X\. .*\$0\.001 per post/);
     expect(refresh.confirmTitle("all", all)).toBe("Refresh all 303 bookmarks from X?");
     expect(refresh.confirmTitle("newest", STATE.estimates.newest)).toBe("Refresh the 10 newest bookmarks?");
     expect(refresh.confirmLabel("all", all)).toBe("Refresh 303 bookmarks");

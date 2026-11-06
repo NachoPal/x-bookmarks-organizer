@@ -20,7 +20,7 @@ import { buildSettingsCatalog } from '../settings/catalog';
 import { applySettingsToConfig, effectiveSettings } from '../settings/settings';
 import { getAuthenticatedClient } from '../x/auth';
 import type { XClient } from '../x/client';
-import { X_OWNED_READ_USD, X_POST_READ_USD, X_PRICES_CHECKED_ON } from '../x/pricing';
+import { X_OWNED_READ_USD, X_POST_READ_USD, X_PRICES_CHECKED_ON, formatCostRange } from '../x/pricing';
 import {
   estimateRefresh,
   refreshBookmarks,
@@ -67,7 +67,7 @@ export function refreshBillingLine(estimate: RefreshEstimate): string {
   return (
     `Billing: X API owned reads, $${X_OWNED_READ_USD.toFixed(3)} per post read ` +
     `(a quoted post may count as a $${X_POST_READ_USD.toFixed(3)} read; prices from X's docs, ${X_PRICES_CHECKED_ON}). ` +
-    `Estimated $${estimate.cost.low.toFixed(2)}-$${estimate.cost.high.toFixed(2)} for this refresh.`
+    `Estimated ${formatCostRange(estimate.cost)} for this refresh.`
   );
 }
 

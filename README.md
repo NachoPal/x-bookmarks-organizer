@@ -227,6 +227,35 @@ exactly which one is missing and where it looked, rather than failing mid-sync. 
 additionally needs `TYPESAFE_API_KEY` on that same chain, and it is **paid per token** - the app
 says so before you pick it, and the sync's progress repeats it on every run.
 
+### Reading the text in images
+
+Many bookmarks are screenshots - of a document, a chart, another post. Every sync now asks X for
+each post's photos (and their alt text) and for the photos of the post it quotes, in the same
+bookmarks request it already makes, so new bookmarks get them at no extra X cost. The text in each
+photo is read **locally**: macOS Vision (built in, offline, free) or, elsewhere, Tesseract when it
+is installed (`brew install tesseract` / `apt install tesseract-ocr`). With neither, images are
+kept and simply marked unreadable until one exists. Videos and GIFs keep their alt text only.
+
+That text feeds full-text search (the MCP `search_bookmarks`), both categorization passes, summaries,
+and the MCP `get_bookmark` answer, always labelled as coming from an image. In the app it is shown
+lightly: the summary modal has a collapsed **Text in image**; the embedded post is unchanged. A sync
+reads its new bookmarks' images (for up to 45 seconds) before filing them, and anything left is read
+in the background - OCR never holds a sync up.
+
+**Bookmarks you already have** get their images through a one-time **Refresh from X** in the Sync
+panel. It re-reads your bookmarks from X and updates them in place - text, quoted posts, X Articles,
+images - and never touches your categories, lists, scores, summaries, read or favorite state, and
+never re-adds a post you deleted. It is a paid X read (owned reads, $0.001 per post; a quoted post
+may count as a $0.005 read - [X pricing](https://docs.x.com/x-api/getting-started/pricing), checked
+2026-11-06), so it offers two choices, each showing its estimated cost and asking for confirmation:
+**Test: refresh the 10 newest bookmarks** (about a cent) and **Refresh all bookmarks**. CLI fallback:
+
+```bash
+node dist/index.js refresh-from-x --newest --dry-run   # the estimate, no X call
+node dist/index.js refresh-from-x [--newest]           # refresh in place, then read the images
+node dist/index.js read-image-text                     # read any image not read yet (free, local)
+```
+
 ### From the CLI
 
 **1. One-time login** (opens a browser once; stores a rotating refresh token locally so all later
@@ -375,8 +404,8 @@ to look at - nothing an assistant does can file, move, re-categorize or delete a
 
 | Tool | What it answers |
 | --- | --- |
-| `search_bookmarks` | Full-text search over post text, authors, quoted posts, linked article titles and text, X Articles and saved summaries, best match first, with a highlighted snippet. Filters: category (id or path, sub-categories included), posted after/before, read/unread/favorite; paged (default 10, max 50). |
-| `get_bookmark` | One post in full: text, author, date, URL, categories, quoted post, linked article text (capped) and saved summary. |
+| `search_bookmarks` | Full-text search over post text, authors, quoted posts, linked article titles and text, X Articles, the text in images and saved summaries, best match first, with a highlighted snippet. Filters: category (id or path, sub-categories included), posted after/before, read/unread/favorite; paged (default 10, max 50). |
+| `get_bookmark` | One post in full: text, author, date, URL, categories, quoted post, linked article text (capped), the text in its and its quoted post's images (alt text + OCR) and saved summary. |
 | `list_categories` | The category tree with descriptions and counts. |
 | `list_category_bookmarks` | A category's bookmarks, paged. |
 | `library_stats` | Counts and when the library last synced. |
@@ -426,6 +455,7 @@ interface BookmarkContent {
   quotedPost: { kind: 'quoted-post'; authorUsername: string; authorName: string; text: string } | null;
   linkedArticle: { kind: 'external-article'; url: string; title: string | null; description: string | null; body: string | null } | null;
   xArticle: { kind: 'x-article'; title: string | null; previewText: string | null; body: string | null; quoted: boolean } | null;
+  images: { kind: 'image'; from: 'post' | 'quoted-post'; mediaType: string; altText: string | null; text: string | null }[];
 }
 ```
 
@@ -440,6 +470,9 @@ interface BookmarkContent {
   usable link.
 - `xArticle` is an X-native long-form Article (`x.com/i/article/<id>`) this bookmark hosts or
   quotes (`quoted` distinguishes which), with its title/preview/full body. Null otherwise.
+- `images` is every photo/video/GIF on the post and on the post it quotes (`from`), with the
+  author's alt text and the text local OCR read from it (`text`, null until read; photos only).
+  Empty when there are none.
 
 ## Configuration (optional env vars)
 

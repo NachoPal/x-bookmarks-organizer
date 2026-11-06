@@ -20,16 +20,18 @@
     return n + " " + (n === 1 ? one : many);
   }
 
-  function usd(n) {
-    return "$" + n.toFixed(2);
+  /** Cents, rounded the way an estimate must be: the upper bound never rounds down. */
+  function usd(n, up) {
+    var cents = up ? Math.ceil(n * 100 - 1e-9) : Math.round(n * 100);
+    return "$" + (cents / 100).toFixed(2);
   }
 
   /** "about $0.01", "$0.30-$0.80", or "under $0.01" - from a `{ low, high }` estimate. */
   function costText(cost) {
     if (!cost) return "";
     if (cost.high < 0.005) return "under $0.01";
-    var low = usd(cost.low);
-    var high = usd(cost.high);
+    var low = usd(cost.low, false);
+    var high = usd(cost.high, true);
     return low === high ? "about " + low : low + "-" + high;
   }
 

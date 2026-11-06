@@ -155,13 +155,13 @@ describe('"Refresh from X" in the Sync panel', () => {
     const { byId, posted } = await boot();
     expect(byId("refresh-test-btn").textContent!.trim()).toBe("Test: refresh the 10 newest bookmarks");
     expect(byId("refresh-test-cost").textContent).toBe("Reads 10 posts from X · $0.01-$0.03");
-    expect(byId("refresh-all-cost").textContent).toBe("Reads 303 posts from X · $0.30-$0.80");
+    expect(byId("refresh-all-cost").textContent).toBe("Reads 303 posts from X · $0.30-$0.81");
     expect((byId("refresh-all-btn") as HTMLButtonElement).disabled).toBe(false);
 
     byId("refresh-all-btn").click();
     expect(byId("refresh-confirm-modal").hidden).toBe(false);
     expect(byId("refresh-confirm-title").textContent).toBe("Refresh all 303 bookmarks from X?");
-    expect(byId("refresh-confirm-cost-text").textContent).toMatch(/^Estimated \$0\.30-\$0\.80, billed by X/);
+    expect(byId("refresh-confirm-cost-text").textContent).toMatch(/^Estimated \$0\.30-\$0\.81, billed by X/);
     expect(byId("refresh-confirm-ok").textContent).toBe("Refresh 303 bookmarks");
     expect(posted).toEqual([]); // opening the dialog spends nothing
 

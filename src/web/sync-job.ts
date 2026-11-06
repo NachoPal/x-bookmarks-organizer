@@ -111,7 +111,7 @@ export function createSyncJob(deps: SyncJobDeps): SyncJob {
         categorizer,
         batchSize: config.batchSize,
         maxDepth: config.maxCategoryDepth,
-        readImageText: images ? (postIds) => images.readFor(postIds, SYNC_IMAGE_TEXT_BUDGET_MS) : undefined,
+        readImageText: images ? (postIds) => images.readFor(postIds, SYNC_IMAGE_TEXT_BUDGET_MS, log) : undefined,
         logger: log,
       })) as IngestSummary;
     } finally {

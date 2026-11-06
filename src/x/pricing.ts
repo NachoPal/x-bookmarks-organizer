@@ -30,3 +30,15 @@ export function bookmarkReadCost(posts: number, quoted: number): CostRange {
   const low = posts * X_OWNED_READ_USD;
   return { low, high: low + quoted * X_POST_READ_USD };
 }
+
+/**
+ * A range for a person to read: `about $0.01`, `$0.30-$0.81`, or `under $0.01`.
+ * The top of the range rounds UP, so an estimate never understates (the
+ * viewer's `XBORefresh.costText` applies the same rule).
+ */
+export function formatCostRange(cost: CostRange): string {
+  if (cost.high < 0.005) return 'under $0.01';
+  const low = `$${(Math.round(cost.low * 100) / 100).toFixed(2)}`;
+  const high = `$${(Math.ceil(cost.high * 100 - 1e-9) / 100).toFixed(2)}`;
+  return low === high ? `about ${low}` : `${low}-${high}`;
+}

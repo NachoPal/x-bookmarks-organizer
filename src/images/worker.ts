@@ -104,9 +104,14 @@ export class ImageTextWorker {
    * Read only `postIds`' images, awaited and bounded by `budgetMs` - what a
    * sync does for its new bookmarks before filing them, so their screenshots
    * inform categorization. Whatever the budget leaves stays `pending` for the
-   * background pass. Never throws.
+   * background pass. `logger` (the sync's own log, so the owner sees it)
+   * defaults to the worker's. Never throws.
    */
-  async readFor(postIds: string[], budgetMs: number): Promise<ImageTextSummary | null> {
+  async readFor(
+    postIds: string[],
+    budgetMs: number,
+    logger: ((message: string) => void) | undefined = this.deps.logger,
+  ): Promise<ImageTextSummary | null> {
     if (postIds.length === 0) return null;
     try {
       return await readImageText(
@@ -115,12 +120,12 @@ export class ImageTextWorker {
           recognizer: await this.recognizer(),
           fetcher: this.fetcher,
           concurrency: this.deps.concurrency,
-          logger: this.deps.logger,
+          logger,
         },
         { postIds, deadline: Date.now() + budgetMs },
       );
     } catch (err) {
-      this.deps.logger?.(`Could not read the text in images: ${err instanceof Error ? err.message : String(err)}`);
+      logger?.(`Could not read the text in images: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }

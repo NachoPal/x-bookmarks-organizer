@@ -1270,7 +1270,8 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   box-shadow: var(--shadow-lg);
 }
 .sync-panel {
-  width: min(17rem, calc(100vw - 2 * var(--space-4)));
+  /* Wide enough for "Refresh from X"'s longest action on one line. */
+  width: min(20.5rem, calc(100vw - 2 * var(--space-4)));
 }
 .settings-panel-title {
   margin: 0;
@@ -4903,8 +4904,13 @@ body[data-restoring] .topbar-prompt {
   max-height: 40vh;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--space-3) var(--space-5);
+  padding: var(--space-3) var(--space-5) var(--space-5);
   border-top: 1px solid var(--color-border);
+}
+/* The same column as the summary above it, so the two read as one text. */
+.summary-images-details {
+  max-width: var(--reader-measure);
+  margin: 0 auto;
 }
 .summary-images-summary {
   /* Left at the default `list-item` so the disclosure marker survives. */
@@ -4943,7 +4949,6 @@ body[data-restoring] .topbar-prompt {
   font-style: italic;
 }
 .summary-image-text {
-  max-width: 70ch;
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
