@@ -74,6 +74,7 @@ export function buildTaxonomyPrompt(
   maxDepth: number,
   articleContext?: Map<string, ArticleContext>,
   batch?: TaxonomyBatch,
+  mode: 'design' | 'redesign' = 'design',
 ): string {
   const items = bookmarks.map((bm, i) => compactLine(bm, i, articleContext)).join('\n');
   const scope = batch
@@ -85,7 +86,7 @@ ${scope}
 
 # Existing categories
 ${existingTreeText}
-${EXISTING_RULE}
+${existingRuleFor(mode)}
 
 # Design goals
 - Look across ALL bookmarks before choosing any label. Do not anchor on the first few you read.
@@ -108,9 +109,14 @@ ${OUTPUT_SPEC}`;
  *   anchors exist (the owner's own categories).
  * - `incremental`: every later sync - the new bookmarks against the WHOLE
  *   current tree, answering only with the categories they need that the tree
- *   lacks. Nothing existing is ever renamed, moved, merged or dropped.
+ *   lacks. Nothing existing is ever renamed, moved, merged or dropped. The
+ *   in-app "Keep the tree, only add" proposal runs it over every bookmark.
+ * - `redesign`: the in-app "Propose a new tree" - the `design` prompt, but
+ *   the current tree is CONTEXT, not anchors: the answer may restructure
+ *   anything, the owner's categories included, because the owner reviews the
+ *   proposal before anything changes (`src/categorize/proposal.ts`).
  */
-export type TaxonomyMode = 'design' | 'incremental';
+export type TaxonomyMode = 'design' | 'incremental' | 'redesign';
 
 /**
  * Build the incremental pass-1 prompt: the new bookmarks of a sync against
@@ -168,6 +174,18 @@ export interface TaxonomyBatch {
  */
 const EXISTING_RULE =
   'If the section above lists categories, they already exist and are FIXED ANCHORS. Nodes marked [owner] were created by the person by hand, because they want every bookmark that fits to be filed there. Keep every listed node exactly as it is - the same name, at the same place in the hierarchy - and include each one in your output tree verbatim (without the [owner] marker, which is not part of the name). Never rename, merge, move or drop them, and never create a second category that means the same thing as one of them. Design everything else around them: new categories beside them, and new sub-categories inside them (including inside [owner] nodes) wherever the material supports it. If it says there are none, design the whole tree from scratch.';
+
+/**
+ * How a `redesign` treats the tree it is shown: as the current organization,
+ * for context only. Nothing is fixed - the owner reviews and edits the
+ * proposal before it replaces anything.
+ */
+const REDESIGN_EXISTING_RULE =
+  'The section above is the person\'s CURRENT category tree, shown for context only. You are designing a complete REPLACEMENT for it: keep a category where it still organizes the collection well, and freely rename, merge, split, move or drop any of them - including nodes marked [owner], which the person created by hand and will review in your proposal before anything changes. Never copy the [owner] marker into a name. If it says there are none, design the whole tree from scratch.';
+
+function existingRuleFor(mode: 'design' | 'redesign'): string {
+  return mode === 'redesign' ? REDESIGN_EXISTING_RULE : EXISTING_RULE;
+}
 
 /** How incremental pass 1 treats the tree it is shown: every node is FIXED. */
 const INCREMENTAL_EXISTING_RULE =
@@ -229,7 +247,7 @@ The collection was too large to design in one request, so it was split into ${pa
 
 # Existing categories
 ${existingTreeText}
-${EXISTING_RULE}
+${existingRuleFor(mode)}
 
 # Merge rules
 - Treat categories that mean the same thing as ONE category even when their names differ (e.g. "AI Agents" and "Agentic AI", or "JS" and "JavaScript"). Judge by the descriptions, not only the names: labels that look different can cover the same material, and labels that look alike can cover different material.
@@ -460,7 +478,7 @@ export class LlmTaxonomyDesigner implements TaxonomyDesigner {
     const { minDepth, maxDepth } = this.options;
     return mode === 'incremental'
       ? buildIncrementalTaxonomyPrompt(bookmarks, existingTreeText, maxDepth, articleContext, batch)
-      : buildTaxonomyPrompt(bookmarks, existingTreeText, minDepth, maxDepth, articleContext, batch);
+      : buildTaxonomyPrompt(bookmarks, existingTreeText, minDepth, maxDepth, articleContext, batch, mode);
   }
 
   private async designInBatches(

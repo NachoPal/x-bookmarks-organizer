@@ -513,12 +513,32 @@ const MARKER_KEY = 'newest_seen_post_id';
 const REFRESH_TOKEN_KEY = 'x_refresh_token';
 const LAST_SYNCED_AT_KEY = 'last_synced_at';
 
+/** The in-app recategorize proposal under review (`src/categorize/proposal.ts`). */
+export const RECATEGORIZE_DRAFT_KEY = 'recategorize_draft';
+/** The posts an accepted recategorize has still to re-file (a partial run's retry). */
+export const RECATEGORIZE_REFILE_KEY = 'recategorize_refile';
+
 /**
  * The only `run_state` keys {@link Database.resetLibrary} removes: the
- * per-library sync state, which is meaningless once the bookmarks are gone.
- * Everything else in `run_state` is the owner's configuration and survives.
+ * per-library sync state, which is meaningless once the bookmarks are gone -
+ * and a recategorize proposal or re-file over a library that no longer
+ * exists. Everything else in `run_state` is the owner's configuration and
+ * survives.
  */
-const RESET_CLEARED_STATE_KEYS = [MARKER_KEY, LAST_SYNCED_AT_KEY];
+const RESET_CLEARED_STATE_KEYS = [MARKER_KEY, LAST_SYNCED_AT_KEY, RECATEGORIZE_DRAFT_KEY, RECATEGORIZE_REFILE_KEY];
+
+/**
+ * One node of a category tree to WRITE (an accepted recategorize proposal):
+ * `sourceId` names the existing row it keeps - id, links and all - or is
+ * absent for a node to create.
+ */
+export interface PlannedCategory {
+  sourceId?: number;
+  name: string;
+  description: string | null;
+  origin: CategoryOrigin;
+  children: PlannedCategory[];
+}
 
 /**
  * Make the database file owner-only (security review finding 7).
@@ -1103,6 +1123,113 @@ export class Database {
    */
   inTransaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
+  }
+
+  /**
+   * Replace the WHOLE category tree with `roots` in one transaction (an
+   * accepted "Propose a new tree"). A node with a `sourceId` keeps that row
+   * - its id, and so every post still linked to it - renamed, re-described,
+   * re-parented and re-ordered as planned; a node without one is created;
+   * every existing row no node names is deleted, its links with it. Sibling
+   * order is the plan's own (positions 0..n-1 at every level). Bookmarks,
+   * their read/favorite state, scores, summaries and lists are untouched.
+   * Returns how many rows were kept, created and deleted.
+   */
+  replaceCategoryTree(
+    roots: PlannedCategory[],
+    when: string = new Date().toISOString(),
+  ): { kept: number; created: number; deleted: number } {
+    return this.inTransaction(() => {
+      const live = new Set(this.getAllCategories().map((c) => c.id));
+      const reused = new Set<number>();
+      const collect = (nodes: PlannedCategory[]) => {
+        for (const n of nodes) {
+          if (n.sourceId !== undefined && live.has(n.sourceId) && !reused.has(n.sourceId)) reused.add(n.sourceId);
+          else n.sourceId = undefined;
+          collect(n.children);
+        }
+      };
+      collect(roots);
+      // Park every kept row at the top level under a name nothing else can
+      // carry, so neither the cascade below nor the UNIQUE(parent, name)
+      // constraints can trip over a row on its way to its new place.
+      const park = this.db.prepare('UPDATE categories SET parent_id = NULL, name = ? WHERE id = ?');
+      for (const id of reused) park.run(`__recategorize_parked_${id}__`, id);
+      const keep = [...reused];
+      const deleted = this.db
+        .prepare(
+          keep.length > 0
+            ? `DELETE FROM categories WHERE id NOT IN (${keep.map(() => '?').join(',')})`
+            : 'DELETE FROM categories',
+        )
+        .run(...keep).changes;
+      const update = this.db.prepare(
+        'UPDATE categories SET parent_id = ?, name = ?, description = ?, origin = ?, position = ? WHERE id = ?',
+      );
+      const insert = this.db.prepare(
+        'INSERT INTO categories (parent_id, name, description, created_at, origin, position) VALUES (?, ?, ?, ?, ?, ?)',
+      );
+      let created = 0;
+      const write = (nodes: PlannedCategory[], parentId: number | null) => {
+        nodes.forEach((n, position) => {
+          let id: number;
+          if (n.sourceId !== undefined) {
+            update.run(parentId, n.name, n.description, n.origin, position, n.sourceId);
+            id = n.sourceId;
+          } else {
+            id = Number(insert.run(parentId, n.name, n.description, when, n.origin, position).lastInsertRowid);
+            created += 1;
+          }
+          write(n.children, id);
+        });
+      };
+      write(roots, null);
+      return { kept: reused.size, created, deleted };
+    });
+  }
+
+  /**
+   * Add `nodes` (and their subtrees) under `parentId` (null: the top level)
+   * WITHOUT changing any existing row - an accepted "Keep the tree, only
+   * add". A node whose name a sibling already carries reuses that sibling
+   * and only its children are added, so a category created meanwhile (a
+   * sync) is never duplicated. New rows get no position, so they sort after
+   * the owner's arrangement exactly like a sync's. Returns how many were created.
+   */
+  addCategoryNodes(parentId: number | null, nodes: PlannedCategory[], when: string = new Date().toISOString()): number {
+    return this.inTransaction(() => {
+      let created = 0;
+      const insert = this.db.prepare(
+        'INSERT INTO categories (parent_id, name, description, created_at, origin) VALUES (?, ?, ?, ?, ?)',
+      );
+      const write = (list: PlannedCategory[], parent: number | null) => {
+        for (const n of list) {
+          const existing = this.findCategory(n.name, parent);
+          let id: number;
+          if (existing) id = existing.id;
+          else {
+            id = Number(insert.run(parent, n.name.trim(), n.description, when, n.origin).lastInsertRowid);
+            created += 1;
+          }
+          write(n.children, id);
+        }
+      };
+      write(nodes, parentId);
+      return created;
+    });
+  }
+
+  /**
+   * Re-file a batch of bookmarks from scratch (a recategorize's phase 2):
+   * each bookmark's links are replaced by exactly the given ones, the whole
+   * batch in one transaction. `also` runs inside the same transaction - how
+   * the caller records the batch as done, so progress and links never disagree.
+   */
+  refileBookmarks(filings: Map<number, number[]>, also?: () => void): void {
+    this.inTransaction(() => {
+      for (const [bookmarkId, categoryIds] of filings) this.setBookmarkCategories(bookmarkId, categoryIds);
+      also?.();
+    });
   }
 
   /**
@@ -2030,6 +2157,11 @@ export class Database {
       | { value: string }
       | undefined;
     return row?.value;
+  }
+
+  /** Remove one `run_state` key; whether it was there. */
+  deleteState(key: string): boolean {
+    return this.db.prepare('DELETE FROM run_state WHERE key = ?').run(key).changes > 0;
   }
 
   setState(key: string, value: string): void {

@@ -21,7 +21,7 @@ import {
 } from '../summarize/summarizer';
 import { formatImageText } from '../images/image-text';
 import { xArticleUrl } from '../x/article';
-import type { BookmarkXArticle } from '../db/database';
+import { RECATEGORIZE_DRAFT_KEY, type BookmarkXArticle } from '../db/database';
 import { buildBookmarkContent, buildBookmarkContents } from '../content/bookmark-content';
 import { buildSettingsCatalog, catalogKeyNames, type SettingsCatalog } from '../settings/catalog';
 import { CLAUDE_CLI_PROVIDER_ID } from '../llm/providers/claude-cli';
@@ -55,6 +55,18 @@ import {
 import { SyncRunner, type SyncJob } from './sync';
 import { RankRunner } from './rank';
 import { FindRunner, type FindWiring } from './find-job';
+import { RecategorizeRunner, type RecategorizeWiring } from './recategorize-job';
+import {
+  clearDraft,
+  diffDraft,
+  editDraft,
+  isRecategorizeMode,
+  readDraft,
+  viewDraft,
+  writeDraft,
+  type RecategorizeDraft,
+} from '../categorize/proposal';
+import { readRefileState } from '../categorize/recategorize';
 import type { RankWiring } from './rank-job';
 import type { RefreshWiring } from './refresh-job';
 import type { ImageTextWorker } from '../images/worker';
@@ -169,6 +181,12 @@ export interface ServerOptions {
    */
   findBookmarks?: FindWiring;
   /**
+   * The in-app Recategorize: what its passes cost (free to read) and its
+   * jobs. Undefined answers the job routes 503 - a test-built
+   * `buildServer(db)` - while the draft routes, which need only `db`, stay live.
+   */
+  recategorize?: RecategorizeWiring;
+  /**
    * The process's `XBOOKMARKS_RANKER_INTERESTS`, which augments the BUILT-IN
    * rubric preset only (`src/rank/rubric.ts`). The viewer needs it to resolve
    * the ACTIVE preset's version tag - the one every score read below is scoped
@@ -232,6 +250,13 @@ export const MODELS_UNAVAILABLE_MESSAGE =
 /** Why "Find bookmarks" cannot run in a viewer built without its wiring. */
 const FIND_UNAVAILABLE_MESSAGE = 'Finding bookmarks is unavailable in this viewer.';
 const FIND_RUNNING_MESSAGE = 'Bookmarks are being found for a category. Wait for it to finish.';
+/** Why Recategorize cannot run in a viewer built without its wiring. */
+export const RECATEGORIZE_UNAVAILABLE_MESSAGE =
+  'Recategorizing is not available in this viewer. Start it with `node dist/index.js serve`.';
+export const RECATEGORIZE_RUNNING_MESSAGE = 'Your bookmarks are being recategorized. Wait for it to finish.';
+/** A recategorize step is never started by a stray POST: the dialog states the cost and sends this. */
+export const RECATEGORIZE_CONFIRM_MESSAGE =
+  'Recategorizing needs your confirmation. Send { "confirm": true } once the cost has been shown.';
 const FIND_CONFIRM_MESSAGE =
   'The filing method is billed per token. Send { "confirm": true } to find bookmarks for this category.';
 
@@ -581,6 +606,13 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // X data, so it takes the same single-slot rule against a sync.
   const refreshWiring = opts.refresh;
   const refreshRunner = refreshWiring?.runner;
+  // A recategorize rewrites the tree and every post's links, so it takes a
+  // single slot too, and every other job refuses while it runs (and it
+  // refuses while any of them does). `recatStep` is which step is running.
+  const recatWiring = opts.recategorize;
+  const recatRunner = recatWiring ? new RecategorizeRunner() : undefined;
+  let recatStep: 'proposal' | 'accept' | 'refile' | null = null;
+  const recatRunning = () => !!recatRunner?.isRunning();
   const catalog: SettingsCatalog = buildSettingsCatalog();
   const xLoginStatus: XLoginStatus = { state: 'idle', error: null };
 
@@ -729,6 +761,15 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       find: { available: !!findRunner, status: findRunner ? findRunner.status() : null },
       // "Refresh from X" and the image-text progress, for the Sync panel.
       refresh: refreshState(),
+      // The current (or last) recategorize step, plus whether a proposal is
+      // waiting - so a reload picks both up. The full draft is
+      // `GET /api/recategorize`.
+      recategorize: {
+        available: !!recatRunner,
+        status: recatStatus(),
+        hasDraft: !!db.getState(RECATEGORIZE_DRAFT_KEY),
+        pendingRefile: !!readRefileState(db),
+      },
     };
   });
 
@@ -806,6 +847,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (refreshRunner?.isRunning()) {
       return reply.code(409).send({ error: REFRESH_RUNNING_MESSAGE });
     }
+    if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
     if (!syncRunner.isRunning()) {
       if (opts.syncPreflight) {
         try {
@@ -865,6 +907,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (refreshRunner?.isRunning()) {
       return reply.code(409).send({ error: REFRESH_RUNNING_MESSAGE });
     }
+    if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
     const { started, status } = rankRunner.start();
     if (!started) {
       return reply.code(409).send({ error: 'A ranking run is already running.', status });
@@ -896,6 +939,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       return reply.code(409).send({ error: 'A ranking run is in progress. Wait for it to finish, then refresh.' });
     }
     if (findRunner?.isRunning()) return reply.code(409).send({ error: FIND_RUNNING_MESSAGE });
+    if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
     if (!refreshRunner.isRunning()) {
       try {
         await refreshWiring.preflight();
@@ -947,6 +991,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (syncRunner?.isRunning()) {
       return 'A sync is running. Wait for it to finish, then edit your ranking rules.';
     }
+    if (recatRunning()) return RECATEGORIZE_RUNNING_MESSAGE;
     return null;
   };
 
@@ -1103,6 +1148,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       if (syncRunner?.isRunning()) {
         return reply.code(409).send({ error: 'A sync is running. Wait for it to finish, then rank.' });
       }
+      if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
 
       const messages: string[] = [];
       let summary;
@@ -1179,11 +1225,14 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (refreshRunner?.isRunning()) {
       return reply.code(409).send({ error: REFRESH_RUNNING_MESSAGE });
     }
+    if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
     db.resetLibrary();
     syncRunner?.clear();
     rankRunner?.clear();
     findRunner?.clear();
     refreshRunner?.clear();
+    recatRunner?.clear();
+    recatStep = null;
     return { ok: true, bookmarkCount: db.getBookmarkCount() };
   });
 
@@ -1208,6 +1257,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       return 'A ranking run is in progress. Wait for it to finish, then edit your categories.';
     }
     if (findRunner?.isRunning()) return FIND_RUNNING_MESSAGE;
+    if (recatRunning()) return RECATEGORIZE_RUNNING_MESSAGE;
     return null;
   };
 
@@ -1309,6 +1359,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       if (findRunner.isRunning()) {
         return reply.code(409).send({ error: FIND_RUNNING_MESSAGE, status: findRunner.status() });
       }
+      if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
       // Re-read at the moment of authorization, so a model switched to a paid
       // one after the dialog opened can never start unconfirmed.
       const model = await findWiring.describe();
@@ -1346,6 +1397,145 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       return { removed: removed.length, tree: buildCategoryTree(db) };
     },
   );
+
+  // ---- Recategorize (top bar) ----------------------------------------------
+  // Two options, one flow: a PROPOSAL is generated (phase 1, a background job
+  // that changes no data - the draft lives in `run_state`), reviewed and
+  // edited in the proposal editor (`PUT /api/recategorize/draft`), then
+  // ACCEPTED (the tree is written and every post re-filed with phase 2) or
+  // cancelled (`DELETE`, nothing changes). Every step that runs a pass needs
+  // `{ confirm: true }`: the dialog that sends it states the cost first.
+
+  /** Why a recategorize step cannot start now (another job is running), or null. */
+  const recatStartBlocker = (): string | null => {
+    if (syncRunner?.isRunning()) return 'A sync is running. Wait for it to finish, then recategorize.';
+    if (rankRunner?.isRunning()) return 'A ranking run is in progress. Wait for it to finish, then recategorize.';
+    if (findRunner?.isRunning()) return FIND_RUNNING_MESSAGE;
+    if (refreshRunner?.isRunning()) return REFRESH_RUNNING_MESSAGE;
+    if (recatRunning()) return RECATEGORIZE_RUNNING_MESSAGE;
+    return null;
+  };
+
+  function recatStatus() {
+    if (!recatRunner) return null;
+    return { ...recatRunner.status(), step: recatStep };
+  }
+
+  function draftPayload(draft: RecategorizeDraft | undefined) {
+    if (!draft) return null;
+    const live = buildCategoryTree(db);
+    return {
+      mode: draft.mode,
+      createdAt: draft.createdAt,
+      updatedAt: draft.updatedAt,
+      bookmarkCount: draft.bookmarkCount,
+      tree: viewDraft(draft, live),
+      diff: diffDraft(draft, live),
+    };
+  }
+
+  async function recatState() {
+    const refile = readRefileState(db);
+    return {
+      available: !!recatWiring,
+      ...(recatWiring ? {} : { reason: RECATEGORIZE_UNAVAILABLE_MESSAGE }),
+      bookmarkCount: db.getBookmarkCount(),
+      maxDepth: maxCategoryDepth,
+      draft: draftPayload(readDraft(db, maxCategoryDepth)),
+      pendingRefile: refile ? { mode: refile.mode, total: refile.total, remaining: refile.remaining.length } : null,
+      status: recatStatus(),
+      cost: recatWiring ? await recatWiring.describe() : null,
+    };
+  }
+
+  app.get('/api/recategorize', async () => recatState());
+
+  app.post<{ Body?: { mode?: unknown; confirm?: unknown } }>('/api/recategorize/proposal', async (req, reply) => {
+    if (!recatWiring || !recatRunner) return reply.code(503).send({ error: RECATEGORIZE_UNAVAILABLE_MESSAGE });
+    const mode = req.body?.mode;
+    if (!isRecategorizeMode(mode)) {
+      return reply.code(400).send({ error: 'Body must be { "mode": "redesign" | "extend", "confirm": true }.' });
+    }
+    const blocked = recatStartBlocker();
+    if (blocked) return reply.code(409).send({ error: blocked, status: recatStatus() });
+    if (readDraft(db, maxCategoryDepth)) {
+      return reply.code(409).send({ error: 'A proposal is waiting for your review. Accept or cancel it first.' });
+    }
+    if (readRefileState(db)) {
+      return reply.code(409).send({ error: 'The last accepted recategorize has posts left to re-file. Finish it first.' });
+    }
+    if (db.getBookmarkCount() === 0) {
+      return reply.code(400).send({ error: 'There are no stored bookmarks to recategorize yet. Sync first.' });
+    }
+    if ((req.body ?? {}).confirm !== true) {
+      return reply.code(400).send({ error: RECATEGORIZE_CONFIRM_MESSAGE, confirmRequired: true });
+    }
+    // Re-read at the moment of authorization, like a find: a model switched
+    // since the dialog opened is checked, never assumed.
+    const cost = await recatWiring.describe();
+    if (!cost.taxonomy.available) return reply.code(503).send({ error: cost.taxonomy.reason ?? RECATEGORIZE_UNAVAILABLE_MESSAGE });
+    const { started, status } = recatRunner.start(recatWiring.proposalJob(mode));
+    if (!started) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE, status });
+    recatStep = 'proposal';
+    return reply.code(202).send({ status: recatStatus() });
+  });
+
+  // Save the owner's edits to the proposal. Validated (and, for "only add",
+  // re-based on the live tree so no existing category can change) before it
+  // is stored; answers with the draft as the editor renders it.
+  app.put<{ Body?: { tree?: unknown } }>('/api/recategorize/draft', async (req, reply) => {
+    if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
+    const draft = readDraft(db, maxCategoryDepth);
+    if (!draft) return reply.code(404).send({ error: 'There is no proposal to edit.' });
+    if (!Array.isArray(req.body?.tree)) return reply.code(400).send({ error: 'Body must be { "tree": [ … ] }.' });
+    const edited = editDraft(db, draft, req.body.tree, maxCategoryDepth);
+    if (!edited.draft) return reply.code(400).send({ error: edited.errors.join(' '), errors: edited.errors });
+    writeDraft(db, edited.draft);
+    return { draft: draftPayload(edited.draft) };
+  });
+
+  // Cancel: drop the proposal. Nothing in the library was ever changed by it.
+  app.delete('/api/recategorize/draft', async (_req, reply) => {
+    if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
+    return { cleared: clearDraft(db) };
+  });
+
+  // Accept: write the reviewed tree and re-file every post with phase 2.
+  app.post<{ Body?: { confirm?: unknown } }>('/api/recategorize/accept', async (req, reply) => {
+    if (!recatWiring || !recatRunner) return reply.code(503).send({ error: RECATEGORIZE_UNAVAILABLE_MESSAGE });
+    const blocked = recatStartBlocker();
+    if (blocked) return reply.code(409).send({ error: blocked, status: recatStatus() });
+    const draft = readDraft(db, maxCategoryDepth);
+    if (!draft) return reply.code(404).send({ error: 'There is no proposal to accept.' });
+    const checked = editDraft(db, draft, draft.tree, maxCategoryDepth);
+    if (!checked.draft) return reply.code(400).send({ error: checked.errors.join(' '), errors: checked.errors });
+    if ((req.body ?? {}).confirm !== true) {
+      return reply.code(400).send({ error: RECATEGORIZE_CONFIRM_MESSAGE, confirmRequired: true });
+    }
+    const cost = await recatWiring.describe();
+    if (!cost.filing.available) return reply.code(503).send({ error: cost.filing.reason ?? RECATEGORIZE_UNAVAILABLE_MESSAGE });
+    const { started, status } = recatRunner.start(recatWiring.acceptJob());
+    if (!started) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE, status });
+    recatStep = 'accept';
+    return reply.code(202).send({ status: recatStatus() });
+  });
+
+  // Finish a re-file a failed accept left part way (the strip's Try again).
+  app.post<{ Body?: { confirm?: unknown } }>('/api/recategorize/refile', async (req, reply) => {
+    if (!recatWiring || !recatRunner) return reply.code(503).send({ error: RECATEGORIZE_UNAVAILABLE_MESSAGE });
+    const blocked = recatStartBlocker();
+    if (blocked) return reply.code(409).send({ error: blocked, status: recatStatus() });
+    if (!readRefileState(db)) return reply.code(404).send({ error: 'Every post is already re-filed.' });
+    if ((req.body ?? {}).confirm !== true) {
+      return reply.code(400).send({ error: RECATEGORIZE_CONFIRM_MESSAGE, confirmRequired: true });
+    }
+    const cost = await recatWiring.describe();
+    if (!cost.filing.available) return reply.code(503).send({ error: cost.filing.reason ?? RECATEGORIZE_UNAVAILABLE_MESSAGE });
+    const { started, status } = recatRunner.start(recatWiring.refileJob());
+    if (!started) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE, status });
+    recatStep = 'refile';
+    return reply.code(202).send({ status: recatStatus() });
+  });
 
   // Create a category: a root when `parentId` is absent/null, otherwise a
   // child one level under it. A name already taken by a sibling is a 409 (the
@@ -1543,6 +1733,8 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   app.put<{ Params: { id: string }; Body?: { categoryId?: unknown; categoryIds?: unknown } }>(
     '/api/bookmarks/:id/category',
     async (req, reply) => {
+      // A re-file in flight would overwrite the move a moment later.
+      if (recatRunning()) return reply.code(409).send({ error: RECATEGORIZE_RUNNING_MESSAGE });
       const id = Number.parseInt(req.params.id, 10);
       if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
       const raw = req.body?.categoryIds !== undefined ? req.body.categoryIds : req.body?.categoryId;
