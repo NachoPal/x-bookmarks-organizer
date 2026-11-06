@@ -9,7 +9,7 @@ import {
 
 /**
  * The per-role answer budgets (security review 2, #19). Each is far below the
- * 128k output tokens a model like Claude Sonnet 5 would otherwise be allowed,
+ * 128k output tokens a model like Claude Sonnet 5.5 would otherwise be allowed,
  * and far above what the role legitimately writes.
  */
 describe('outputBudgetFor', () => {

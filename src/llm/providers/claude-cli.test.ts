@@ -191,8 +191,11 @@ describe('the whole seam, end to end and offline', () => {
     expect(taxonomy.argv[taxonomy.argv.indexOf('--model') + 1]).toBe('claude-opus-5-5');
     expect(taxonomy.argv[taxonomy.argv.indexOf('--effort') + 1]).toBe('medium');
 
+    const assignment = JSON.parse(await toRunner(llm.forRole('assignment'), { json: true })('a')) as Echo;
+    expect(assignment.argv[assignment.argv.indexOf('--model') + 1]).toBe('claude-haiku-5-5');
+
     const summary = JSON.parse(await toRunner(llm.forRole('summary'))('s')) as Echo;
-    expect(summary.argv[summary.argv.indexOf('--model') + 1]).toBe('claude-sonnet-5');
+    expect(summary.argv[summary.argv.indexOf('--model') + 1]).toBe('claude-sonnet-5-5');
     expect(summary.argv).toContain('--safe-mode');
     expect(summary.argv).not.toContain('--effort');
   });

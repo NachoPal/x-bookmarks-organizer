@@ -349,7 +349,7 @@ describe('the pi-ai 0.87.1 models, through the real installed catalog', () => {
       const provider = catalog.providers.find((p) => p.id === id)!;
       expect(provider.suggested, id).toMatchObject({
         taxonomy: 'anthropic/claude-opus-5-5',
-        assignment: 'anthropic/claude-haiku-4-5',
+        assignment: 'anthropic/claude-haiku-5-5',
       });
     }
   });
@@ -456,15 +456,15 @@ describe('the pi-ai 1.5.0 models, through the real installed catalog', () => {
     expect(res.json().error).toContain('"openai/gpt-5.2-chat-latest" is not in the OpenAI API catalog');
   });
 
-  it('keeps every default model where it was: the new models are selectable, never suggested', async () => {
+  it('makes Haiku 5.5 the filing default and Sonnet 5.5 the summary default on every Claude route', async () => {
     for (const id of ['claude-cli', 'pi-claude-subscription', 'pi-ai']) {
       const provider = catalog.providers.find((p) => p.id === id)!;
       expect(provider.suggested, id).toEqual({
         taxonomy: 'anthropic/claude-opus-5-5',
-        assignment: 'anthropic/claude-haiku-4-5',
+        assignment: 'anthropic/claude-haiku-5-5',
       });
-      expect(suggestedModelFor(getProvider(id)!, 'summary'), id).toBe('anthropic/claude-sonnet-5');
-      expect(suggestedModelFor(getProvider(id)!, 'chat'), id).toBe('anthropic/claude-haiku-4-5');
+      expect(suggestedModelFor(getProvider(id)!, 'summary'), id).toBe('anthropic/claude-sonnet-5-5');
+      expect(suggestedModelFor(getProvider(id)!, 'chat'), id).toBe('anthropic/claude-haiku-5-5');
     }
   });
 });

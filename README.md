@@ -66,7 +66,7 @@ It is not a knowledge graph, not multi-user, and not hosted - see the
      [Your own categories](#your-own-categories)) do not count as a tree: a first sync still
      designs one, keeping yours exactly as they are and building around and inside them.
   2. **Assignment (filing).** Each new bookmark is filed **strictly** into that tree - by default by
-     a Haiku-class Claude model (`XBOOKMARKS_MODEL`) to conserve subscription quota, or optionally
+     a Haiku-class Claude model (Claude Haiku 5.5, `XBOOKMARKS_MODEL`) to conserve subscription quota, or optionally
      by Jev, a paid alternative (see
      [Choosing the assignment categorizer](#choosing-the-assignment-categorizer-optional-opt-in-paid)
      below). Filing never creates a category - every category comes from pass 1. A bookmark may be
@@ -508,13 +508,13 @@ complete list (it also covers per-role LLM provider overrides and the TypeSafe w
 | `XBOOKMARKS_LLM_PROVIDER`| `claude-cli`           | LLM provider id for every role: `claude-cli`, `pi-ai` (**paid**, see below) or `pi-claude-subscription` (**account risk**, see below) |
 | `XBOOKMARKS_TAXONOMY_PROVIDER` / `XBOOKMARKS_ASSIGNMENT_PROVIDER` | - | Provider for just one pass, overriding `XBOOKMARKS_LLM_PROVIDER` |
 | `XBOOKMARKS_LLM_MODEL`   | -                      | Model for every role, unless a role overrides it |
-| `XBOOKMARKS_MODEL`       | `claude-haiku-4-5`     | Assignment-pass model (Haiku-class); also the summary model if `XBOOKMARKS_SUMMARY_MODEL` is unset AND this is explicitly set |
+| `XBOOKMARKS_MODEL`       | `claude-haiku-5-5`     | Assignment-pass model (Haiku-class); also the summary model if `XBOOKMARKS_SUMMARY_MODEL` is unset AND this is explicitly set |
 | `XBOOKMARKS_TAXONOMY_MODEL` | `claude-opus-5-5`   | Taxonomy-design-pass model (Opus-class)  |
 | `XBOOKMARKS_TAXONOMY_EFFORT` | `medium`           | Taxonomy-pass effort (low/medium/high/xhigh/max) |
 | `XBOOKMARKS_BATCH_SIZE`  | `15`                   | Bookmarks per assignment request         |
 | `XBOOKMARKS_MIN_DEPTH`   | `3`                    | Target minimum nesting depth (best-effort) |
 | `XBOOKMARKS_MAX_DEPTH`   | `4`                    | Maximum category tree depth              |
-| `XBOOKMARKS_SUMMARY_MODEL` | `claude-sonnet-5`    | Summary model (Sonnet-class, for quality) |
+| `XBOOKMARKS_SUMMARY_MODEL` | `claude-sonnet-5-5`  | Summary model (Sonnet-class, for quality) |
 | `XBOOKMARKS_CLAUDE_BIN`  | `claude`               | Path to the `claude` binary when it is not on `PATH` - **environment only**, never read from `.env` |
 | `XBOOKMARKS_PAGE_SIZE`   | `20`                   | Viewer lazy-load batch size per scroll   |
 | `XBOOKMARKS_CATEGORIZER` | `claude-cli`           | Which implementation runs the **assignment** pass: `claude-cli` or `typesafe` (**paid**, see below) |
@@ -568,7 +568,7 @@ pinned to an exact version). Either categorization pass can use it, independentl
 
 | Upstream | Example id | Needs (credential chain) | Cost |
 | --- | --- | --- | --- |
-| `anthropic` | `anthropic/claude-haiku-4-5` | `ANTHROPIC_API_KEY` (an `sk-ant-api…` **API** key) | **Pay per token** |
+| `anthropic` | `anthropic/claude-haiku-5-5` | `ANTHROPIC_API_KEY` (an `sk-ant-api…` **API** key) | **Pay per token** |
 | `openai` | `openai/gpt-5-mini` | `OPENAI_API_KEY` | **Pay per token** |
 | `google` | `google/gemini-2.5-flash` | `GEMINI_API_KEY` | **Pay per token** |
 | `xai` | `xai/grok-4.6` | `XAI_API_KEY` | **Pay per token** |
@@ -617,7 +617,7 @@ Selecting it **is** the opt-in: in the app pick **Claude subscription via pi (ag
 terms)** as a pass's provider in Settings → Categorization (the selector shows the warning above
 under it); on the CLI set `XBOOKMARKS_TAXONOMY_PROVIDER=pi-claude-subscription` and/or
 `XBOOKMARKS_ASSIGNMENT_PROVIDER=pi-claude-subscription`. It is never a default. Its models use the
-`claude-cli` ids (`claude-opus-5-5`, `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-sonnet-5-5`, `claude-haiku-5-5`), with the same Opus-for-pass-1 /
+`claude-cli` ids (`claude-opus-5-5`, `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5`), with the same Opus-for-pass-1 /
 Haiku-for-pass-2 suggestion. The token comes through the usual credential chain and is handed to pi on
 every call - pi never looks for a credential itself, and `ANTHROPIC_API_KEY` is never read. A value that
 is not a subscription token is refused, because pi would bill an API key per token. Every run prints

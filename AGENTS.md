@@ -55,7 +55,7 @@ implementation detail / power-user fallback, but every capability needs an in-ap
   path (`{"tree":[]}` = nothing needed). `materializeTaxonomy` is ADD-ONLY, so an incremental pass
   can never rename, move, re-describe or delete an existing category, and it merges a
   near-duplicate sibling of any origin (`findMergeTarget`). Pass 2 (`src/categorize/prompt.ts`,
-  Haiku-class, or Jev) then files each new bookmark STRICTLY into that fixed tree
+  Haiku 5.5 by default, or Jev) then files each new bookmark STRICTLY into that fixed tree
   (`resolveExistingPathToLeafId`): filing NEVER creates a category, whatever the method; an
   off-tree path or a bookmark that fits nothing lands in `Uncategorized`. There is no
   reuse-or-create `extend` filing mode any more - do not bring one back. `recategorize` redesigns
@@ -982,9 +982,9 @@ Clicking "Summarize" (or "Summary", once one is saved) on a card opens a large i
 with an on-demand LLM summary of the bookmark: the post text, plus its extracted article
 content (reusing the fetch/cache above) when the link is an article. Generated via
 `LlmSummaryGenerator` (`src/summarize/summarizer.ts`), which runs on the `summary` role's
-runner from the same provider factory as categorization (Sonnet-class model by default, chosen
-for summary quality over the Haiku-class assignment/taxonomy models - see `models` in
-`src/llm/providers/claude-cli.ts`, overridable via `XBOOKMARKS_SUMMARY_MODEL`) - never the
+runner from the same provider factory as categorization (Claude Sonnet 5.5 by default, chosen
+for summary quality over the Haiku-class assignment model - the `summary` `suggestedFor` in
+`src/llm/providers/anthropic-catalog.ts`, overridable via `XBOOKMARKS_SUMMARY_MODEL`) - never the
 paid API. Cached in the `summaries` table (`src/db/schema.ts`, keyed by
 `bookmark_id`) via `Database.getSummaryForBookmark` / `saveSummary`, so a bookmark is
 summarized at most once. Server surface: `POST /api/bookmarks/:id/summary` (cache-or-generate;
@@ -1702,7 +1702,7 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   `maxOutputTokens` from `outputBudgetFor` (`src/llm/output-budget.ts`, where each role's number
   and its reasoning live) when nothing explicit is set; `completeOnPi` adds `REASONING_ALLOWANCE`
   for the effort in force (`outputCeiling`), capped at the model maximum. Left unset, pi used the
-  model maximum (128k for Sonnet 5). `claude-cli` ignores the param (subscription, no per-token
+  model maximum (128k for Sonnet 5.5). `claude-cli` ignores the param (subscription, no per-token
   bill) - wiring it there is untested against the real CLI, so do it deliberately if ever.
 - **A failed summary is held, not repeated** (`src/web/summary-backoff.ts`): the summary POST
   answers 429 with the held failure for `SUMMARY_FAILURE_BACKOFF_MS`, and only the owner's
