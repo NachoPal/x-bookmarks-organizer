@@ -733,6 +733,8 @@
       if (isCatEditorOpen() || isCatDeleteOpen() || isCatFindOpen() || isMovePickerOpen() || isRubricOpen()) return;
       // And the two paid confirmations, which own Escape the same way.
       if (isRankOpen() || isSyncConfirmOpen() || isRefreshConfirmOpen()) return;
+      // And Recategorize's chooser, proposal editor and accept confirmation.
+      if (isRecatOpen() || isProposalOpen() || isRecatConfirmOpen()) return;
       // Inside a sidebar page, Escape is Back - one level at a time, so a
       // second Escape on the menu is what closes the sidebar. Only with focus
       // in the sidebar: from the posts, Escape still just closes it.
@@ -2216,21 +2218,28 @@
     if (sameRow && zone === "inside") drag.expandTimer = timer;
     else if (timer) clearTimeout(timer);
 
+    // A surface over a tree other than the live one (the proposal editor's
+    // draft) brings its own roots, depth limit and lookup in the spec.
+    const roots = drag.roots ? drag.roots() : treeRoots;
+    const maxDepth = drag.maxDepth != null ? drag.maxDepth : treeMaxDepth;
     const disclosure = rowToggle(row);
-    const target = treeMove().dropTarget(treeRoots, drag.node.id, overId, zone, disclosure.open);
+    const target = treeMove().dropTarget(roots, drag.node.id, overId, zone, disclosure.open);
     drag.row = row;
     drag.zone = zone;
     if (!target) {
       setTreeGhost(drag, null);
       return;
     }
-    const problem = treeMove().problemFor(treeRoots, drag.node.id, target.parentId, treeMaxDepth);
+    const problem = (drag.problemFor || ((id, parentId) => treeMove().problemFor(roots, id, parentId, maxDepth)))(
+      drag.node.id,
+      target.parentId,
+    );
     drag.target = target;
     drag.problem = problem;
     row.classList.add(`drop-${zone}`);
     if (zone === "after" && target.parentId === overId) row.classList.add("drop-nested");
     if (problem) row.classList.add("drop-invalid");
-    const over = categoryIndex.get(overId);
+    const over = drag.lookup ? drag.lookup(overId) : categoryIndex.get(overId);
     setTreeGhost(drag, { target, problem, zone, overId, overName: over ? over.name : "" });
 
     // Hovering INTO a collapsed row opens it, so a deep target is reachable
@@ -2240,7 +2249,8 @@
       drag.expandTimer = setTimeout(() => {
         drag.expandTimer = null;
         if (treeDrag !== drag) return;
-        if (drag.surface === "editor") setCatEditorExpanded(overId, true, { focus: false });
+        if (drag.expand) drag.expand(overId);
+        else if (drag.surface === "editor") setCatEditorExpanded(overId, true, { focus: false });
         else if (disclosure.toggle) disclosure.toggle.click();
       }, DRAG_EXPAND_MS);
     }
@@ -4660,8 +4670,8 @@
         : moveDefaults.intro;
     }
     moveConfirmBtn.textContent = node ? "Move category" : moveDefaults.confirm;
-    // Opened from the category editor, the picker stacks above it.
-    const over = !!node && isCatEditorOpen();
+    // Opened from the category (or proposal) editor, the picker stacks above it.
+    const over = !!node && (isCatEditorOpen() || isProposalOpen());
     moveModalEl.classList.toggle("is-over-modal", over);
     moveBackdropEl.classList.toggle("is-over-modal", over);
   }
@@ -4683,11 +4693,23 @@
     showMovePicker();
   }
 
+  /**
+   * The tree the picker shows and checks against: the live one, or - for the
+   * proposal editor's "Move to…" - the draft it was opened over.
+   */
+  function pickerRoots() {
+    return movePicker && movePicker.roots ? movePicker.roots() : treeRoots;
+  }
+
+  function pickerNode(id) {
+    return movePicker && movePicker.lookup ? movePicker.lookup(id) : categoryIndex.get(id);
+  }
+
   /** Why the moved category cannot go into picker item `id`, or null. */
   function categoryPickBlock(id) {
     const moved = movePicker.node;
     const parentId = id === TOP_LEVEL_ID ? null : id;
-    const here = treeMove().locate(treeRoots, moved.id);
+    const here = treeMove().locate(pickerRoots(), moved.id);
     if (!here) return { label: "Gone", message: "That category is no longer here. Reload and try again." };
     const currentParent = here.parent ? here.parent.id : null;
     if (currentParent === parentId) {
@@ -4698,7 +4720,9 @@
           : `“${moved.name}” is already a top-level category.`,
       };
     }
-    const problem = treeMove().problemFor(treeRoots, moved.id, parentId, treeMaxDepth);
+    const problem = movePicker.problemFor
+      ? movePicker.problemFor(moved.id, parentId)
+      : treeMove().problemFor(treeRoots, moved.id, parentId, treeMaxDepth);
     if (!problem) return null;
     return {
       label: id === moved.id ? "This category" : MOVE_BLOCK_LABELS[problem.problem] || "Not here",
@@ -4754,7 +4778,8 @@
   /** The roots the picker is showing: the whole tree, or the search's pruned copy. */
   function moveVisibleRoots() {
     const query = moveSearchQuery().toLowerCase();
-    const roots = query ? picker().filterTree(treeRoots, query) : treeRoots;
+    const all = pickerRoots();
+    const roots = query ? picker().filterTree(all, query) : all;
     if (!movePicker || movePicker.mode !== "category") return roots;
     const top = { id: TOP_LEVEL_ID, parentId: null, name: "Top level", path: ["Top level"], children: [] };
     return [top, ...roots];
@@ -4773,7 +4798,7 @@
   function renderMoveTree() {
     if (!movePicker) return;
     const raw = moveSearchQuery();
-    if (treeRoots.length === 0) {
+    if (pickerRoots().length === 0) {
       stateMessage(moveTreeEl, "empty", "No categories yet. Sync your bookmarks first.");
       return;
     }
@@ -4882,7 +4907,7 @@
       if (id == null) moveSelectionEl.textContent = "No place chosen yet.";
       else if (block) moveSelectionEl.textContent = block.message;
       else if (id === TOP_LEVEL_ID) moveSelectionEl.textContent = `Move “${name}” to the top level.`;
-      else moveSelectionEl.textContent = `Move “${name}” into ${picker().pathLabel(categoryIndex.get(id))}.`;
+      else moveSelectionEl.textContent = `Move “${name}” into ${picker().pathLabel(pickerNode(id))}.`;
       return;
     }
     const node = movePicker.selectedId != null ? categoryIndex.get(movePicker.selectedId) : null;
@@ -4924,11 +4949,13 @@
     const { node, surface, selectedId } = movePicker;
     if (categoryPickBlock(selectedId)) return;
     const parentId = selectedId === TOP_LEVEL_ID ? null : selectedId;
-    const target = { parentId, index: treeMove().childrenOf(treeRoots, parentId, node.id).length };
+    const target = { parentId, index: treeMove().childrenOf(pickerRoots(), parentId, node.id).length };
     moveConfirmBtn.disabled = true;
     moveConfirmBtn.classList.add("is-loading");
     moveErrorEl.hidden = true;
-    const result = await commitCategoryMove(node, target, { surface });
+    const result = movePicker.commit
+      ? await movePicker.commit(node, target)
+      : await commitCategoryMove(node, target, { surface });
     moveConfirmBtn.classList.remove("is-loading");
     if (!result.ok) {
       moveErrorEl.textContent = result.error;
@@ -4936,7 +4963,7 @@
       moveConfirmBtn.disabled = false;
       return;
     }
-    const host = surface === "editor" ? catEditorTreeEl : treeEl;
+    const host = movePicker.host || (surface === "editor" ? catEditorTreeEl : treeEl);
     closeMovePicker(host.querySelector(`[data-grip-for="${node.id}"]`));
   }
 
@@ -7857,14 +7884,22 @@
   let rankStatusView = null;
   let findStatusView = null;
   let refreshStatusView = null;
+  let recatStatusView = null;
   /** Which job the strip is currently showing - drives retry and dismiss. */
   let progressOwner = null;
 
   function renderSharedProgress() {
-    progressOwner = ranking().progressSource(syncStatusView, rankStatusView, findStatusView, refreshStatusView);
+    progressOwner = ranking().progressSource(
+      syncStatusView,
+      rankStatusView,
+      findStatusView,
+      refreshStatusView,
+      recatStatusView,
+    );
     const isRank = progressOwner === "rank";
     const isFind = progressOwner === "find";
     const isRefresh = progressOwner === "refresh";
+    const isRecat = progressOwner === "recategorize";
     if (syncProgressDismissBtn) {
       syncProgressDismissBtn.setAttribute(
         "aria-label",
@@ -7874,16 +7909,24 @@
             ? "Dismiss find-bookmarks status"
             : isRefresh
               ? "Dismiss refresh status"
-              : "Dismiss sync status",
+              : isRecat
+                ? "Dismiss recategorize status"
+                : "Dismiss sync status",
       );
     }
-    if (isRank) renderProgressStrip(progressEls, rankStatusView, (s) => ranking().progressLine(s));
+    if (isRecat) renderProgressStrip(progressEls, recatStatusView, (s) => recat().progressLine(s));
+    else if (isRank) renderProgressStrip(progressEls, rankStatusView, (s) => ranking().progressLine(s));
     else if (isFind) renderProgressStrip(progressEls, findStatusView, (s) => editor().findProgressLine(s));
     else if (isRefresh) {
       const images = refreshState() && refreshState().images;
       renderProgressStrip(progressEls, refreshStatusView, (s) => refreshApi().progressLine(s, images));
     }
     else renderProgressStrip(progressEls, syncStatusView, (s) => categorization().progressLine(s));
+  }
+
+  function renderRecatProgress(status) {
+    recatStatusView = status;
+    renderSharedProgress();
   }
 
   function renderFindProgress(status) {
@@ -7909,7 +7952,14 @@
       syncProgressRetryBtn.addEventListener("click", () => {
         if (progressOwner === "rank") openRankConfirm();
         else if (progressOwner === "refresh") openRefreshConfirm(lastRefreshScope);
-        else if (progressOwner === "find") {
+        else if (progressOwner === "recategorize") {
+          // A re-file left part way is finished through the same confirmation;
+          // a failed proposal is simply chosen again.
+          void loadRecatState().then((state) => {
+            if (state && state.pendingRefile) openRecatConfirm({ refileOnly: true });
+            else void openRecatChooser(recatOpenBtn);
+          });
+        } else if (progressOwner === "find") {
           // A retry is a fresh authorization: the confirmation again, never a silent re-run.
           if (lastFindNode) void requestFindBookmarks(lastFindNode, null);
           else openCategoryEditor(catEditorOpenBtn);
@@ -7923,7 +7973,13 @@
         // popover is normally closed by now, and focusing a hidden control
         // silently strands focus on <body>.
         const toggle = document.getElementById(
-          progressOwner === "rank" ? "rank-toggle" : progressOwner === "find" ? "cat-editor-open" : "sync-toggle",
+          progressOwner === "rank"
+            ? "rank-toggle"
+            : progressOwner === "find"
+              ? "cat-editor-open"
+              : progressOwner === "recategorize"
+                ? "recat-open"
+                : "sync-toggle",
         );
         if (toggle) toggle.focus();
       });
@@ -10751,6 +10807,1103 @@
     initAssistantListStream();
   }
 
+  // ======================================================================
+  // Recategorize (the top bar, between Sync and Settings)
+  // ======================================================================
+  // Two options, one flow, and nothing changes until the owner accepts:
+  //
+  //   1. The chooser (`#recat-modal`) - "Propose a new tree" or "Keep the
+  //      tree, only add", each stating what both passes cost. Choosing one
+  //      IS phase 1's confirmation: it is the only place a proposal is
+  //      started with `{ confirm: true }`.
+  //   2. The proposal runs as a background job in the shared progress strip,
+  //      changing no data; when it is ready the proposal editor opens.
+  //   3. The proposal editor (`#proposal-modal`) - the category editor's rows,
+  //      drag, "+", rename, bin and "Move to…", on the DRAFT. Every edit is
+  //      saved to the server-side draft at once, so a reload loses nothing.
+  //      "Only add" shows the current tree locked, with the additions marked.
+  //   4. Accept opens the cost confirmation (`#recat-confirm-modal`) - the
+  //      paid-sync dialog's discipline - and the accept job writes the tree
+  //      and re-files every post. A run that fails part way is finished from
+  //      the strip's Try again, through the same confirmation.
+  //
+  // The pure half - the words, the costs, the edits on the draft - is
+  // `recategorize.js` (`XBORecategorize`).
+
+  const recatOpenBtn = document.getElementById("recat-open");
+  const recatDotEl = document.getElementById("recat-dot");
+  const recatModalEl = document.getElementById("recat-modal");
+  const recatBackdropEl = document.getElementById("recat-backdrop");
+  const recatCloseBtn = document.getElementById("recat-close");
+  const recatBodyEl = document.getElementById("recat-body");
+  const recatErrorEl = document.getElementById("recat-error");
+  const proposalModalEl = document.getElementById("proposal-modal");
+  const proposalBackdropEl = document.getElementById("proposal-backdrop");
+  const proposalCloseBtn = document.getElementById("proposal-close");
+  const proposalTitleEl = document.getElementById("proposal-title");
+  const proposalIntroEl = document.getElementById("proposal-intro");
+  const proposalDiffEl = document.getElementById("proposal-diff");
+  const proposalRemovedEl = document.getElementById("proposal-removed");
+  const proposalRemovedSummaryEl = document.getElementById("proposal-removed-summary");
+  const proposalRemovedListEl = document.getElementById("proposal-removed-list");
+  const proposalTreeEl = document.getElementById("proposal-tree");
+  const proposalAnnouncerEl = document.getElementById("proposal-announcer");
+  const proposalErrorEl = document.getElementById("proposal-error");
+  const proposalCancelBtn = document.getElementById("proposal-cancel");
+  const proposalAcceptBtn = document.getElementById("proposal-accept");
+  const recatConfirmModalEl = document.getElementById("recat-confirm-modal");
+  const recatConfirmBackdropEl = document.getElementById("recat-confirm-backdrop");
+  const recatConfirmTitleEl = document.getElementById("recat-confirm-title");
+  const recatConfirmCostTextEl = document.getElementById("recat-confirm-cost-text");
+  const recatConfirmPassesEl = document.getElementById("recat-confirm-passes");
+  const recatConfirmScopeEl = document.getElementById("recat-confirm-scope");
+  const recatConfirmNoteEl = document.getElementById("recat-confirm-note");
+  const recatConfirmErrorEl = document.getElementById("recat-confirm-error");
+  const recatConfirmCancelBtn = document.getElementById("recat-confirm-cancel");
+  const recatConfirmOkBtn = document.getElementById("recat-confirm-ok");
+
+  const RECAT_POLL_MS = 1500;
+  /** `GET /api/recategorize`: availability, the draft, the cost, the job. */
+  let recatState = null;
+  let recatPollTimer = null;
+  /** The chooser's trigger, to hand focus back to. */
+  let recatTrigger = null;
+  /**
+   * The open proposal editor: the draft tree as last rendered (`tree`) and
+   * its id index, which rows are open, the inline form in use (`adding` a
+   * child of an id - null for the top level - or `renaming` an id), and the
+   * save queue that keeps saves in order.
+   */
+  let proposal = null;
+  /** The pending accept/re-file confirmation. */
+  let recatConfirm = null;
+  /** Whether this tab started the running proposal - only then does it open the editor by itself. */
+  let recatOpenWhenReady = false;
+
+  function recat() {
+    return window.XBORecategorize;
+  }
+
+  function isRecatOpen() {
+    return !!recatModalEl && !recatModalEl.hidden;
+  }
+
+  function isProposalOpen() {
+    return !!proposalModalEl && !proposalModalEl.hidden;
+  }
+
+  function isRecatConfirmOpen() {
+    return !!recatConfirmModalEl && !recatConfirmModalEl.hidden;
+  }
+
+  function recatRunning() {
+    const status = recatState && recatState.status;
+    return !!status && status.state === "running";
+  }
+
+  async function loadRecatState() {
+    try {
+      recatState = await getJSON("/api/recategorize");
+    } catch (_) {
+      // Keep what we had: a transient failure must not wipe the chooser.
+    }
+    renderRecatButton();
+    return recatState;
+  }
+
+  /** The icon's dot and words: a proposal waiting for review, or a re-file left to finish. */
+  function renderRecatButton() {
+    if (!recatOpenBtn) return;
+    const waiting = !!(recatState && (recatState.draft || recatState.pendingRefile));
+    if (recatDotEl) recatDotEl.hidden = !waiting;
+    const label = recatState && recatState.draft
+      ? "Recategorize - a proposal is waiting for your review"
+      : recatState && recatState.pendingRefile
+        ? "Recategorize - some posts still need re-filing"
+        : "Recategorize your bookmarks";
+    recatOpenBtn.setAttribute("aria-label", label);
+    recatOpenBtn.title = label;
+  }
+
+  // --- the chooser ---------------------------------------------------------
+
+  async function openRecatChooser(triggerEl) {
+    if (!recatModalEl || !recat()) return;
+    recatTrigger = triggerEl || recatOpenBtn;
+    showRecatError(null);
+    stateMessage(recatBodyEl, "loading", "Loading…");
+    recatModalEl.hidden = false;
+    recatBackdropEl.hidden = false;
+    recatCloseBtn.focus();
+    await loadRecatState();
+    if (!isRecatOpen()) return;
+    renderRecatChooser();
+  }
+
+  function closeRecatChooser(opts) {
+    if (!isRecatOpen()) return;
+    recatModalEl.hidden = true;
+    recatBackdropEl.hidden = true;
+    const trigger = recatTrigger;
+    recatTrigger = null;
+    if (!(opts && opts.returnFocus === false) && trigger && trigger.isConnected) trigger.focus();
+  }
+
+  function showRecatError(message) {
+    if (!recatErrorEl) return;
+    recatErrorEl.textContent = message || "";
+    recatErrorEl.hidden = !message;
+  }
+
+  function renderRecatChooser() {
+    const state = recatState;
+    if (!state) {
+      stateMessage(recatBodyEl, "error", "Could not reach the server. Close this and try again.");
+      return;
+    }
+    if (!state.available) {
+      stateMessage(recatBodyEl, "empty", state.reason || "Recategorizing is not available in this viewer.");
+      return;
+    }
+    if (recatRunning()) {
+      const box = el("div", "recat-waiting");
+      box.appendChild(el("p", "recat-waiting-text", recat().progressLine(state.status)));
+      box.appendChild(el("p", "rank-note", "Its progress is in the strip under the filter tabs."));
+      recatBodyEl.replaceChildren(box);
+      return;
+    }
+    if (state.pendingRefile) {
+      recatBodyEl.replaceChildren(
+        recatCard({
+          title: "Finish re-filing",
+          text: `The last accepted tree is in place, but ${state.pendingRefile.remaining} of ${state.pendingRefile.total} posts still need re-filing into it.`,
+          cost: [recat().refileCostLine(state.cost, state.pendingRefile.remaining)],
+          actions: [{ label: "Finish re-filing…", primary: true, onClick: () => openRecatConfirm({ refileOnly: true }) }],
+        }),
+      );
+      return;
+    }
+    if (state.draft) {
+      const copy = recat().optionCopy(state.draft.mode);
+      recatBodyEl.replaceChildren(
+        recatCard({
+          title: "A proposal is waiting",
+          text: `${copy.title}: ${recat().diffSentence(state.draft.diff, state.draft.mode)} Nothing has changed yet.`,
+          actions: [
+            { label: "Review proposal", primary: true, onClick: () => void openProposalEditor(recatOpenBtn) },
+            { label: "Cancel proposal", onClick: () => void cancelProposal() },
+          ],
+        }),
+      );
+      return;
+    }
+    if (!state.bookmarkCount) {
+      stateMessage(recatBodyEl, "empty", "There are no saved posts to recategorize yet. Sync first.");
+      return;
+    }
+    const cards = ["redesign", "extend"].map((mode) => {
+      const copy = recat().optionCopy(mode);
+      return recatCard({
+        title: copy.title,
+        text: copy.summary,
+        cost: [recat().proposalCostLine(state.cost), recat().refileCostLine(state.cost, state.bookmarkCount)],
+        actions: [{ label: copy.action, onClick: (btn) => void startProposal(mode, btn) }],
+        disabled: !(state.cost && state.cost.taxonomy && state.cost.taxonomy.available),
+      });
+    });
+    recatBodyEl.replaceChildren(...cards);
+  }
+
+  /** One option (or waiting state) of the chooser: a heading, what it does, its cost, its buttons. */
+  function recatCard(spec) {
+    const card = el("section", "recat-option");
+    const title = el("h3", "recat-option-title", spec.title);
+    card.appendChild(title);
+    card.appendChild(el("p", "recat-option-text", spec.text));
+    const lines = (spec.cost || []).filter(Boolean);
+    if (lines.length > 0) {
+      const cost = el("ul", "recat-option-cost");
+      for (const line of lines) cost.appendChild(el("li", "", line));
+      card.appendChild(cost);
+    }
+    const row = el("div", "recat-option-actions");
+    for (const action of spec.actions || []) {
+      const btn = el("button", action.primary ? "btn btn-primary" : "btn btn-secondary", action.label);
+      btn.type = "button";
+      if (spec.disabled) btn.disabled = true;
+      btn.addEventListener("click", () => action.onClick(btn));
+      row.appendChild(btn);
+    }
+    card.appendChild(row);
+    return card;
+  }
+
+  async function startProposal(mode, btn) {
+    showRecatError(null);
+    if (btn) {
+      btn.disabled = true;
+      btn.classList.add("is-loading");
+    }
+    let res;
+    let body = {};
+    try {
+      res = await fetch("/api/recategorize/proposal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // The option the owner pressed stated the cost: this is the authorization.
+        body: JSON.stringify({ mode, confirm: true }),
+      });
+      body = await res.json().catch(() => ({}));
+    } catch (_) {
+      res = null;
+    }
+    if (!res || !res.ok) {
+      if (btn) {
+        btn.disabled = false;
+        btn.classList.remove("is-loading");
+      }
+      showRecatError(body.error || "Could not start the proposal.");
+      return;
+    }
+    recatOpenWhenReady = true;
+    closeRecatChooser({ returnFocus: false });
+    if (recatOpenBtn) recatOpenBtn.focus();
+    renderRecatProgress(body.status);
+    pollRecat();
+  }
+
+  // --- polling and the shared strip -----------------------------------------
+
+  function pollRecat() {
+    if (recatPollTimer) return;
+    const tick = async () => {
+      const state = await loadRecatState();
+      const status = state && state.status;
+      if (!status) return;
+      renderRecatProgress(status);
+      if (status.state === "done" || status.state === "error") {
+        stopRecatPolling();
+        await afterRecatStep(status);
+      }
+    };
+    recatPollTimer = setInterval(tick, RECAT_POLL_MS);
+    void tick();
+  }
+
+  function stopRecatPolling() {
+    if (!recatPollTimer) return;
+    clearInterval(recatPollTimer);
+    recatPollTimer = null;
+  }
+
+  async function afterRecatStep(status) {
+    const summary = status.summary || {};
+    if (status.state === "done" && summary.kind === "proposal") {
+      const open = recatOpenWhenReady && !anyModalOpen();
+      recatOpenWhenReady = false;
+      if (open) await openProposalEditor(recatOpenBtn);
+      else {
+        showToast("Your recategorize proposal is ready to review.", {
+          actions: [{ label: "Review", onClick: () => void openProposalEditor(recatOpenBtn) }],
+          duration: 10000,
+        });
+      }
+      return;
+    }
+    recatOpenWhenReady = false;
+    // An accept that failed part way still wrote the new tree: the viewer
+    // follows it either way, and the strip says what is left to do.
+    if (summary.kind === "apply" || status.step === "accept" || status.step === "refile") {
+      // The strip states the outcome; a toast saying it again would be noise.
+      await refreshAfterRecategorize();
+    }
+  }
+
+  /**
+   * The tree and every post's links changed: drop every cached view and the
+   * card pool (each pooled post's `categoryIds` is stale), reload the tree,
+   * and fall back to the empty state when the open category is gone.
+   */
+  async function refreshAfterRecategorize() {
+    await refreshAfterSync();
+    if (selectedCategoryId != null && !categoryIndex.has(selectedCategoryId)) {
+      selectedCategoryId = null;
+      selectedButton = null;
+      renderEmptyTitle();
+      persistSelection();
+      ensureViewHost();
+      renderSelectPrompt();
+      updateToolbarVisibility();
+    }
+  }
+
+  function anyModalOpen() {
+    return (
+      isRecatOpen() ||
+      isProposalOpen() ||
+      isRecatConfirmOpen() ||
+      isCatEditorOpen() ||
+      isMovePickerOpen() ||
+      isRubricOpen() ||
+      isRankOpen() ||
+      isSyncConfirmOpen() ||
+      isSetupOpen() ||
+      isSummaryOpen()
+    );
+  }
+
+  // --- the proposal editor ----------------------------------------------------
+
+  async function openProposalEditor(triggerEl) {
+    if (!proposalModalEl || !recat()) return;
+    closeRecatChooser({ returnFocus: false });
+    await loadRecatState();
+    if (!recatState || !recatState.draft) {
+      showToast("There is no proposal to review.");
+      return;
+    }
+    const draft = recatState.draft;
+    proposal = {
+      trigger: triggerEl || recatOpenBtn,
+      mode: draft.mode,
+      tree: draft.tree,
+      index: recat().indexTree(draft.tree),
+      diff: draft.diff,
+      // Roots open: the point of the review is to SEE the proposed structure.
+      expanded: new Set(draft.tree.map((n) => n.id)),
+      adding: undefined,
+      renaming: undefined,
+      queue: Promise.resolve(),
+      seq: 0,
+    };
+    // In "only add", open the path to every addition so none hides in a collapsed branch.
+    if (draft.mode === "extend") {
+      for (const n of proposal.index.values()) {
+        if (n.change && n.change.added) {
+          for (let up = n.parentId; up != null; up = (proposal.index.get(up) || {}).parentId) proposal.expanded.add(up);
+        }
+      }
+    }
+    const copy = recat().optionCopy(draft.mode);
+    proposalTitleEl.textContent = draft.mode === "extend" ? "Review the proposed additions" : "Review the proposed tree";
+    proposalIntroEl.textContent =
+      draft.mode === "extend"
+        ? `${copy.title}: your current categories are shown as they are and cannot change here. The additions are marked New - rename, move, add to or remove them. Accept adds them and re-files every post; Cancel discards them.`
+        : `${copy.title}: this is a whole new tree for your ${draft.bookmarkCount} posts. Rename, move, add or remove anything - your own categories too. Accept replaces your tree and re-files every post; Cancel discards the proposal and nothing changes.`;
+    showProposalError(null);
+    renderProposal();
+    proposalBackdropEl.hidden = false;
+    proposalModalEl.hidden = false;
+    proposalCloseBtn.focus();
+  }
+
+  function closeProposalEditor(opts) {
+    if (!isProposalOpen()) return;
+    if (isMovePickerOpen()) closeMovePicker();
+    proposalModalEl.hidden = true;
+    proposalBackdropEl.hidden = true;
+    const trigger = proposal && proposal.trigger;
+    proposal = null;
+    if (!(opts && opts.returnFocus === false) && trigger && trigger.isConnected) trigger.focus();
+  }
+
+  function announceProposal(message) {
+    if (proposalAnnouncerEl) proposalAnnouncerEl.textContent = message;
+  }
+
+  function showProposalError(message) {
+    if (!proposalErrorEl) return;
+    proposalErrorEl.textContent = message || "";
+    proposalErrorEl.hidden = !message;
+  }
+
+  function proposalMaxDepth() {
+    return (recatState && recatState.maxDepth) || treeMaxDepth;
+  }
+
+  function renderProposal() {
+    if (!proposal) return;
+    renderProposalDiff();
+    const list = el("ul", "cat-editor-list");
+    list.appendChild(buildProposalAddRow(null, 0));
+    if (proposal.tree.length === 0) {
+      const empty = el("li", "ced-empty-row");
+      empty.appendChild(el("p", "state state-empty", "The proposal has no categories. Add one above, or cancel the proposal."));
+      list.appendChild(empty);
+    } else {
+      buildProposalNodes(proposal.tree, list, 0);
+    }
+    proposalTreeEl.replaceChildren(list);
+    proposalAcceptBtn.disabled = proposal.mode !== "extend" && proposal.tree.length === 0;
+    proposalAcceptBtn.textContent = proposal.mode === "extend" ? "Accept additions…" : "Accept new tree…";
+  }
+
+  function renderProposalDiff() {
+    const items = recat().diffItems(proposal.diff, proposal.mode);
+    proposalDiffEl.replaceChildren(
+      ...items.map((item) => {
+        const li = el("li", `proposal-diff-item is-${item.key}`);
+        li.append(el("span", "proposal-diff-count", String(item.count)), el("span", "proposal-diff-label", item.label));
+        return li;
+      }),
+    );
+    const removed = (proposal.diff && proposal.diff.removedPaths) || [];
+    proposalRemovedEl.hidden = removed.length === 0;
+    if (removed.length > 0) {
+      proposalRemovedSummaryEl.textContent = `Not in the proposal (${removed.length})`;
+      proposalRemovedListEl.replaceChildren(...removed.map((p) => el("li", "", p.join(" › "))));
+    }
+  }
+
+  function proposalIsExpanded(node) {
+    return !!proposal && proposal.expanded.has(node.id);
+  }
+
+  function buildProposalNodes(nodes, parentList, depth) {
+    const tm = recat();
+    for (const node of nodes) {
+      const hasChildren = !!(node.children && node.children.length);
+      const expanded = proposalIsExpanded(node);
+      const editable = tm.isEditable(node, proposal.mode);
+      const groupId = `proposal-group-${node.id}`;
+
+      const li = el("li", "ced-item");
+      const row = el("div", "ced-row proposal-row");
+      if (node.change && node.change.added) row.classList.add("is-added");
+      if (!editable) row.classList.add("is-locked");
+      row.style.setProperty("--ced-depth", String(depth));
+      row.dataset.moveId = String(node.id);
+
+      const indent = el("span", "ced-indent");
+      indent.setAttribute("aria-hidden", "true");
+      row.appendChild(indent);
+
+      if (editable) row.appendChild(createProposalGrip(node));
+      else {
+        const spacer = el("span", "ced-twisty is-leaf");
+        spacer.setAttribute("aria-hidden", "true");
+        row.appendChild(spacer);
+      }
+
+      if (hasChildren) {
+        const twisty = el("button", "ced-twisty");
+        twisty.type = "button";
+        twisty.setAttribute("aria-expanded", String(expanded));
+        twisty.setAttribute("aria-controls", groupId);
+        twisty.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} “${node.name}”`);
+        const chev = el("span", "ced-chev", "▶");
+        chev.setAttribute("aria-hidden", "true");
+        twisty.appendChild(chev);
+        twisty.addEventListener("click", () =>
+          setProposalExpanded(node.id, twisty.getAttribute("aria-expanded") !== "true"),
+        );
+        row.appendChild(twisty);
+      } else {
+        const spacer = el("span", "ced-twisty is-leaf");
+        spacer.setAttribute("aria-hidden", "true");
+        row.appendChild(spacer);
+      }
+
+      const title = el("span", "ced-title");
+      if (proposal.renaming === node.id) {
+        title.classList.add("is-editing");
+        title.appendChild(buildProposalNameForm({ parentId: node.parentId, renameId: node.id, value: node.name }));
+      } else {
+        const { head, tail } = editor().splitLastWord(node.name);
+        const name = el("span", "ced-name", head);
+        const end = el("span", "ced-name-end", tail);
+        end.appendChild(buildProposalAddChildButton(node, depth + 1));
+        name.appendChild(end);
+        title.appendChild(name);
+      }
+      row.appendChild(title);
+
+      const badges = el("span", "proposal-badges");
+      for (const badge of tm.changeBadges(node, proposal.mode)) {
+        const b = el("span", `proposal-badge is-${badge.key}`, badge.label);
+        b.title = badge.title;
+        badges.appendChild(b);
+      }
+      if (node.origin === "user") {
+        const mine = el("span", "proposal-badge is-owner");
+        mine.appendChild(ownerIcon());
+        mine.appendChild(el("span", null, "Yours"));
+        mine.title = "Kept as one of your own categories once accepted";
+        badges.appendChild(mine);
+      }
+      // A badge's tooltip is not reachable by keyboard; the accessible name says it too.
+      const said = tm.changeBadges(node, proposal.mode).map((b) => `${b.label}: ${b.title}`);
+      if (node.origin === "user") said.push("yours");
+      if (said.length) badges.setAttribute("aria-label", said.join("; "));
+      // Inside the title, after the name: they wrap with it rather than
+      // squeezing a long name into a column on a phone.
+      if (badges.childNodes.length && proposal.renaming !== node.id) title.appendChild(badges);
+
+      const count = el("span", "ced-count", node.sourceId != null ? String(node.total) : "");
+      if (node.sourceId != null) count.setAttribute("aria-label", `${node.total} posts filed here now`);
+      row.appendChild(count);
+
+      if (editable && proposal.renaming !== node.id) {
+        const rename = el("button", "ced-find proposal-rename");
+        rename.type = "button";
+        rename.dataset.proposalId = String(node.id);
+        rename.setAttribute("aria-label", `Rename “${node.name}”`);
+        rename.title = `Rename “${node.name}”`;
+        rename.appendChild(pencilIcon());
+        rename.addEventListener("click", () => startProposalRename(node.id));
+        row.appendChild(rename);
+
+        const bin = el("button", "ced-bin");
+        bin.type = "button";
+        bin.dataset.proposalId = String(node.id);
+        bin.setAttribute("aria-label", `Remove “${node.name}” from the proposal`);
+        bin.title = `Remove “${node.name}” from the proposal`;
+        bin.appendChild(trashIcon());
+        bin.addEventListener("click", () => void removeProposalNode(node));
+        row.appendChild(bin);
+      }
+      li.appendChild(row);
+
+      const group = el("ul", "ced-group");
+      group.id = groupId;
+      if (proposal.adding === node.id) group.appendChild(buildProposalAddRow(node, depth + 1));
+      if (hasChildren) buildProposalNodes(node.children, group, depth + 1);
+      group.hidden = !expanded;
+      li.appendChild(group);
+      parentList.appendChild(li);
+    }
+  }
+
+  function pencilIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("class", "icon-find");
+    svg.innerHTML =
+      '<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>' +
+      '<line x1="14.5" y1="7.5" x2="17.5" y2="10.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>';
+    return svg;
+  }
+
+  function buildProposalAddChildButton(node, depth) {
+    const control = editor().addChildControl(node.name, depth, proposalMaxDepth());
+    const btn = el("button", "ced-add-child");
+    btn.type = "button";
+    btn.dataset.proposalId = String(node.id);
+    btn.setAttribute("aria-label", control.label);
+    btn.title = control.title;
+    btn.appendChild(plusIcon());
+    if (!control.allowed) {
+      btn.setAttribute("aria-disabled", "true");
+      btn.addEventListener("click", () => {
+        showProposalError(control.reason);
+        announceProposal(control.reason);
+      });
+    } else {
+      btn.addEventListener("click", () => startProposalAdd(node.id));
+    }
+    return btn;
+  }
+
+  function buildProposalAddRow(parent, depth) {
+    const parentId = parent ? parent.id : null;
+    const li = el("li", "ced-add-row");
+    if (parent) {
+      li.style.setProperty("--ced-depth", String(depth));
+      const indent = el("span", "ced-indent");
+      indent.setAttribute("aria-hidden", "true");
+      li.appendChild(indent);
+    }
+    if (proposal.adding === parentId) {
+      li.appendChild(buildProposalNameForm({ parentId, parentName: parent ? parent.name : null }));
+      return li;
+    }
+    const btn = el("button", "ced-add");
+    btn.type = "button";
+    btn.appendChild(plusIcon());
+    btn.appendChild(el("span", null, "Add a top-level category"));
+    btn.addEventListener("click", () => startProposalAdd(null));
+    li.appendChild(btn);
+    return li;
+  }
+
+  /** The inline name form, for a new category (`parentId`) or a rename (`renameId`). */
+  function buildProposalNameForm(spec) {
+    const renaming = spec.renameId != null;
+    const form = el("form", "ced-form");
+    const key = renaming ? `rename-${spec.renameId}` : `add-${spec.parentId == null ? "root" : spec.parentId}`;
+    const fieldId = `proposal-name-${key}`;
+    const errorId = `${fieldId}-error`;
+    const labelText = renaming
+      ? `New name for “${spec.value}”`
+      : spec.parentName
+        ? `Name of the new category in ${spec.parentName}`
+        : "Name of the new top-level category";
+    const label = el("label", "visually-hidden", labelText);
+    label.setAttribute("for", fieldId);
+    form.appendChild(label);
+    const field = el("div", "search-field");
+    const input = el("input", "search-input");
+    input.id = fieldId;
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    if (renaming) input.value = spec.value;
+    field.appendChild(input);
+    form.appendChild(field);
+    const save = el("button", "btn btn-primary", renaming ? "Rename" : "Add");
+    save.type = "submit";
+    const cancel = el("button", "btn btn-secondary", "Cancel");
+    cancel.type = "button";
+    const back = () => {
+      proposal.adding = undefined;
+      proposal.renaming = undefined;
+      renderProposal();
+      focusProposalControl(renaming ? `.proposal-rename[data-proposal-id="${spec.renameId}"]` : spec.parentId == null ? ".ced-add" : `.ced-add-child[data-proposal-id="${spec.parentId}"]`);
+    };
+    cancel.addEventListener("click", back);
+    form.append(save, cancel);
+    const error = el("p", "setup-error ced-form-error");
+    error.id = errorId;
+    error.hidden = true;
+    form.appendChild(error);
+    const fail = (message) => {
+      error.textContent = message;
+      error.hidden = false;
+      input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", errorId);
+      input.focus();
+    };
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const check = recat().nameProblem(proposal.tree, spec.parentId, input.value, renaming ? spec.renameId : undefined);
+      if (!check.ok) {
+        fail(check.error);
+        return;
+      }
+      if (renaming) {
+        const was = spec.value;
+        proposal.renaming = undefined;
+        if (check.name === was) {
+          back();
+          return;
+        }
+        void commitProposal(recat().rename(proposal.tree, spec.renameId, check.name), {
+          focus: `.proposal-rename[data-proposal-id="${spec.renameId}"]`,
+          message: `Renamed “${was}” to “${check.name}”.`,
+        });
+        return;
+      }
+      const result = recat().add(proposal.tree, spec.parentId, check.name);
+      proposal.adding = undefined;
+      void commitProposal(result.tree, {
+        focus: `[data-grip-for="${result.id}"]`,
+        message: `Added “${check.name}”.`,
+      });
+    });
+    form.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      back();
+    });
+    queueMicrotask(() => {
+      input.focus();
+      if (renaming) input.select();
+    });
+    return form;
+  }
+
+  function startProposalAdd(parentId) {
+    if (!proposal) return;
+    showProposalError(null);
+    proposal.renaming = undefined;
+    proposal.adding = parentId;
+    if (parentId != null) proposal.expanded.add(parentId);
+    renderProposal();
+  }
+
+  function startProposalRename(id) {
+    if (!proposal) return;
+    showProposalError(null);
+    proposal.adding = undefined;
+    proposal.renaming = id;
+    renderProposal();
+  }
+
+  function setProposalExpanded(id, open) {
+    if (!proposal) return;
+    if (open) proposal.expanded.add(id);
+    else proposal.expanded.delete(id);
+    const group = document.getElementById(`proposal-group-${id}`);
+    const twisty = proposalTreeEl.querySelector(`.ced-twisty[aria-controls="proposal-group-${id}"]`);
+    const node = proposal.index.get(id);
+    if (!group || !twisty || !node) {
+      renderProposal();
+      return;
+    }
+    // In place, never a re-render: a hover-expand mid-drag must keep the grip.
+    group.hidden = !open;
+    twisty.setAttribute("aria-expanded", String(open));
+    twisty.setAttribute("aria-label", `${open ? "Collapse" : "Expand"} “${node.name}”`);
+  }
+
+  function focusProposalControl(selector) {
+    if (!selector || !proposalTreeEl) return;
+    const target = proposalTreeEl.querySelector(selector);
+    if (target) target.focus();
+  }
+
+  function removeProposalNode(node) {
+    const size = recat().subtreeSize(node);
+    const here = recat().locate(proposal.tree, node.id);
+    const parentId = here && here.parent ? here.parent.id : null;
+    void commitProposal(recat().remove(proposal.tree, node.id), {
+      focus: parentId != null ? `[data-grip-for="${parentId}"], .ced-add-child[data-proposal-id="${parentId}"]` : ".ced-add",
+      message:
+        size > 1
+          ? `Removed “${node.name}” and ${size - 1} sub-categor${size - 1 === 1 ? "y" : "ies"} from the proposal.`
+          : `Removed “${node.name}” from the proposal.`,
+    });
+  }
+
+  function moveProposalNode(node, target, opts) {
+    const tm = treeMove();
+    if (tm.isNoOp(proposal.tree, node.id, target)) return Promise.resolve({ ok: true });
+    if (target.parentId != null) proposal.expanded.add(target.parentId);
+    const next = recat().move(proposal.tree, node.id, target);
+    const index = recat().indexTree(recat().clone(next));
+    const moved = index.get(node.id);
+    const where = moved && moved.parentId != null ? `into “${(index.get(moved.parentId) || {}).name}”` : "to the top level";
+    return commitProposal(next, {
+      focus: opts && opts.focusGrip === false ? null : `[data-grip-for="${node.id}"]`,
+      message: `Moved “${node.name}” ${where}.`,
+    });
+  }
+
+  /**
+   * Show an edit at once, then save it. Saves run one at a time in order, and
+   * only the LATEST one's answer is adopted - the server's tree (re-validated,
+   * re-based for "only add") and its diff. A refused save puts back the tree
+   * as it was before that edit and says why; the owner's typed name is never
+   * the thing lost, because a name is only committed once it passed the same
+   * rule here.
+   */
+  function commitProposal(nextTree, opts) {
+    if (!proposal) return Promise.resolve({ ok: false });
+    const options = opts || {};
+    const before = proposal.tree;
+    const seq = ++proposal.seq;
+    const editorState = proposal;
+    proposal.tree = nextTree;
+    proposal.index = recat().indexTree(proposal.tree);
+    showProposalError(null);
+    renderProposal();
+    focusProposalControl(options.focus);
+    proposalAcceptBtn.classList.add("is-saving");
+    const run = async () => {
+      let res;
+      let body = {};
+      try {
+        res = await fetch("/api/recategorize/draft", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tree: recat().toPayload(nextTree) }),
+        });
+        body = await res.json().catch(() => ({}));
+      } catch (_) {
+        res = null;
+      }
+      if (proposal !== editorState) return { ok: false };
+      if (!res || !res.ok) {
+        const message = body.error || "Could not save that change to the proposal.";
+        if (seq === proposal.seq) {
+          proposal.tree = before;
+          proposal.index = recat().indexTree(proposal.tree);
+          renderProposal();
+          proposalAcceptBtn.classList.remove("is-saving");
+        }
+        showProposalError(message);
+        announceProposal(message);
+        return { ok: false, error: message };
+      }
+      if (seq === proposal.seq) {
+        const active = document.activeElement;
+        const keep = active && active.closest && active.closest("[data-move-id]");
+        const keepSelector = active && active.dataset && active.dataset.gripFor
+          ? `[data-grip-for="${active.dataset.gripFor}"]`
+          : null;
+        proposal.tree = body.draft.tree;
+        proposal.index = recat().indexTree(proposal.tree);
+        proposal.diff = body.draft.diff;
+        if (recatState) recatState.draft = body.draft;
+        // Re-render only when nothing is being typed: an open form is the owner's.
+        if (proposal.adding === undefined && proposal.renaming === undefined) {
+          renderProposal();
+          if (keep && keepSelector) focusProposalControl(keepSelector);
+          else if (options.focus) focusProposalControl(options.focus);
+        } else {
+          renderProposalDiff();
+        }
+        proposalAcceptBtn.classList.remove("is-saving");
+      }
+      const said = `${options.message || "Saved."} ${recat().diffSentence(proposal.diff, proposal.mode)}`;
+      announceProposal(said);
+      return { ok: true };
+    };
+    const result = proposal.queue.then(run, run);
+    proposal.queue = result;
+    return result;
+  }
+
+  // --- moving: the drag, the keyboard, and "Move to…" on the draft ------------
+
+  function proposalMoveProblem(id, parentId) {
+    return treeMove().problemFor(proposal.tree, id, parentId, proposalMaxDepth());
+  }
+
+  function createProposalGrip(node) {
+    const grip = el("button", "tree-grip ced-grip");
+    grip.type = "button";
+    grip.dataset.gripFor = String(node.id);
+    grip.setAttribute("aria-label", `Move “${node.name}”`);
+    grip.setAttribute("aria-describedby", "tree-move-help");
+    grip.title = "Drag to move, or press Enter to choose where";
+    grip.innerHTML = GRIP_SVG;
+    grip.addEventListener("keydown", (e) => onProposalGripKeydown(e, node));
+    grip.addEventListener("pointerdown", (e) => startProposalDrag(e, grip, node));
+    grip.addEventListener("click", (e) => {
+      if (e.detail === 0) openProposalMovePicker(node, grip);
+    });
+    return grip;
+  }
+
+  function onProposalGripKeydown(e, node) {
+    if (!MOVE_KEYS.includes(e.key) || !treeMove() || !proposal) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const target = treeMove().keyboardTarget(proposal.tree, node.id, e.key);
+    if (!target) {
+      announceProposal(treeMove().keyboardEdge(proposal.tree, node.id, e.key));
+      return;
+    }
+    const problem = proposalMoveProblem(node.id, target.parentId);
+    if (problem) {
+      showProposalError(problem.message);
+      announceProposal(problem.message);
+      return;
+    }
+    void moveProposalNode(node, target);
+  }
+
+  function startProposalDrag(e, grip, node) {
+    if (!treeMove() || !proposal) return;
+    startRowDrag(e, grip, {
+      node,
+      surface: "proposal",
+      container: proposalTreeEl,
+      scroller: proposalTreeEl,
+      roots: () => (proposal ? proposal.tree : []),
+      maxDepth: proposalMaxDepth(),
+      lookup: (id) => proposal && proposal.index.get(id),
+      problemFor: (id, parentId) => proposalMoveProblem(id, parentId),
+      expand: (id) => setProposalExpanded(id, true),
+      busy: () => !proposal,
+      hover: hoverTreeDrop,
+      clear: clearTreeDrop,
+      idle: (drag) => setTreeGhost(drag, null),
+      press: () => openProposalMovePicker(node, grip),
+      drop: (drag) => {
+        if (drag.problem) {
+          showProposalError(drag.problem.message);
+          announceProposal(drag.problem.message);
+          return;
+        }
+        void moveProposalNode(node, drag.target);
+      },
+    });
+  }
+
+  function openProposalMovePicker(node, triggerEl) {
+    if (!moveModalEl || !treeMove() || isMovePickerOpen() || !proposal) return;
+    const here = treeMove().locate(proposal.tree, node.id);
+    if (!here) return;
+    movePicker = {
+      mode: "category",
+      node,
+      surface: "proposal",
+      trigger: triggerEl,
+      selectedId: null,
+      focusedId: here.parent ? here.parent.id : TOP_LEVEL_ID,
+      expanded: new Set(treeMove().ancestorIds(proposal.tree, node.id)),
+      roots: () => (proposal ? proposal.tree : []),
+      lookup: (id) => proposal && proposal.index.get(id),
+      problemFor: (id, parentId) => proposalMoveProblem(id, parentId),
+      host: proposalTreeEl,
+      commit: (moved, target) => moveProposalNode(moved, target, { focusGrip: false }),
+    };
+    setMovePickerMode(node);
+    showMovePicker();
+  }
+
+  // --- cancel / accept --------------------------------------------------------
+
+  async function cancelProposal() {
+    let res;
+    try {
+      res = await fetch("/api/recategorize/draft", { method: "DELETE" });
+    } catch (_) {
+      res = null;
+    }
+    if (!res || !res.ok) {
+      const body = res ? await res.json().catch(() => ({})) : {};
+      const message = body.error || "Could not cancel the proposal.";
+      if (isProposalOpen()) showProposalError(message);
+      else showRecatError(message);
+      return;
+    }
+    closeProposalEditor({ returnFocus: false });
+    closeRecatChooser({ returnFocus: false });
+    if (recatOpenBtn) recatOpenBtn.focus();
+    await loadRecatState();
+    showToast("Proposal cancelled. Nothing was changed.");
+  }
+
+  function openRecatConfirm(opts) {
+    if (!recatConfirmModalEl || !recatState) return;
+    const refileOnly = !!(opts && opts.refileOnly);
+    const posts = refileOnly && recatState.pendingRefile ? recatState.pendingRefile.remaining : recatState.bookmarkCount;
+    const mode = refileOnly
+      ? recatState.pendingRefile && recatState.pendingRefile.mode
+      : recatState.draft && recatState.draft.mode;
+    const view = recat().acceptConfirm(recatState.cost, posts, mode, refileOnly);
+    recatConfirm = { refileOnly, returnFocus: document.activeElement };
+    recatConfirmTitleEl.textContent = refileOnly
+      ? "Finish re-filing?"
+      : mode === "extend"
+        ? "Add the categories and re-file every post?"
+        : "Replace your tree and re-file every post?";
+    // The price box is for a run that bills per token; a subscription run
+    // states its billing in the pass line alone, never under a "$" warning.
+    recatConfirmCostTextEl.textContent = view.lead;
+    const costEl = recatConfirmCostTextEl.closest(".rank-cost");
+    if (costEl) costEl.hidden = !view.paid;
+    recatConfirmModalEl.setAttribute("aria-describedby", view.paid ? "recat-confirm-cost" : "recat-confirm-scope");
+    recatConfirmPassesEl.replaceChildren();
+    const filing = recatState.cost && recatState.cost.filing;
+    if (filing && filing.spend) {
+      const item = el("li", "paid-pass");
+      item.append(
+        el("span", "paid-pass-label", `Phase 2 - re-filing ${posts} post${posts === 1 ? "" : "s"}`),
+        el("span", "paid-pass-detail", recat().refileDetail(recatState.cost, posts)),
+      );
+      recatConfirmPassesEl.appendChild(item);
+    }
+    if (filing && filing.warning) recatConfirmPassesEl.appendChild(el("li", "paid-pass paid-pass-detail", filing.warning));
+    recatConfirmScopeEl.textContent = view.scope;
+    recatConfirmNoteEl.textContent = view.note;
+    recatConfirmOkBtn.textContent = view.label;
+    recatConfirmOkBtn.disabled = !(filing && filing.available);
+    recatConfirmErrorEl.textContent = filing && !filing.available ? filing.reason || "" : "";
+    recatConfirmErrorEl.hidden = !(filing && !filing.available);
+    recatConfirmModalEl.hidden = false;
+    recatConfirmBackdropEl.hidden = false;
+    // Cancel first: the button that changes (and may bill) everything is never the default.
+    recatConfirmCancelBtn.focus();
+  }
+
+  function closeRecatConfirm(opts) {
+    if (!isRecatConfirmOpen()) return;
+    recatConfirmModalEl.hidden = true;
+    recatConfirmBackdropEl.hidden = true;
+    recatConfirmOkBtn.classList.remove("is-loading");
+    const pending = recatConfirm;
+    recatConfirm = null;
+    if (opts && opts.returnFocus === false) return;
+    const target = pending && pending.returnFocus;
+    if (target && target.isConnected && target.offsetParent !== null) target.focus();
+    else if (recatOpenBtn) recatOpenBtn.focus();
+  }
+
+  /** The authorization: the ONE place an accept (or a re-file) is started with `confirm: true`. */
+  async function confirmRecat() {
+    if (!recatConfirm) return;
+    const { refileOnly } = recatConfirm;
+    recatConfirmOkBtn.disabled = true;
+    recatConfirmOkBtn.classList.add("is-loading");
+    recatConfirmErrorEl.hidden = true;
+    // Saves still in flight land first: the accept must apply the tree on screen.
+    if (proposal) await proposal.queue;
+    let res;
+    let body = {};
+    try {
+      res = await fetch(refileOnly ? "/api/recategorize/refile" : "/api/recategorize/accept", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      body = await res.json().catch(() => ({}));
+    } catch (_) {
+      res = null;
+    }
+    if (!res || !res.ok) {
+      recatConfirmErrorEl.textContent = body.error || "Could not start re-filing.";
+      recatConfirmErrorEl.hidden = false;
+      recatConfirmOkBtn.disabled = false;
+      recatConfirmOkBtn.classList.remove("is-loading");
+      return;
+    }
+    closeRecatConfirm({ returnFocus: false });
+    closeProposalEditor({ returnFocus: false });
+    closeRecatChooser({ returnFocus: false });
+    if (recatOpenBtn) recatOpenBtn.focus();
+    renderRecatProgress(body.status);
+    pollRecat();
+  }
+
+  function initRecategorize() {
+    if (!recatOpenBtn || !recatModalEl || !recat()) return;
+    recatOpenBtn.addEventListener("click", () => {
+      popovers.forEach((p) => isPopoverOpen(p) && setPopoverOpen(p, false, { returnFocus: false }));
+      void openRecatChooser(recatOpenBtn);
+    });
+    recatCloseBtn.addEventListener("click", () => closeRecatChooser());
+    recatBackdropEl.addEventListener("click", () => closeRecatChooser());
+    proposalCloseBtn.addEventListener("click", () => closeProposalEditor());
+    proposalCancelBtn.addEventListener("click", () => void cancelProposal());
+    proposalAcceptBtn.addEventListener("click", () => openRecatConfirm({ refileOnly: false }));
+    recatConfirmCancelBtn.addEventListener("click", () => closeRecatConfirm());
+    recatConfirmBackdropEl.addEventListener("click", () => closeRecatConfirm());
+    recatConfirmOkBtn.addEventListener("click", () => void confirmRecat());
+    document.addEventListener("keydown", (e) => {
+      // The topmost dialog owns the key; the move picker handles its own.
+      if (isMovePickerOpen()) return;
+      const top = isRecatConfirmOpen()
+        ? recatConfirmModalEl
+        : isProposalOpen()
+          ? proposalModalEl
+          : isRecatOpen()
+            ? recatModalEl
+            : null;
+      if (!top) return;
+      if (e.key === "Escape") {
+        // A drag cancels itself on Escape before this runs (capture phase).
+        e.preventDefault();
+        e.stopPropagation();
+        if (top === recatConfirmModalEl) closeRecatConfirm();
+        else if (top === proposalModalEl) closeProposalEditor();
+        else closeRecatChooser();
+        return;
+      }
+      trapModalFocus(top, e);
+    });
+    void loadRecatState().then((state) => {
+      if (state && state.status && state.status.state === "running") pollRecat();
+      // A failure is still news after a reload (an unfinished re-file waits on it); a finished step is not.
+      else if (state && state.status && state.status.state === "error") renderRecatProgress(state.status);
+    });
+  }
+
   // ---- init --------------------------------------------------------------
   initSidebar();
   initSidebarNav();
@@ -10777,6 +11930,7 @@
   initRanking();
   initMovePicker();
   initCategoryEditor();
+  initRecategorize();
   initRubricEditor();
   initRankRulesPicker();
   initAssistantLists();
