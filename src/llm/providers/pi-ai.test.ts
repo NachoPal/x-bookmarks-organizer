@@ -79,6 +79,7 @@ function fakeRuntime(next: () => AssistantMessage = () => reply('{"ok":true}')) 
   const calls: Call[] = [];
   const known = new Set([
     'anthropic/claude-haiku-4-5',
+    'anthropic/claude-haiku-5-5',
     'openrouter/google/gemini-2.5-flash',
     'openai/gpt-5-mini',
     'opencode/claude-fable-5',
@@ -341,11 +342,11 @@ describe('per-role selection through the factory', () => {
       billing: 'per-token',
       contextWindow: 1_048_576,
     });
-    // No model pinned for pass 2: pi-ai's own suggestion (Haiku-class) applies.
+    // No model pinned for pass 2: pi-ai's own suggestion (Haiku 5.5) applies.
     expect(llm.describe('assignment')).toMatchObject({
       providerId: 'pi-ai',
-      model: 'anthropic/claude-haiku-4-5',
-      contextWindow: 200_000,
+      model: 'anthropic/claude-haiku-5-5',
+      contextWindow: 1_000_000,
     });
     expect(llm.describe('summary').providerId).toBe('claude-cli');
   });
@@ -369,7 +370,7 @@ describe('per-role selection through the factory', () => {
     const lines: string[] = [];
     reportCategorizerBilling(config, createLlmFactory(config, env), (m) => lines.push(m));
     expect(lines).toEqual([
-      'Assignment pass: pi-ai / anthropic/claude-haiku-4-5 - pay-per-token.',
+      'Assignment pass: pi-ai / anthropic/claude-haiku-5-5 - pay-per-token.',
       'Taxonomy pass: pi-ai / openrouter/google/gemini-2.5-flash - pay-per-token.',
     ]);
   });
@@ -496,9 +497,13 @@ describe('the full pi model catalog (issue: auto-load the selector)', () => {
 
   it('keeps a recommended pick\'s role and suggestion when it is found in the full list', async () => {
     const { provider } = fakeRuntime();
-    const [haiku] = await provider.modelCatalog!.listModels('anthropic');
-    expect(haiku).toMatchObject({ id: 'anthropic/claude-haiku-4-5', suggestedFor: ['assignment', 'chat'] });
-    expect(haiku!.description).toMatch(/^Fast and cheap/);
+    const models = await provider.modelCatalog!.listModels('anthropic');
+    const haiku = models.find((m) => m.id === 'anthropic/claude-haiku-5-5');
+    expect(haiku).toMatchObject({ suggestedFor: ['assignment', 'chat'] });
+    expect(haiku!.description).toMatch(/^Newest Haiku - fast and very cheap/);
+    const previous = models.find((m) => m.id === 'anthropic/claude-haiku-4-5');
+    expect(previous).toMatchObject({ suggestedFor: [] });
+    expect(previous!.description).toMatch(/^Previous Haiku/);
   });
 
   it('runs an OpenCode model on OPENCODE_API_KEY, billed per token - never on another upstream\'s key', async () => {

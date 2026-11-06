@@ -198,11 +198,11 @@ describe('the pi-claude-subscription provider (opt-in, fake runtime)', () => {
     expect(p.label).toMatch(/against Anthropic's terms/);
     expect(p.models.map((m) => m.id)).toEqual([
       'anthropic/claude-opus-5-5',
-      'anthropic/claude-haiku-4-5',
-      'anthropic/claude-sonnet-5',
-      'anthropic/claude-opus-4-8',
-      'anthropic/claude-sonnet-5-5',
       'anthropic/claude-haiku-5-5',
+      'anthropic/claude-sonnet-5-5',
+      'anthropic/claude-opus-4-8',
+      'anthropic/claude-sonnet-5',
+      'anthropic/claude-haiku-4-5',
     ]);
     expect(p.models.every((m) => m.requiresKey === 'CLAUDE_CODE_OAUTH_TOKEN')).toBe(true);
     expect(p.models.every((m) => typeof m.contextWindow === 'number')).toBe(true);
@@ -240,7 +240,7 @@ describe('opting in is a per-pass choice, and never the default', () => {
     const lines: string[] = [];
     reportCategorizerBilling(config, llm, (m) => lines.push(m));
     expect(lines[0]).toBe(
-      'Assignment pass: claude-cli / anthropic/claude-haiku-4-5 - Claude subscription (no per-call charge; consumes your subscription quota).',
+      'Assignment pass: claude-cli / anthropic/claude-haiku-5-5 - Claude subscription (no per-call charge; consumes your subscription quota).',
     );
     expect(lines[1]).toContain('Taxonomy pass: pi-claude-subscription / anthropic/claude-opus-5-5 - Claude subscription');
     expect(lines[1]).toContain(PI_CLAUDE_SUBSCRIPTION_WARNING);
@@ -259,7 +259,7 @@ describe('opting in is a per-pass choice, and never the default', () => {
       buildCategorizers(config, llm, db, createCredentialStore({ env }));
       expect(llm.forRole('taxonomy').providerId).toBe(PI_CLAUDE_SUBSCRIPTION_PROVIDER_ID);
       expect(llm.forRole('assignment').providerId).toBe(PI_CLAUDE_SUBSCRIPTION_PROVIDER_ID);
-      expect(llm.describe('assignment').model).toBe('anthropic/claude-haiku-4-5');
+      expect(llm.describe('assignment').model).toBe('anthropic/claude-haiku-5-5');
     } finally {
       db.close();
     }

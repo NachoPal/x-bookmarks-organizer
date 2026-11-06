@@ -200,7 +200,7 @@ function optionalFromEnv(env: NodeJS.ProcessEnv, name: string): string | undefin
  * The historical vars keep their exact meaning against the default provider:
  * `XBOOKMARKS_MODEL` is the assignment model, and - unless `XBOOKMARKS_SUMMARY_MODEL`
  * overrides it - also the summary model when explicitly set; left unset, summary
- * falls through to the provider's own suggestion (Claude Sonnet 5, for quality -
+ * falls through to the provider's own suggestion (Claude Sonnet 5.5, for quality -
  * see `models` in `src/llm/providers/claude-cli.ts`), independent of the
  * Haiku-class assignment default. `XBOOKMARKS_TAXONOMY_MODEL` /
  * `XBOOKMARKS_TAXONOMY_EFFORT` drive pass 1. Whether a level is a *valid* effort

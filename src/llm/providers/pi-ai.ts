@@ -100,7 +100,7 @@ const VALID_EFFORTS = new Set<string>(PI_AI_EFFORTS);
 const DEFAULT_EFFORT: ThinkingLevel = 'high';
 
 /**
- * A model reference is `<upstream>/<pi model id>`: `anthropic/claude-haiku-4-5`,
+ * A model reference is `<upstream>/<pi model id>`: `anthropic/claude-haiku-5-5`,
  * `openrouter/google/gemini-2.5-flash`, `local/llama3.1:8b`. The upstream is
  * what decides which key is needed and how the call is billed, so it is part
  * of the id the owner picks rather than a second setting to keep in step.
@@ -122,7 +122,7 @@ export function parseModelRef(ref: string): PiModelRef | undefined {
 function badRefMessage(ref: string): string {
   return (
     `pi-ai model "${ref}" is not "<upstream>/<model>". Upstreams: ${PI_UPSTREAM_IDS.join(', ')} - ` +
-    'e.g. "anthropic/claude-haiku-4-5", "openrouter/google/gemini-2.5-flash" or "local/llama3.1:8b".'
+    'e.g. "anthropic/claude-haiku-5-5", "openrouter/google/gemini-2.5-flash" or "local/llama3.1:8b".'
   );
 }
 
@@ -160,40 +160,22 @@ export const CURATED_PI_MODELS: readonly CuratedPiModel[] = [
     price: { input: 4, output: 20 },
   },
   {
-    ref: 'anthropic/claude-haiku-4-5',
-    label: 'Claude Haiku 4.5 (Anthropic API)',
+    ref: 'anthropic/claude-haiku-5-5',
+    label: 'Claude Haiku 5.5 (Anthropic API)',
     suggestedFor: ['assignment', 'chat'],
-    role: 'Fast and cheap - the pick for filing each bookmark',
-    contextWindow: 200_000,
-    maxOutputTokens: 64_000,
-    price: { input: 1, output: 5 },
-  },
-  {
-    ref: 'anthropic/claude-sonnet-5',
-    label: 'Claude Sonnet 5 (Anthropic API)',
-    suggestedFor: ['summary'],
-    role: 'Balanced Claude',
+    role: 'Newest Haiku - fast and very cheap, the pick for filing each bookmark',
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
-    price: { input: 2, output: 10 },
+    price: { input: 0.1, output: 0.5 },
   },
   {
     ref: 'anthropic/claude-sonnet-5-5',
     label: 'Claude Sonnet 5.5 (Anthropic API)',
-    suggestedFor: [],
-    role: 'Newest Sonnet - balanced Claude at the Sonnet 5 price',
+    suggestedFor: ['summary'],
+    role: 'Newest Sonnet - balanced Claude, the pick for summaries',
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     price: { input: 2, output: 10 },
-  },
-  {
-    ref: 'anthropic/claude-haiku-5-5',
-    label: 'Claude Haiku 5.5 (Anthropic API)',
-    suggestedFor: [],
-    role: 'Newest Haiku - fast and very cheap',
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    price: { input: 0.1, output: 0.5 },
   },
   {
     ref: 'anthropic/claude-opus-4-8',
@@ -203,6 +185,24 @@ export const CURATED_PI_MODELS: readonly CuratedPiModel[] = [
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     price: { input: 5, output: 25 },
+  },
+  {
+    ref: 'anthropic/claude-sonnet-5',
+    label: 'Claude Sonnet 5 (Anthropic API)',
+    suggestedFor: [],
+    role: 'Previous Sonnet',
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    price: { input: 2, output: 10 },
+  },
+  {
+    ref: 'anthropic/claude-haiku-4-5',
+    label: 'Claude Haiku 4.5 (Anthropic API)',
+    suggestedFor: [],
+    role: 'Previous Haiku - fast and cheap',
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    price: { input: 1, output: 5 },
   },
   {
     ref: 'openai/gpt-5.5',

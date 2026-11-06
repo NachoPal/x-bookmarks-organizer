@@ -73,15 +73,15 @@ describe('createLlmFactory - role resolution', () => {
   it('defaults to the claude-cli provider when nothing is configured', () => {
     const { providerId, model, billing } = factoryFor({}).describe('assignment');
     expect(providerId).toBe('claude-cli');
-    expect(model).toBe('anthropic/claude-haiku-4-5');
+    expect(model).toBe('anthropic/claude-haiku-5-5');
     expect(billing).toBe('subscription');
   });
 
-  it('keeps the Opus-pass-1 / Haiku-pass-2 split (Opus 5.5 designs), with summary on Sonnet 5', () => {
+  it('keeps the Opus-pass-1 / Haiku-pass-2 split (Opus 5.5 designs, Haiku 5.5 files), with summary on Sonnet 5.5', () => {
     const llm = factoryFor({});
     expect(llm.describe('taxonomy').model).toBe('anthropic/claude-opus-5-5');
-    expect(llm.describe('assignment').model).toBe('anthropic/claude-haiku-4-5');
-    expect(llm.describe('summary').model).toBe('anthropic/claude-sonnet-5');
+    expect(llm.describe('assignment').model).toBe('anthropic/claude-haiku-5-5');
+    expect(llm.describe('summary').model).toBe('anthropic/claude-sonnet-5-5');
   });
 
   it('honors XBOOKMARKS_SUMMARY_MODEL as a summary-role override', () => {

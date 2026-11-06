@@ -35,7 +35,7 @@ describe('the settings catalog', () => {
     expect(catalog.defaultEffort).toBe('medium');
     // The Recommended option's real value per pass: Opus designs, Haiku files.
     expect(claude.suggested.taxonomy).toBe('anthropic/claude-opus-5-5');
-    expect(claude.suggested.assignment).toBe('anthropic/claude-haiku-4-5');
+    expect(claude.suggested.assignment).toBe('anthropic/claude-haiku-5-5');
   });
 });
 
@@ -294,7 +294,7 @@ describe('per-pass providers (issue #70)', () => {
     expect(viaPi.warning).toMatch(/Account risk/);
     expect(viaPi.warning).toMatch(/terms prohibit/);
     expect(viaPi.label).toMatch(/against Anthropic's terms/);
-    expect(viaPi.suggested).toEqual({ taxonomy: 'anthropic/claude-opus-5-5', assignment: 'anthropic/claude-haiku-4-5' });
+    expect(viaPi.suggested).toEqual({ taxonomy: 'anthropic/claude-opus-5-5', assignment: 'anthropic/claude-haiku-5-5' });
 
     // Either route, on either pass, is a valid saved choice.
     for (const [taxonomyProvider, assignmentProvider] of [

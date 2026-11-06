@@ -2,7 +2,7 @@
  * How many tokens each role is allowed to ANSWER with (security review 2, #19).
  *
  * Without an explicit cap a per-token provider falls back to the model's own
- * maximum - 128,000 output tokens for Claude Sonnet 5 - so a bookmark whose
+ * maximum - 128,000 output tokens for Claude Sonnet 5.5 - so a bookmark whose
  * text talks the model into rambling can bill that much on one call. Every
  * role's budget is therefore stated here, sized from what the role actually
  * produces, with generous headroom so a legitimate answer never hits it:
