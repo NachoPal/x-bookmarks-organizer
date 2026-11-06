@@ -1,10 +1,13 @@
-import type { ArticleContext } from '../articles/link-metadata';
+import { imageContextText, linkedArticleText, type ArticleContext } from '../articles/link-metadata';
 import type { Assignment, RawBookmark } from '../types';
 
 const MAX_TEXT_CHARS = 500;
 
 /** Text budget for the linked article's title+description shown per bookmark. */
 const MAX_ARTICLE_CHARS = 300;
+
+/** Text budget for the words in a bookmark's images (alt text + OCR). */
+const MAX_IMAGE_CHARS = 400;
 
 /**
  * One entry in the batch shown to the model. When `articleContext` has an
@@ -24,11 +27,11 @@ function bookmarkLine(
     `    author: @${bm.authorUsername} (${bm.authorName})`,
     `    text: ${text}`,
   ];
-  const article = articleContext?.get(bm.postId);
-  if (article) {
-    const combined = article.description ? `${article.title} - ${article.description}` : article.title;
-    lines.push(`    linked article: ${combined.replace(/\s+/g, ' ').trim().slice(0, MAX_ARTICLE_CHARS)}`);
-  }
+  const context = articleContext?.get(bm.postId);
+  const article = linkedArticleText(context, MAX_ARTICLE_CHARS);
+  if (article) lines.push(`    linked article: ${article}`);
+  const images = imageContextText(context, MAX_IMAGE_CHARS);
+  if (images) lines.push(`    text in images: ${images}`);
   return lines.join('\n');
 }
 
@@ -62,6 +65,7 @@ ${treeText}
 - Place a bookmark at the MOST SPECIFIC node that fits. A bookmark may belong to several branches at once (multi-category) - list one path per branch.
 - Do NOT invent new categories or emit paths that are not in the tree. A path may never be longer than ${maxDepth} levels.
 - ${OWNER_RULE}
+- "text in images" is what was read from the pictures attached to the post or to the post it quotes (often a screenshot). Use it as evidence of the topic, like the post's own text.
 - Every bookmark must get at least one category. If truly nothing in the tree fits, use ["Uncategorized"].
 
 # Bookmarks to categorize

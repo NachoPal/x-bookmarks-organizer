@@ -91,6 +91,19 @@
  *   agrees across tabs and reloads. `assistant_lists.position` is where the
  *   owner put the list on the Lists page (ascending; a new list goes first,
  *   and a drag or an arrow key re-numbers them), so every tab shows one order.
+ * - `post_media` holds the photos/videos/GIFs attached to a post, keyed by
+ *   the post that CARRIES them and X's `media_key` - the same join as
+ *   `x_articles`: a bookmark's own media on its `post_id`, the media of the
+ *   post it quotes on `bookmarks.quoted_post_id` (screenshots are often on
+ *   the quoted post). The rows arrive on the bookmarks request itself
+ *   (`attachments.media_keys`), so they are written before a new bookmark is
+ *   stored (its images are read before it is categorized) and need no
+ *   bookmark id. `ocr_*` is the text the LOCAL recognizer read from the image
+ *   (`src/images/`): `pending` until tried, then `done` (text may be empty),
+ *   `failed` (retried a bounded number of times, `ocr_attempts`),
+ *   `unavailable` (no recognizer on this machine - retried once one exists)
+ *   or `skipped` (a video or GIF: only its alt text is used). A changed image
+ *   URL resets it to `pending`; an unchanged one keeps the text it has.
  */
 export const SCHEMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -229,6 +242,28 @@ CREATE TABLE IF NOT EXISTS assistant_list_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_assistant_list_items_bookmark ON assistant_list_items(bookmark_id);
+
+CREATE TABLE IF NOT EXISTS post_media (
+  post_id      TEXT NOT NULL,
+  media_key    TEXT NOT NULL,
+  position     INTEGER NOT NULL DEFAULT 0,
+  type         TEXT NOT NULL,
+  url          TEXT,
+  preview_url  TEXT,
+  alt_text     TEXT,
+  width        INTEGER,
+  height       INTEGER,
+  ocr_status   TEXT NOT NULL DEFAULT 'pending'
+               CHECK (ocr_status IN ('pending', 'done', 'failed', 'unavailable', 'skipped')),
+  ocr_text     TEXT,
+  ocr_error    TEXT,
+  ocr_attempts INTEGER NOT NULL DEFAULT 0,
+  ocr_at       TEXT,
+  fetched_at   TEXT NOT NULL,
+  PRIMARY KEY (post_id, media_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_media_ocr_status ON post_media(ocr_status);
 `;
 
 /**

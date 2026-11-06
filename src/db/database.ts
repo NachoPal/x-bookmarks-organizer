@@ -23,12 +23,16 @@ import { htmlToPlainText } from '../summarize/summarizer';
 import type {
   ArticleLinkMetadata,
   ArticleRecord,
+  BookmarkImage,
   BookmarkScoreRecord,
   CategoryNode,
   CategoryOrigin,
+  OcrStatus,
+  PostMedia,
   QuotedPost,
   RawBookmark,
   StoredBookmark,
+  StoredPostMedia,
   SummaryRecord,
   XArticle,
 } from '../types';
@@ -318,6 +322,69 @@ export interface BookmarkXArticle {
   postId: string;
   quoted: boolean;
 }
+
+interface PostMediaRow {
+  post_id: string;
+  media_key: string;
+  position: number;
+  type: string;
+  url: string | null;
+  preview_url: string | null;
+  alt_text: string | null;
+  width: number | null;
+  height: number | null;
+  ocr_status: OcrStatus;
+  ocr_text: string | null;
+  ocr_error: string | null;
+  ocr_attempts: number;
+  ocr_at: string | null;
+}
+
+function toStoredPostMedia(row: PostMediaRow): StoredPostMedia {
+  return {
+    postId: row.post_id,
+    mediaKey: row.media_key,
+    position: row.position,
+    type: row.type,
+    url: row.url,
+    previewImageUrl: row.preview_url,
+    altText: row.alt_text,
+    width: row.width,
+    height: row.height,
+    ocrStatus: row.ocr_status,
+    ocrText: row.ocr_text,
+    ocrError: row.ocr_error,
+    ocrAttempts: row.ocr_attempts,
+    ocrAt: row.ocr_at,
+  };
+}
+
+/** The OCR status a newly seen media item starts in: only a photo with a URL is ever read. */
+function initialOcrStatus(media: PostMedia): OcrStatus {
+  return media.type === 'photo' && media.url ? 'pending' : 'skipped';
+}
+
+/** What the in-place refresh did with one post from the bookmarks timeline. */
+export type RefreshOutcome = 'refreshed' | 'deleted' | 'not-stored';
+
+/** How far the library's images have been read - `Database.getImageStats`. */
+export interface ImageStats {
+  /** Every photo, video and GIF on a stored bookmark or the post it quotes. */
+  total: number;
+  photos: number;
+  /** Photos read (with or without any text found). */
+  done: number;
+  /** Photos read that had text in them. */
+  withText: number;
+  /** Photos still to read (including failures that will be retried). */
+  pending: number;
+  failed: number;
+  unavailable: number;
+}
+
+/** Media that belongs to a stored bookmark - its own post or the post it quotes. */
+const REFERENCED_MEDIA = `(pm.post_id IN (SELECT post_id FROM bookmarks)
+  OR pm.post_id IN (SELECT quoted_post_id FROM bookmarks WHERE quoted_post_id IS NOT NULL))`;
 
 interface QuotedPostRow {
   post_id: string;
@@ -1407,6 +1474,17 @@ export class Database {
     if (bm.quotedPostId) this.setQuotedPostId(bm.postId, bm.quotedPostId);
     if (bm.quotedPostId && bm.quotedXArticle) this.saveXArticle(bm.quotedPostId, bm.quotedXArticle, when);
     if (bm.quotedPost) this.saveQuotedPost(bm.quotedPost, when);
+    this.writeMediaData(bm, when);
+  }
+
+  /**
+   * Persist a fetched post's media and its quoted post's media. Only a list
+   * the request actually asked for is written (undefined = unknown, which
+   * must never erase what is stored).
+   */
+  writeMediaData(bm: Pick<RawBookmark, 'postId' | 'quotedPostId' | 'media' | 'quotedMedia'>, when: string): void {
+    if (bm.media) this.savePostMedia(bm.postId, bm.media, when);
+    if (bm.quotedPostId && bm.quotedMedia) this.savePostMedia(bm.quotedPostId, bm.quotedMedia, when);
   }
 
   /** Store (or refresh) the X Article hosted by `postId`. */
@@ -1512,6 +1590,260 @@ export class Database {
     return result;
   }
 
+  // --- Post media and the text read from it --------------------------------
+
+  /**
+   * Make `postId`'s stored media exactly `media` (X's current list): new items
+   * are added, items X no longer lists are dropped, and an item whose image
+   * changed starts its OCR over. An unchanged image keeps the text already
+   * read from it, so re-fetching a post (a sync, the in-place refresh) never
+   * re-runs OCR for nothing. One transaction.
+   */
+  savePostMedia(postId: string, media: PostMedia[], when: string = new Date().toISOString()): void {
+    const existing = new Map(
+      (this.db.prepare('SELECT * FROM post_media WHERE post_id = ?').all(postId) as PostMediaRow[]).map((r) => [
+        r.media_key,
+        r,
+      ]),
+    );
+    const insert = this.db.prepare(
+      `INSERT INTO post_media
+         (post_id, media_key, position, type, url, preview_url, alt_text, width, height, ocr_status, fetched_at)
+       VALUES (@postId, @mediaKey, @position, @type, @url, @previewUrl, @altText, @width, @height, @ocrStatus, @when)`,
+    );
+    const update = this.db.prepare(
+      `UPDATE post_media SET position = @position, type = @type, url = @url, preview_url = @previewUrl,
+         alt_text = @altText, width = @width, height = @height, fetched_at = @when
+       WHERE post_id = @postId AND media_key = @mediaKey`,
+    );
+    const resetOcr = this.db.prepare(
+      `UPDATE post_media SET ocr_status = ?, ocr_text = NULL, ocr_error = NULL, ocr_attempts = 0, ocr_at = NULL
+       WHERE post_id = ? AND media_key = ?`,
+    );
+    const remove = this.db.prepare('DELETE FROM post_media WHERE post_id = ? AND media_key = ?');
+
+    this.db.transaction(() => {
+      const keep = new Set<string>();
+      media.forEach((item, position) => {
+        if (keep.has(item.mediaKey)) return;
+        keep.add(item.mediaKey);
+        const params = {
+          postId,
+          mediaKey: item.mediaKey,
+          position,
+          type: item.type,
+          url: item.url,
+          previewUrl: item.previewImageUrl,
+          altText: item.altText,
+          width: item.width,
+          height: item.height,
+          ocrStatus: initialOcrStatus(item),
+          when,
+        };
+        const row = existing.get(item.mediaKey);
+        if (!row) {
+          insert.run(params);
+          return;
+        }
+        update.run(params);
+        if (row.url !== item.url || row.type !== item.type) resetOcr.run(params.ocrStatus, postId, item.mediaKey);
+      });
+      for (const key of existing.keys()) if (!keep.has(key)) remove.run(postId, key);
+    })();
+  }
+
+  /** The stored media of each post in `postIds`, in X's order, keyed by post id. */
+  getMediaForPosts(postIds: string[]): Map<string, StoredPostMedia[]> {
+    const result = new Map<string, StoredPostMedia[]>();
+    const ids = [...new Set(postIds)];
+    if (ids.length === 0) return result;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM post_media WHERE post_id IN (${ids.map(() => '?').join(',')}) ORDER BY post_id, position`,
+      )
+      .all(...ids) as PostMediaRow[];
+    for (const row of rows) {
+      const list = result.get(row.post_id);
+      const media = toStoredPostMedia(row);
+      if (list) list.push(media);
+      else result.set(row.post_id, [media]);
+    }
+    return result;
+  }
+
+  /**
+   * The images each bookmark shows - its own post's first, then the quoted
+   * post's - keyed by the bookmark's post id; bookmarks with none are absent.
+   * One query for the whole list.
+   */
+  getBookmarkImages(bookmarks: Pick<RawBookmark, 'postId' | 'quotedPostId'>[]): Map<string, BookmarkImage[]> {
+    const ids: string[] = [];
+    for (const bm of bookmarks) {
+      ids.push(bm.postId);
+      if (bm.quotedPostId) ids.push(bm.quotedPostId);
+    }
+    const byPost = this.getMediaForPosts(ids);
+    const result = new Map<string, BookmarkImage[]>();
+    for (const bm of bookmarks) {
+      const own = (byPost.get(bm.postId) ?? []).map((m): BookmarkImage => ({ ...m, source: 'post' }));
+      const quoted =
+        bm.quotedPostId && bm.quotedPostId !== bm.postId
+          ? (byPost.get(bm.quotedPostId) ?? []).map((m): BookmarkImage => ({ ...m, source: 'quoted-post' }))
+          : [];
+      if (own.length + quoted.length > 0) result.set(bm.postId, [...own, ...quoted]);
+    }
+    return result;
+  }
+
+  /**
+   * Photos whose text is still to be read, newest first: `pending` ones, and
+   * `failed` ones under `maxAttempts`; `unavailable` ones too when a
+   * recognizer now exists (`includeUnavailable`). Scoped to `postIds` when
+   * given - the sync reads a new bookmark's images before the bookmark is
+   * stored - and otherwise to media a stored bookmark actually shows, so the
+   * images of a deleted post are never read.
+   */
+  getOcrQueue(opts: { limit: number; postIds?: string[]; includeUnavailable: boolean; maxAttempts: number }): StoredPostMedia[] {
+    const statuses = `(pm.ocr_status = 'pending' OR (pm.ocr_status = 'failed' AND pm.ocr_attempts < ?)${
+      opts.includeUnavailable ? " OR pm.ocr_status = 'unavailable'" : ''
+    })`;
+    const params: (string | number)[] = [opts.maxAttempts];
+    let scope = REFERENCED_MEDIA;
+    if (opts.postIds) {
+      const ids = [...new Set(opts.postIds)];
+      if (ids.length === 0) return [];
+      scope = `pm.post_id IN (${ids.map(() => '?').join(',')})`;
+      params.push(...ids);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT pm.* FROM post_media pm
+          WHERE pm.type = 'photo' AND pm.url IS NOT NULL AND ${statuses} AND ${scope}
+          ORDER BY pm.fetched_at DESC, pm.post_id DESC, pm.position
+          LIMIT ?`,
+      )
+      .all(...params, opts.limit) as PostMediaRow[];
+    return rows.map(toStoredPostMedia);
+  }
+
+  /** Record what reading one image's text produced. A no-op for a row that is gone. */
+  setMediaOcrResult(
+    postId: string,
+    mediaKey: string,
+    result: { status: 'done'; text: string } | { status: 'failed' | 'unavailable'; error: string },
+    when: string = new Date().toISOString(),
+  ): void {
+    const counts = result.status === 'unavailable' ? 0 : 1;
+    this.db
+      .prepare(
+        `UPDATE post_media SET ocr_status = ?, ocr_text = ?, ocr_error = ?, ocr_at = ?,
+           ocr_attempts = ocr_attempts + ?
+         WHERE post_id = ? AND media_key = ?`,
+      )
+      .run(
+        result.status,
+        result.status === 'done' ? result.text : null,
+        result.status === 'done' ? null : result.error,
+        when,
+        counts,
+        postId,
+        mediaKey,
+      );
+  }
+
+  /** How far the library's images have been read. `maxAttempts` is the OCR retry bound. */
+  getImageStats(maxAttempts: number): ImageStats {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(pm.type = 'photo' AND pm.url IS NOT NULL), 0) AS photos,
+                COALESCE(SUM(pm.ocr_status = 'done'), 0) AS done,
+                COALESCE(SUM(pm.ocr_status = 'done' AND TRIM(COALESCE(pm.ocr_text, '')) <> ''), 0) AS withText,
+                COALESCE(SUM(pm.ocr_status = 'pending' OR (pm.ocr_status = 'failed' AND pm.ocr_attempts < ?)), 0) AS pending,
+                COALESCE(SUM(pm.ocr_status = 'failed' AND pm.ocr_attempts >= ?), 0) AS failed,
+                COALESCE(SUM(pm.ocr_status = 'unavailable'), 0) AS unavailable
+           FROM post_media pm WHERE ${REFERENCED_MEDIA}`,
+      )
+      .get(maxAttempts, maxAttempts) as ImageStats;
+    return row;
+  }
+
+  // --- In-place refresh from X ----------------------------------------------
+
+  /**
+   * The counts a refresh estimate is built from: stored bookmarks, posts the
+   * owner deleted in the app (X still returns them while they stay bookmarked
+   * there, and they are billed), and how many stored bookmarks quote a post -
+   * among the `newest` most recently saved ones when given.
+   */
+  getRefreshCounts(newest?: number): { stored: number; deleted: number; quoted: number } {
+    const stored = this.getBookmarkCount();
+    const deleted = (this.db.prepare('SELECT COUNT(*) AS n FROM deleted_bookmarks').get() as { n: number }).n;
+    const quoted =
+      newest === undefined
+        ? (this.db.prepare('SELECT COUNT(*) AS n FROM bookmarks WHERE quoted_post_id IS NOT NULL').get() as { n: number }).n
+        : (
+            this.db
+              .prepare(
+                `SELECT COUNT(*) AS n FROM (SELECT quoted_post_id FROM bookmarks
+                   ORDER BY ingested_at DESC, id DESC LIMIT ?) WHERE quoted_post_id IS NOT NULL`,
+              )
+              .get(newest) as { n: number }
+          ).n;
+    return { stored, deleted, quoted };
+  }
+
+  /** Every stored bookmark's post id (no row bodies). */
+  getStoredPostIds(): Set<string> {
+    const rows = this.db.prepare('SELECT post_id FROM bookmarks').all() as { post_id: string }[];
+    return new Set(rows.map((r) => r.post_id));
+  }
+
+  /**
+   * Update a STORED bookmark from a fresh copy of its post: only the fields
+   * X is the source of (author, text, url, post date) plus its Article, quote
+   * and media data. Nothing the owner made is touched - categories, origin,
+   * read/favorite state, lists, scores, summaries and `ingested_at` are not
+   * even read - and a post the owner deleted in the app is never re-added
+   * (its tombstone wins), nor is a post that is not stored yet (that is the
+   * next sync's job, with categorization). One transaction.
+   */
+  refreshBookmarkFromX(bm: RawBookmark, when: string = new Date().toISOString()): RefreshOutcome {
+    return this.db.transaction((): RefreshOutcome => {
+      if (this.db.prepare('SELECT 1 FROM deleted_bookmarks WHERE post_id = ?').get(bm.postId)) return 'deleted';
+      const stored = this.getBookmarkByPostId(bm.postId);
+      if (!stored) return 'not-stored';
+
+      // `mapBookmarks` falls back to `i` when X did not return the author; a
+      // missing author or an empty text must never blank what is stored.
+      const authorKnown = !!bm.authorUsername && bm.authorUsername !== 'i';
+      const next = {
+        authorUsername: authorKnown ? bm.authorUsername : stored.authorUsername,
+        authorName: authorKnown ? bm.authorName : stored.authorName,
+        url: authorKnown ? bm.url : stored.url,
+        text: bm.text || stored.text,
+        postCreatedAt: bm.postCreatedAt || stored.postCreatedAt,
+      };
+      if (
+        next.authorUsername !== stored.authorUsername ||
+        next.authorName !== stored.authorName ||
+        next.url !== stored.url ||
+        next.text !== stored.text ||
+        next.postCreatedAt !== stored.postCreatedAt
+      ) {
+        this.db
+          .prepare(
+            `UPDATE bookmarks SET author_username = @authorUsername, author_name = @authorName, url = @url,
+               text = @text, post_created_at = @postCreatedAt
+             WHERE post_id = @postId`,
+          )
+          .run({ ...next, postId: bm.postId });
+      }
+      this.writeXArticleData(bm, when);
+      return 'refreshed';
+    })();
+  }
+
   /**
    * Return the library to its never-synced state: every bookmark (and, by
    * cascade, its category links, article/summary/score rows), the taxonomy,
@@ -1538,6 +1870,7 @@ export class Database {
         'article_link_metadata',
         'x_articles',
         'quoted_posts',
+        'post_media',
         // Every item already went with its bookmark; an emptied list is noise.
         'assistant_lists',
       ]) {

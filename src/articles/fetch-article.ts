@@ -115,7 +115,7 @@ export interface ArticleFetcher {
 // page resolves fine for a real browser and this is a personal, single-user
 // fetch of a link the owner bookmarked. A realistic desktop browser UA avoids
 // that false-positive block (issue #28).
-const USER_AGENT =
+export const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const FETCH_TIMEOUT_MS = 10_000;
 const MIN_TEXT_LENGTH = 200;
@@ -580,7 +580,7 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
  * a followable redirect. Needed because the fetcher follows redirects itself
  * (`redirect: 'manual'`) so the host policy sees every hop.
  */
-function redirectTarget(res: ArticleFetchResponse, currentUrl: string): string | null {
+export function redirectTarget(res: ArticleFetchResponse, currentUrl: string): string | null {
   if (!REDIRECT_STATUSES.has(res.status)) return null;
   const location = res.headers.get('location');
   if (!location) return null;
@@ -670,7 +670,7 @@ async function readCappedText(res: ArticleFetchResponse, limit: number): Promise
 }
 
 /** Whether an error (or anything in its `cause` chain) is the policy's connect-time refusal. */
-function isPrivateAddressRefusal(err: unknown): boolean {
+export function isPrivateAddressRefusal(err: unknown): boolean {
   for (let current = err, depth = 0; current && depth < 8; depth++) {
     if ((current as { code?: unknown }).code === PRIVATE_ADDRESS_ERROR_CODE) return true;
     current = (current as { cause?: unknown }).cause;

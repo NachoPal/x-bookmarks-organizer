@@ -218,10 +218,12 @@ describe('TwitterApiXClient', () => {
     );
     const page = await client.fetchBookmarksPage();
     expect(page.bookmarks.map((b) => b.postId)).toEqual(['1']);
-    expect(calls).toHaveLength(2);
-    expect(logs.join('\n')).toMatch(/rejected the Article fields/);
+    // Full set, then without the quoted posts' media, then the legacy set.
+    expect(calls).toHaveLength(3);
+    expect(logs.join('\n')).toMatch(/continuing without image or X Article data/);
+    expect(page.bookmarks[0]!.media).toBeUndefined(); // not asked = unknown, never "no media"
     await client.fetchBookmarksPage('next');
-    expect(calls).toHaveLength(3); // later pages go straight to the legacy fields
+    expect(calls).toHaveLength(4); // later pages go straight to the legacy fields
   });
 
   it('batches post lookups by id at 100 per request', async () => {

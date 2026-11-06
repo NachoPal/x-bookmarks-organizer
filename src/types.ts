@@ -30,6 +30,62 @@ export interface RawBookmark {
    * (that body lives in `xArticle`/`quotedXArticle`, not here).
    */
   quotedPost?: QuotedPost | null;
+  /**
+   * The photos, videos and GIFs attached to the post, in the order X lists
+   * them (`attachments.media_keys`). Undefined when the request did not ask
+   * for media (an older field set, or X refusing the media fields), which is
+   * different from an empty list: "no media" may replace what is stored,
+   * "not asked" must never.
+   */
+  media?: PostMedia[];
+  /**
+   * The quoted post's attached media, from the
+   * `referenced_tweets.id.attachments.media_keys` expansion. Undefined when
+   * the post quotes nothing, the quoted post was not returned, or the
+   * expansion was not requested.
+   */
+  quotedMedia?: PostMedia[];
+}
+
+/**
+ * One media item attached to a post, from the X API's `includes.media[]`
+ * (`media.fields=type,url,preview_image_url,alt_text,width,height,media_key`).
+ * A photo carries `url`; a video or GIF carries only `previewImageUrl`.
+ */
+export interface PostMedia {
+  mediaKey: string;
+  /** `photo`, `video` or `animated_gif` (kept as X sends it). */
+  type: string;
+  url: string | null;
+  previewImageUrl: string | null;
+  /** The author's own description of the image, up to 1000 characters. */
+  altText: string | null;
+  width: number | null;
+  height: number | null;
+}
+
+/**
+ * Where a media item's OCR stands - see `post_media` in `src/db/schema.ts`.
+ * Only photos are read; a video or GIF is `skipped` (its alt text still counts).
+ */
+export type OcrStatus = 'pending' | 'done' | 'failed' | 'unavailable' | 'skipped';
+
+/** A {@link PostMedia} as stored, with the text the local recognizer read from it. */
+export interface StoredPostMedia extends PostMedia {
+  /** The post that carries the media: the bookmark's own, or the post it quotes. */
+  postId: string;
+  position: number;
+  ocrStatus: OcrStatus;
+  /** What OCR read; null until it has run, '' when it ran and found no text. */
+  ocrText: string | null;
+  ocrError: string | null;
+  ocrAttempts: number;
+  ocrAt: string | null;
+}
+
+/** One image a bookmark shows, from the post itself or from the post it quotes. */
+export interface BookmarkImage extends StoredPostMedia {
+  source: 'post' | 'quoted-post';
 }
 
 /** The content of a post quoted by a bookmark, captured from the bookmarks API's own `includes.tweets[]`. */

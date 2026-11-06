@@ -2,6 +2,7 @@ import { extractArticleLink } from '../articles/extract-link';
 import type { ArticleLinkMetadata, StoredBookmark, XArticle } from '../types';
 import { articleIdFromUrl } from './article';
 import type { XPostLookupClient } from './client';
+import { X_POST_READ_USD } from './pricing';
 
 /** The slice of `Database` this pass needs - no category/taxonomy access. */
 export interface XArticleBackfillDeps {
@@ -37,8 +38,6 @@ export interface XArticleBackfillSummary {
   unresolved: number;
 }
 
-/** Per-post read price for `GET /2/tweets` (non-owned Post read), for the dry-run estimate. */
-const ESTIMATED_COST_PER_POST_USD = 0.005;
 
 const STATUS_LINK = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/(?:[^/]+|i\/web)\/status\/(\d+)/i;
 
@@ -111,7 +110,7 @@ export async function backfillXArticles(
   log(
     `Found ${summary.direct} bookmark(s) linking an X Article and ${summary.quoted} quoting another X post ` +
       `without stored Article data; ${ids.length} post(s) to read from X ` +
-      `(estimated one-time cost ~$${(ids.length * ESTIMATED_COST_PER_POST_USD).toFixed(3)}).`,
+      `(estimated one-time cost ~$${(ids.length * X_POST_READ_USD).toFixed(3)}).`,
   );
   if (unresolved > 0) {
     log(

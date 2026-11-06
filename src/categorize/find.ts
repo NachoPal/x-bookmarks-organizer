@@ -21,13 +21,15 @@
  * The write is ADD-ONLY (`Database.addBookmarksToCategory`): a match gains
  * this category and keeps every category it already had.
  */
-import type { ArticleContext } from '../articles/link-metadata';
+import { imageContextText, linkedArticleText, type ArticleContext } from '../articles/link-metadata';
 import type { Database } from '../db/database';
 import type { RawBookmark } from '../types';
 import type { BatchCategorizer, LlmRunner } from './llm';
 
 const MAX_TEXT_CHARS = 500;
 const MAX_ARTICLE_CHARS = 300;
+/** Budget for the words in a bookmark's images (alt text + OCR) - bounded like the article line. */
+const MAX_IMAGE_CHARS = 400;
 
 /** The category a find looks for, as the prompt describes it. */
 export interface FindTarget {
@@ -40,11 +42,11 @@ export interface FindTarget {
 function bookmarkLine(bm: RawBookmark, index: number, articleContext?: Map<string, ArticleContext>): string {
   const text = bm.text.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_CHARS);
   const lines = [`[${index}] post_id: ${bm.postId}`, `    author: @${bm.authorUsername}`, `    text: ${text}`];
-  const article = articleContext?.get(bm.postId);
-  if (article) {
-    const combined = article.description ? `${article.title} - ${article.description}` : article.title;
-    lines.push(`    linked article: ${combined.replace(/\s+/g, ' ').trim().slice(0, MAX_ARTICLE_CHARS)}`);
-  }
+  const context = articleContext?.get(bm.postId);
+  const article = linkedArticleText(context, MAX_ARTICLE_CHARS);
+  if (article) lines.push(`    linked article: ${article}`);
+  const images = imageContextText(context, MAX_IMAGE_CHARS);
+  if (images) lines.push(`    text in images: ${images}`);
   return lines.join('\n');
 }
 

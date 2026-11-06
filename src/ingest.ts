@@ -49,6 +49,14 @@ export interface IngestDeps {
    * view's `ServerOptions.articleFetcher` seam.
    */
   articleFetcher?: ArticleFetcher;
+  /**
+   * Reads the text in the new bookmarks' images (local OCR) BEFORE they are
+   * filed, so a screenshot informs categorization. Bounded by the caller's
+   * own time budget and never throws; what it leaves is read later in the
+   * background. Omitted (every older test) means images are stored but not
+   * read here.
+   */
+  readImageText?: (postIds: string[]) => Promise<unknown>;
   logger?: (message: string) => void;
 }
 
@@ -271,6 +279,23 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
   // Oldest-first so assignment batches read in bookmark order.
   const ordered = [...newBookmarks].reverse();
   log(`Found ${ordered.length} new bookmark(s).`);
+
+  // The new posts' images (and their quoted posts') are stored up front - a
+  // media row needs no bookmark id - so their text can be read and shown to
+  // both passes. `storeCategorizedBatch` writes the same rows again, which
+  // keeps whatever was read.
+  const ingestWhen = new Date().toISOString();
+  for (const bm of ordered) db.writeMediaData(bm, ingestWhen);
+  if (deps.readImageText) {
+    const imagePostIds = ordered.flatMap((bm) => [
+      ...(bm.media?.length ? [bm.postId] : []),
+      ...(bm.quotedPostId && bm.quotedMedia?.length ? [bm.quotedPostId] : []),
+    ]);
+    if (imagePostIds.length > 0) {
+      log('Reading the text in the new bookmarks\' images...');
+      await deps.readImageText(imagePostIds);
+    }
+  }
 
   const articleFetcher = deps.articleFetcher ?? new HttpArticleFetcher();
   log('Fetching linked article titles for categorization...');

@@ -1,5 +1,5 @@
 import type { LlmRunner } from './llm';
-import type { ArticleContext } from '../articles/link-metadata';
+import { imageContextText, linkedArticleText, type ArticleContext } from '../articles/link-metadata';
 import type { RawBookmark, TaxonomyNode } from '../types';
 import { effectiveContextWindow, estimateTokens, inputBudgetFor, planBatches } from './taxonomy-budget';
 
@@ -8,6 +8,8 @@ const MAX_TEXT_CHARS = 220;
 
 /** Text budget for the linked article's title+description shown per bookmark. */
 const MAX_ARTICLE_CHARS = 160;
+/** Budget for the words in a bookmark's images (alt text + OCR) - bounded like the article line. */
+const MAX_IMAGE_CHARS = 160;
 
 /**
  * Cap on a designed node's one-line description (issue #61). The prompt asks
@@ -35,11 +37,6 @@ export function extractDomain(text: string): string | undefined {
   return undefined;
 }
 
-/** Format a linked article's title (+ optional description) for the prompt. */
-function formatArticleContext(article: ArticleContext): string {
-  const combined = article.description ? `${article.title} - ${article.description}` : article.title;
-  return combined.replace(/\s+/g, ' ').trim().slice(0, MAX_ARTICLE_CHARS);
-}
 
 /**
  * One compact line describing a bookmark for the taxonomy-design pass. When
@@ -56,9 +53,12 @@ function compactLine(
   const text = bm.text.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_CHARS);
   const domain = extractDomain(bm.text);
   const suffix = domain ? ` [link: ${domain}]` : '';
-  const article = articleContext?.get(bm.postId);
-  const articleSuffix = article ? ` [article: ${formatArticleContext(article)}]` : '';
-  return `[${index}] @${bm.authorUsername}: ${text}${suffix}${articleSuffix}`;
+  const context = articleContext?.get(bm.postId);
+  const article = linkedArticleText(context, MAX_ARTICLE_CHARS);
+  const articleSuffix = article ? ` [article: ${article}]` : '';
+  const images = imageContextText(context, MAX_IMAGE_CHARS);
+  const imageSuffix = images ? ` [text in images: ${images}]` : '';
+  return `[${index}] @${bm.authorUsername}: ${text}${suffix}${articleSuffix}${imageSuffix}`;
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { QuotedPost, RawBookmark, XArticle } from '../types';
+import type { PostMedia, QuotedPost, RawBookmark, XArticle } from '../types';
 
 /**
  * Tolerant mapping of the X API v2 `article` field (X-native long-form
@@ -14,12 +14,13 @@ import type { QuotedPost, RawBookmark, XArticle } from '../types';
  * so a real run reveals the actual shape if these guesses are off.
  */
 
-/** A v2 `includes.media[]` entry, as requested with `media.fields=url,width,height`. */
+/** A v2 `includes.media[]` entry, as requested with {@link MEDIA_FIELDS}. */
 export interface RawMedia {
   media_key?: string;
   type?: string;
   url?: string;
   preview_image_url?: string;
+  alt_text?: string;
   width?: number;
   height?: number;
 }
@@ -33,6 +34,8 @@ export interface RawTweet {
   article?: unknown;
   entities?: { urls?: { url?: string; expanded_url?: string; unwound_url?: string }[] };
   referenced_tweets?: { type?: string; id?: string }[];
+  /** The post's attached media, by key into `includes.media[]` (`attachments.media_keys`). */
+  attachments?: { media_keys?: string[] };
 }
 
 export interface RawUser {
@@ -50,9 +53,22 @@ export interface RawIncludes {
 
 /** `tweet.fields` requested on every Post read that may carry an Article. */
 export const TWEET_FIELDS = 'created_at,author_id,text,article,entities,referenced_tweets';
-/** Expansions that bring back the Article cover image and any quoted post. */
-export const EXPANSIONS = 'author_id,article.cover_media,referenced_tweets.id';
-export const MEDIA_FIELDS = 'url,width,height,preview_image_url';
+/**
+ * Expansions for the Article cover image, any quoted post, and the media
+ * attached to the post AND to the post it quotes (screenshots are often on
+ * the quoted post). Names per https://docs.x.com/x-api/fundamentals/expansions
+ * (`attachments.media_keys`, `referenced_tweets.id`) and the SDK's own
+ * `TTweetv2Expansion` (`referenced_tweets.id.attachments.media_keys`).
+ */
+export const EXPANSIONS =
+  'author_id,article.cover_media,referenced_tweets.id,attachments.media_keys,referenced_tweets.id.attachments.media_keys';
+/** {@link EXPANSIONS} minus the quoted post's media - the first fallback if X refuses that expansion. */
+export const EXPANSIONS_WITHOUT_QUOTED_MEDIA = 'author_id,article.cover_media,referenced_tweets.id,attachments.media_keys';
+/**
+ * `media.fields` (https://docs.x.com/x-api/users/get-bookmarks): a photo's
+ * `url`, a video's `preview_image_url`, and the author's `alt_text`.
+ */
+export const MEDIA_FIELDS = 'type,url,preview_image_url,alt_text,width,height,media_key';
 export const USER_FIELDS = 'username,name';
 
 const ARTICLE_LINK = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/i\/article\/(\d+)/i;
@@ -241,6 +257,56 @@ export function resetArticleShapeLog(): void {
   loggedArticleShape = false;
 }
 
+/** Only an absolute https URL is ever stored for a media item. */
+function safeMediaUrl(raw: string | undefined): string | null {
+  const url = safeImageUrl(raw ?? null);
+  return url && url.startsWith('https:') ? url : null;
+}
+
+function mediaFrom(media: RawMedia): PostMedia | null {
+  if (!media.media_key) return null;
+  const altText = typeof media.alt_text === 'string' && media.alt_text.trim() ? media.alt_text.trim() : null;
+  return {
+    mediaKey: media.media_key,
+    type: typeof media.type === 'string' && media.type ? media.type : 'photo',
+    url: safeMediaUrl(media.url),
+    previewImageUrl: safeMediaUrl(media.preview_image_url),
+    altText,
+    width: typeof media.width === 'number' ? media.width : null,
+    height: typeof media.height === 'number' ? media.height : null,
+  };
+}
+
+/**
+ * A post's attached media in X's own order, or undefined when the response
+ * carries no media at all (the media expansion was not requested, so nothing
+ * is known). A key X lists but did not return in `includes` is skipped.
+ */
+function attachedMedia(
+  tweet: RawTweet,
+  mediaByKey: Map<string, RawMedia>,
+  mediaRequested: boolean,
+): PostMedia[] | undefined {
+  if (!mediaRequested) return undefined;
+  const out: PostMedia[] = [];
+  for (const key of tweet.attachments?.media_keys ?? []) {
+    const raw = mediaByKey.get(key);
+    const media = raw ? mediaFrom(raw) : null;
+    if (media && !out.some((m) => m.mediaKey === media.mediaKey)) out.push(media);
+  }
+  return out;
+}
+
+/** Which media a response can be trusted to report - see {@link mapPosts}. */
+export interface MediaRequest {
+  /** `attachments.media_keys` was requested. */
+  own: boolean;
+  /** `referenced_tweets.id.attachments.media_keys` was requested. */
+  quoted: boolean;
+}
+
+const NO_MEDIA: MediaRequest = { own: false, quoted: false };
+
 /** A post read by id, with its (possibly quoted) Article data mapped. */
 export interface FetchedPost {
   postId: string;
@@ -252,6 +318,10 @@ export interface FetchedPost {
   quotedArticleUnrecognized: boolean;
   /** The quoted post's own content, when it is an ordinary post (not an Article). */
   quotedPost: QuotedPost | null;
+  /** See {@link RawBookmark.media}. */
+  media?: PostMedia[];
+  /** See {@link RawBookmark.quotedMedia}. */
+  quotedMedia?: PostMedia[];
 }
 
 /**
@@ -263,6 +333,7 @@ export function mapPosts(
   tweets: RawTweet[],
   includes: RawIncludes | undefined,
   logger: (message: string) => void,
+  mediaRequest: MediaRequest = NO_MEDIA,
 ): FetchedPost[] {
   const mediaByKey = new Map<string, RawMedia>();
   for (const m of includes?.media ?? []) if (m.media_key) mediaByKey.set(m.media_key, m);
@@ -286,6 +357,9 @@ export function mapPosts(
       quotedXArticle,
       quotedArticleUnrecognized: quoted ? hasUnrecognizedArticle(quoted, mediaByKey) : false,
       quotedPost: quoted && !quotedXArticle ? quotedPostFrom(quoted, users) : null,
+      media: attachedMedia(tweet, mediaByKey, mediaRequest.own),
+      // Only a quoted post X actually returned has a known media list.
+      quotedMedia: quoted ? attachedMedia(quoted, mediaByKey, mediaRequest.quoted) : undefined,
     };
     if (post.articleUnrecognized) {
       logger(`Warning: post ${tweet.id} has an X Article, but its fields were not recognized; see the shape logged above.`);
@@ -302,10 +376,11 @@ export function mapBookmarks(
   tweets: RawTweet[],
   includes: RawIncludes | undefined,
   logger: (message: string) => void,
+  mediaRequest: MediaRequest = NO_MEDIA,
 ): RawBookmark[] {
   const users = new Map<string, RawUser>();
   for (const u of includes?.users ?? []) users.set(u.id, u);
-  const posts = mapPosts(tweets, includes, logger);
+  const posts = mapPosts(tweets, includes, logger, mediaRequest);
 
   return tweets.map((tweet, i) => {
     const post = posts[i]!;
@@ -322,6 +397,8 @@ export function mapBookmarks(
       quotedPostId: post.quotedPostId,
       quotedXArticle: post.quotedXArticle,
       quotedPost: post.quotedPost,
+      ...(post.media !== undefined ? { media: post.media } : {}),
+      ...(post.quotedMedia !== undefined ? { quotedMedia: post.quotedMedia } : {}),
     };
   });
 }

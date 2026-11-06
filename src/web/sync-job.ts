@@ -38,6 +38,7 @@ import { applySettingsToConfig, effectiveSettings } from '../settings/settings';
 import { DEFAULT_TYPESAFE_MODEL } from '../categorize/typesafe/client';
 import { asPaidPass, describeRoleSpend, type PaidPass } from './paid-spend';
 import type { SyncJob } from './sync';
+import type { ImageTextWorker } from '../images/worker';
 
 /** What the owner is told when X has never been connected from this machine. */
 export const NOT_CONNECTED_MESSAGE =
@@ -61,7 +62,21 @@ export interface SyncJobDeps {
   ) => BuiltCategorizers;
   /** Test seam: the ingest itself. Defaults to the real `runIngest`. */
   ingest?: typeof defaultRunIngest;
+  /**
+   * Reads the text in images. A sync reads its NEW bookmarks' images itself,
+   * within {@link SYNC_IMAGE_TEXT_BUDGET_MS}, before filing them, then kicks
+   * the background pass for whatever is left. Omitted, images are stored but
+   * not read.
+   */
+  images?: ImageTextWorker;
 }
+
+/**
+ * How long a sync may spend reading its new bookmarks' images before filing
+ * them. A few new screenshots take a few seconds; a big first sync stops
+ * here and files with alt text alone, and the rest is read in the background.
+ */
+export const SYNC_IMAGE_TEXT_BUDGET_MS = 45_000;
 
 /**
  * Build the sync job the {@link SyncRunner} executes.
@@ -87,15 +102,22 @@ export function createSyncJob(deps: SyncJobDeps): SyncJob {
     const client = await connect(config, db);
     const { taxonomer, categorizer } = build(config, llm, db, store, log);
 
-    return ingest({
-      db,
-      client,
-      taxonomer,
-      categorizer,
-      batchSize: config.batchSize,
-      maxDepth: config.maxCategoryDepth,
-      logger: log,
-    }) as Promise<IngestSummary>;
+    const images = deps.images;
+    try {
+      return (await ingest({
+        db,
+        client,
+        taxonomer,
+        categorizer,
+        batchSize: config.batchSize,
+        maxDepth: config.maxCategoryDepth,
+        readImageText: images ? (postIds) => images.readFor(postIds, SYNC_IMAGE_TEXT_BUDGET_MS) : undefined,
+        logger: log,
+      })) as IngestSummary;
+    } finally {
+      // Whatever the budget (or an interrupted run) left unread.
+      images?.kick();
+    }
   };
 }
 

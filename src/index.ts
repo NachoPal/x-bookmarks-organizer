@@ -22,7 +22,11 @@ import type { ResolvedProviderConfig } from './llm/types';
 import { buildSettingsCatalog } from './settings/catalog';
 import { createModelBrowser } from './settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from './settings/settings';
-import { createSyncJob, createSyncPreflight, createSyncSpend } from './web/sync-job';
+import { createSyncJob, createSyncPreflight, createSyncSpend, SYNC_IMAGE_TEXT_BUDGET_MS } from './web/sync-job';
+import { createRefreshWiring, refreshBillingLine } from './web/refresh-job';
+import { ImageTextWorker } from './images/worker';
+import { NO_RECOGNIZER_MESSAGE } from './images/recognizer';
+import { estimateRefresh, refreshBookmarks } from './x/refresh';
 import { describeRoleSpend } from './web/paid-spend';
 import { createFindWiring } from './web/find-job';
 import { createRankWiring } from './web/rank-job';
@@ -64,6 +68,21 @@ Usage:
                                   A small one-time PAID X read; --dry-run lists
                                   what would be read and its estimated cost
                                   without calling X.
+  node dist/index.js refresh-from-x [--newest] [--dry-run]
+                                  Re-read your STORED bookmarks from X in place
+                                  (text, X Articles, quoted posts, images) and
+                                  read the text in their images locally. Never
+                                  touches categories, lists, scores, read or
+                                  favorite state; never re-adds a post you
+                                  deleted. A PAID X read (owned reads, about
+                                  $0.001 per post); --newest reads only the 10
+                                  newest; --dry-run prints the estimate only.
+                                  The app's Sync panel does the same.
+  node dist/index.js read-image-text
+                                  Read the text in every stored image not read
+                                  yet (local OCR: macOS Vision, else Tesseract).
+                                  Free and offline apart from downloading the
+                                  images from X's media servers.
   node dist/index.js refetch-articles
                                   Re-fetch every bookmark article cached as
                                   unreadable, and drop the cached summary of
@@ -171,6 +190,7 @@ async function cmdRun(baseConfig: Config, db: Database, store: CredentialStore):
   const client = await getAuthenticatedClient(config, db);
   const { taxonomer, categorizer } = buildCategorizers(config, llm, db, store, (msg) => console.log(msg));
 
+  const images = new ImageTextWorker({ db, logger: (msg) => console.log(msg) });
   const summary = await runIngest({
     db,
     client,
@@ -178,14 +198,47 @@ async function cmdRun(baseConfig: Config, db: Database, store: CredentialStore):
     categorizer,
     batchSize: config.batchSize,
     maxDepth: config.maxCategoryDepth,
+    readImageText: (postIds) => images.readFor(postIds, SYNC_IMAGE_TEXT_BUDGET_MS),
     logger: (msg) => console.log(msg),
   });
+  // What the budget left - awaited here, since a CLI run has no background.
+  images.kick();
+  await images.idle();
 
   console.log(
     `\nDone. ${summary.newBookmarks} new bookmark(s), ` +
       `${summary.batches} batch(es), ${summary.nodesCreated} new categor(y/ies).`,
   );
   console.log('Browse them with:  node dist/index.js serve');
+}
+
+async function cmdRefreshFromX(baseConfig: Config, db: Database, args: string[]): Promise<void> {
+  const scope = args.includes('--newest') ? 'newest' : 'all';
+  const estimate = estimateRefresh(db, scope);
+  console.log(
+    `Refresh ${scope === 'newest' ? 'the 10 newest bookmarks' : `all ${estimate.posts} stored bookmark(s)`} from X.`,
+  );
+  console.log(refreshBillingLine(estimate));
+  if (args.includes('--dry-run')) {
+    console.log('Dry run: nothing was requested from X.');
+    return;
+  }
+  const config = withStoredSettings(baseConfig, db);
+  requireXCredentials(config);
+  const client = await getAuthenticatedClient(config, db);
+  const summary = await refreshBookmarks(db, client, { scope, logger: (msg) => console.log(msg) });
+  await cmdReadImageText(db);
+  console.log(`\nDone. Refreshed ${summary.refreshed} bookmark(s), ${summary.imagesFound} image(s) found.`);
+}
+
+async function cmdReadImageText(db: Database): Promise<void> {
+  const images = new ImageTextWorker({ db, logger: (msg) => console.log(msg) });
+  const recognizer = await images.recognizer();
+  console.log(recognizer ? `Reading text in images with ${recognizer.label}.` : NO_RECOGNIZER_MESSAGE);
+  images.kick();
+  await images.idle();
+  const last = images.status().last;
+  if (last && last.total === 0) console.log('Every stored image has been read already.');
 }
 
 async function cmdRecategorize(baseConfig: Config, db: Database, store: CredentialStore): Promise<void> {
@@ -454,6 +507,9 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
   // independently of the summary role's provider.
   const providerConfig: ResolvedProviderConfig = { get: (key) => store.get(key).value };
   const modelBrowser = createModelBrowser();
+  // Reads the text in images in the background (local OCR); a sync and a
+  // refresh hand it their images, and it resumes whatever an earlier run left.
+  const images = new ImageTextWorker({ db, logger: (msg) => console.log(`Images: ${msg}`) });
   const app = await startServer(db, config.webPort, '127.0.0.1', {
     pageSize: config.pageSize,
     maxCategoryDepth: config.maxCategoryDepth,
@@ -471,7 +527,7 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // The Sync button's work. `baseConfig` (not `config`) is handed over on
     // purpose: the job re-reads the settings on every run, so changing them in
     // the Settings panel takes effect without restarting the viewer.
-    syncJob: createSyncJob({ db, store, config: baseConfig }),
+    syncJob: createSyncJob({ db, store, config: baseConfig, images }),
     // Which of the next sync's passes are billed per token - a paid sync is
     // confirmed in the app before it starts (security review 2, #20).
     syncSpend: createSyncSpend({ db, store, config: baseConfig, browser: modelBrowser }),
@@ -485,6 +541,10 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // "Find bookmarks for this category" in the category editor: the filing
     // model over the stored library, confirmed first when it is per-token.
     findBookmarks: createFindWiring({ db, store, config: baseConfig, browser: modelBrowser }),
+    // "Refresh from X" in the Sync panel: a paid, confirmed re-read of the
+    // stored bookmarks in place, then their images' text in the background.
+    refresh: createRefreshWiring({ db, config: baseConfig, images }),
+    images,
     // The built-in preset's relevance question (issue #102 / `rubric.ts`), so
     // the viewer resolves the ACTIVE preset to the SAME version tag the runs it
     // starts will write under - otherwise a viewer started with interests set
@@ -520,6 +580,11 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
       ? `Ranking: "Rank now" is disabled - ${rankBlocker.split('\n')[0]}`
       : `Ranking: "Rank now" is available in the app - ${billingLabel('per-token')}, and every run is confirmed before it starts.`,
   );
+  const recognizer = await images.recognizer();
+  console.log(
+    recognizer ? `Text in images: read locally with ${recognizer.label}.` : `Text in images: ${NO_RECOGNIZER_MESSAGE}`,
+  );
+  images.kick();
   console.log('Press Ctrl+C to stop.');
   const shutdown = () => {
     app.close().finally(() => {
@@ -558,6 +623,12 @@ async function main(): Promise<void> {
         break;
       case 'backfill-x-articles':
         await cmdBackfillXArticles(config, db);
+        break;
+      case 'refresh-from-x':
+        await cmdRefreshFromX(config, db, process.argv.slice(3));
+        break;
+      case 'read-image-text':
+        await cmdReadImageText(db);
         break;
       case 'refetch-articles':
         await cmdRefetchArticles(db);

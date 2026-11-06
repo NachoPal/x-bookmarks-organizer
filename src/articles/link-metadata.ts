@@ -1,11 +1,37 @@
 import { extractArticleLink } from './extract-link';
 import type { ArticleFetcher } from './fetch-article';
-import type { ArticleLinkMetadata, RawBookmark, XArticle } from '../types';
+import { formatImageText } from '../images/image-text';
+import type { ArticleLinkMetadata, BookmarkImage, RawBookmark, XArticle } from '../types';
 
-/** Article title/description handed to the categorization prompts for a link post. */
+/**
+ * What the categorization prompts are told about a bookmark beyond its own
+ * text: the linked article's title/description (issue #25) and the words in
+ * its images - alt text and what local OCR read, the post's own and the
+ * quoted post's. Either part may be absent.
+ */
 export interface ArticleContext {
-  title: string;
+  /** The linked (or X) article's title; absent when only image text is known. */
+  title?: string;
   description?: string;
+  /** The images' text, already labelled and bounded by {@link formatImageText}. */
+  imageText?: string;
+}
+
+/** Cap on the image text one bookmark contributes to a categorization prompt. */
+export const MAX_IMAGE_CONTEXT_CHARS = 600;
+
+/** `Title - description`, collapsed to one line and bounded, or null when there is no article. */
+export function linkedArticleText(ctx: ArticleContext | undefined, maxChars: number): string | null {
+  if (!ctx?.title) return null;
+  const combined = ctx.description ? `${ctx.title} - ${ctx.description}` : ctx.title;
+  return combined.replace(/\s+/g, ' ').trim().slice(0, maxChars);
+}
+
+/** The bookmark's image text for a prompt, bounded to `maxChars`, or null. */
+export function imageContextText(ctx: ArticleContext | undefined, maxChars: number): string | null {
+  if (!ctx?.imageText) return null;
+  const text = ctx.imageText;
+  return text.length > maxChars ? `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…` : text;
 }
 
 /** Cache seam for the URL-keyed article metadata; `Database` satisfies this directly. */
@@ -20,6 +46,8 @@ export interface ArticleMetadataCache {
   getXArticlesForBookmarks?(
     bookmarks: Pick<RawBookmark, 'postId' | 'quotedPostId'>[],
   ): Map<string, { article: XArticle }>;
+  /** Stored images (with their OCR text) per bookmark. Optional like the above; `Database` implements it. */
+  getBookmarkImages?(bookmarks: Pick<RawBookmark, 'postId' | 'quotedPostId'>[]): Map<string, BookmarkImage[]>;
 }
 
 /**
@@ -190,13 +218,25 @@ export async function buildArticleContext(
     if (existing) existing.push(bm.postId);
     else postIdsByUrl.set(url, [bm.postId]);
   }
-  if (postIdsByUrl.size === 0) return context;
+  if (postIdsByUrl.size > 0) {
+    const metadataByUrl = await resolveManyArticleLinkMetadata([...postIdsByUrl.keys()], fetcher, cache, concurrency);
+    for (const [url, postIds] of postIdsByUrl) {
+      const ctx = toContext(metadataByUrl.get(url)!);
+      if (!ctx) continue;
+      for (const postId of postIds) context.set(postId, ctx);
+    }
+  }
 
-  const metadataByUrl = await resolveManyArticleLinkMetadata([...postIdsByUrl.keys()], fetcher, cache, concurrency);
-  for (const [url, postIds] of postIdsByUrl) {
-    const ctx = toContext(metadataByUrl.get(url)!);
-    if (!ctx) continue;
-    for (const postId of postIds) context.set(postId, ctx);
+  // The words in the post's images (and the quoted post's) - a screenshot of
+  // a document or of another post is often all the signal there is. Read
+  // from the store: a sync reads its new bookmarks' images before this runs.
+  const images = cache.getBookmarkImages?.(bookmarks);
+  if (images) {
+    for (const bm of bookmarks) {
+      const imageText = formatImageText(images.get(bm.postId), MAX_IMAGE_CONTEXT_CHARS);
+      if (!imageText) continue;
+      context.set(bm.postId, { ...context.get(bm.postId), imageText });
+    }
   }
   return context;
 }

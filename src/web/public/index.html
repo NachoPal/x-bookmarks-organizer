@@ -501,6 +501,31 @@
                             </svg>
                             <span class="sync-btn-label">Sync</span>
                           </button>
+              <!-- "Refresh from X": a paid, confirmed re-read of the bookmarks
+                   already stored, in place, to pick up their images and the text
+                   in them. Pure half: refresh.js (XBORefresh); wiring:
+                   `initRefresh` in app.js. -->
+              <section id="sync-refresh" class="sync-refresh" aria-labelledby="sync-refresh-title">
+                <h3 id="sync-refresh-title" class="sync-refresh-title">Refresh from X</h3>
+                <p class="sync-refresh-note">
+                  Re-read the bookmarks you already have to pick up their images and the text in them.
+                  Categories, lists, scores and read state stay as they are.
+                </p>
+                <div class="sync-refresh-option">
+                  <button id="refresh-test-btn" class="btn btn-secondary panel-action" type="button" data-scope="newest">
+                    Test: refresh the 10 newest bookmarks
+                  </button>
+                  <p id="refresh-test-cost" class="sync-refresh-cost"></p>
+                </div>
+                <div class="sync-refresh-option">
+                  <button id="refresh-all-btn" class="btn btn-secondary panel-action" type="button" data-scope="all">
+                    Refresh all bookmarks
+                  </button>
+                  <p id="refresh-all-cost" class="sync-refresh-cost"></p>
+                </div>
+                <p id="refresh-blocker" class="sync-refresh-blocker" hidden></p>
+                <p id="refresh-images" class="sync-refresh-images" aria-live="polite"></p>
+              </section>
               <div class="sync-reset">
                 <p class="sync-reset-note">Start over from an empty library. Your X sign-in is kept.</p>
                 <button id="reset-open" class="btn btn-danger panel-action" type="button">Reset library</button>
@@ -1128,6 +1153,56 @@
       </div>
     </div>
 
+    <!-- "Refresh from X" confirmation: the price before the scope, Cancel
+         focused first, and Confirm the only thing that sends `confirm: true`. -->
+    <div id="refresh-confirm-backdrop" class="reader-backdrop" hidden></div>
+    <div
+      id="refresh-confirm-modal"
+      class="reader-modal setup-modal"
+      hidden
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="refresh-confirm-title"
+      aria-describedby="refresh-confirm-cost"
+    >
+      <div class="setup-panel reset-panel">
+        <div class="setup-header">
+          <div class="setup-heading">
+            <h2 id="refresh-confirm-title" class="setup-title">Refresh from X?</h2>
+          </div>
+        </div>
+        <div class="reset-body">
+          <p id="refresh-confirm-cost" class="rank-cost">
+            <svg class="rank-cost-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M12.4 7.4A3 3 0 0 0 10 6.3c-1.4 0-2.4.7-2.4 1.8 0 2.5 5 1.2 5 3.8 0 1.1-1.1 1.8-2.6 1.8a3.2 3.2 0 0 1-2.5-1.1"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+              <line x1="10" y1="4.6" x2="10" y2="15.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span id="refresh-confirm-cost-text" class="rank-cost-text"></span>
+          </p>
+          <p class="reset-text">
+            Only what X says about posts you already have is updated: their text, quoted posts and images.
+            Your categories, lists, scores, summaries, read and favorite state stay as they are, and posts
+            you deleted stay deleted.
+          </p>
+          <p class="reset-text-muted reset-text">
+            The text in the images is then read on this computer, for free, in the background.
+          </p>
+          <p id="refresh-confirm-error" class="sync-refresh-blocker" role="alert" hidden></p>
+        </div>
+        <div class="setup-footer">
+          <button id="refresh-confirm-cancel" class="btn btn-secondary" type="button">Cancel</button>
+          <button id="refresh-confirm-ok" class="btn btn-primary" type="button">Refresh</button>
+        </div>
+      </div>
+    </div>
+
     <!-- The Jev rules (rubric) editor (issue #102, manage/select split).
 
          Two views in one dialog rather than two dialogs: the preset LIST and
@@ -1458,6 +1533,9 @@
           </div>
         </div>
         <div id="summary-body" class="reader-body"></div>
+        <!-- The words in the post's images (alt text + local OCR), collapsed.
+             Filled by `renderSummaryImages` from /api/bookmarks/:id/images. -->
+        <div id="summary-images" class="summary-images" hidden></div>
       </div>
     </div>
 
@@ -1494,6 +1572,7 @@
     <script src="sidebar-nav.js" defer></script>
     <script src="sort-order.js" defer></script>
     <script src="ranking.js" defer></script>
+    <script src="refresh.js" defer></script>
     <script src="paid-spend.js" defer></script>
     <script src="breadcrumb.js" defer></script>
     <script src="category-picker.js" defer></script>

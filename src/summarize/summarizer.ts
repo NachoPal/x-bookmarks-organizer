@@ -23,7 +23,16 @@ export interface SummaryInput {
   articleSiteName?: string | null;
   /** Plain-text article body, when the bookmark's link is a readable article. */
   articleText?: string | null;
+  /**
+   * The words in the post's images and the quoted post's (alt text + local
+   * OCR), labelled per image by `formatImageText`. A screenshot is often the
+   * whole substance of a post.
+   */
+  imageText?: string | null;
 }
+
+/** Cap on the image text sent with a summary prompt. */
+export const MAX_SUMMARY_IMAGE_CHARS = 4000;
 
 /**
  * What the owner is told when a bookmark has nothing a model could summarize.
@@ -87,6 +96,7 @@ export function hasSummarizableContent(input: SummaryInput): boolean {
   if (input.articleText?.trim()) return true;
   if (input.articleTitle?.trim()) return true;
   if (input.articleDescription?.trim()) return true;
+  if (input.imageText?.trim()) return true;
   return postProse(input.postText).length > 0;
 }
 
@@ -128,6 +138,15 @@ export function buildSummaryPrompt(input: SummaryInput): string {
       ...(input.articleSiteName ? [`Site: ${input.articleSiteName}`] : []),
       '',
       'Summarize what is being shared based on the post and that card, and do not speculate beyond them.',
+    );
+  }
+  if (input.imageText) {
+    lines.push(
+      '',
+      'Text read from the images attached to the post (or to the post it quotes) - alt text and OCR, which can misread a word:',
+      input.imageText.slice(0, MAX_SUMMARY_IMAGE_CHARS),
+      '',
+      'When the images carry the substance (a screenshot of a document or of another post), summarize what they say.',
     );
   }
   return lines.join('\n');
