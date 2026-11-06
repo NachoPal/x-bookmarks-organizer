@@ -1126,6 +1126,36 @@ reads it for already-stored bookmarks via `GET /2/tweets?ids=` - PAID reads, so 
 bookmarks whose cached `resolved_url` is an X Article or X post, supports `--dry-run`, and only
 authenticates when there is something to read.
 
+## Images: media from X, local OCR, the in-place refresh (`src/images/`, `src/x/refresh.ts`)
+
+The bookmarks request also asks for `attachments.media_keys` + `referenced_tweets.id.attachments.media_keys`
+with `media.fields` (`src/x/article.ts`). `src/x/client.ts`'s `FIELD_TIERS` steps down on a 400: first
+without the quoted posts' media, then the legacy set - so a refused expansion costs that data, never the
+sync. `RawBookmark.media`/`quotedMedia` UNDEFINED means "not asked" and must never erase stored rows
+(`writeMediaData`); `[]` means "no media now". Rows live in `post_media`, keyed by the post that CARRIES
+them (the bookmark's `post_id` or its `quoted_post_id`, like `x_articles`), so a sync writes them BEFORE
+the bookmark is stored and reads the new photos' text (time-boxed, `SYNC_IMAGE_TEXT_BUDGET_MS`) before
+pass 1 - image text reaches every prompt through `ArticleContext.imageText` (`formatImageText`, bounded,
+labelled per image). An unchanged image URL keeps its OCR text; a changed one resets to `pending`.
+
+OCR is LOCAL and free: macOS Vision through `osascript` + AppleScriptObjC (`VISION_SCRIPT`, passed inline
+with `-e`, no compiled helper), else `tesseract` on the PATH, else `unavailable` (retried once an engine
+exists). Photos only; `failed` retries up to `OCR_MAX_ATTEMPTS`. Images are downloaded by
+`HttpImageFetcher` - host policy on every hop plus an allowlist of X's media hosts (`X_MEDIA_HOSTS`),
+size-capped. `ImageTextWorker` is deliberately NOT a `JobRunner`: OCR must never hold the sync slot; it
+runs one background pass at a time (`kick`), and `/api/setup` / `/api/refresh` report its progress.
+Tests inject a stub recognizer/fetcher; one real-OCR test on `src/images/fixtures/synthetic-text.png`
+runs only when a recognizer exists.
+
+"Refresh from X" (Sync panel, `POST /api/refresh { scope: 'newest' | 'all', confirm: true }`) re-pages
+the owner's bookmarks timeline (owned reads) and calls `Database.refreshBookmarkFromX`, which updates only
+X-sourced columns + Article/quote/media data and returns `deleted` for a tombstoned post and
+`not-stored` for a new one - it must never touch categories, origin, lists, scores, summaries, read or
+favorite state (`refresh.test.ts` snapshots all of them). Prices and their source/date are ONE place,
+`src/x/pricing.ts`; estimates round their top up (`formatCostRange` / `XBORefresh.costText`). It holds
+its own job slot and is mutually exclusive with sync, rank, find and reset. Its strip stays "running"
+while the OCR it kicked is still reading (`XBORefresh.stripStatus`).
+
 ## Jev ranking pass (`XBOOKMARKS_RANKER`, issue #62)
 
 A PAID pass that scores each stored bookmark for learning value with TypeSafe/Jev `Score`
@@ -1616,7 +1646,7 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   in the viewer: `show_in_app` accepts posts in any order and `position` is never displayed there -
   only the MCP `get_list` reads it.
 - **Search** (`src/db/search.ts`): FTS5 table `bookmark_fts`, one row per bookmark, kept current by
-  TRIGGERS on the six source tables (every trigger re-derives the affected documents from ONE SQL
+  TRIGGERS on the seven source tables (`post_media` included - image text is its own `images` column) (every trigger re-derives the affected documents from ONE SQL
   definition), so a new write path needs no index code. SQL cannot strip HTML, so
   `Database.saveArticle` also stores `articles.content_text`. Bump `SEARCH_INDEX_VERSION` when the
   document or triggers change - a mismatch rebuilds on open, which is also the migration. Raw query

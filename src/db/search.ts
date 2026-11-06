@@ -5,10 +5,13 @@
  * `bookmarks.id`) whose columns gather everything a person might remember a
  * post by: its own text, its author, the post it quotes, the article it links
  * to (the ingest-time title/description, the reader-view title and body once
- * cached, an X Article's title and body) and its saved summary.
+ * cached, an X Article's title and body), its saved summary, and the text in
+ * its images - the post's own and the quoted post's (alt text plus what the
+ * local OCR read). Image text has its own `images` column, which is how a hit
+ * is known to come from an image rather than from anything the post says.
  *
  * It is kept in sync by TRIGGERS, not by the write methods, on purpose: those
- * pieces live in six tables written from a dozen places (ingest, the X Article
+ * pieces live in seven tables written from a dozen places (ingest, the X Article
  * backfill, Summarize, `refetch-articles`, a category delete, a reset...), and
  * a trigger cannot be forgotten by the next write path someone adds. Every
  * trigger does the same thing - re-derive the affected bookmarks' documents
@@ -26,23 +29,25 @@
  */
 
 /** Bump whenever the document or the triggers change; a mismatch rebuilds the index on open. */
-export const SEARCH_INDEX_VERSION = '1';
+export const SEARCH_INDEX_VERSION = '2';
 
 /** `run_state` key holding the version the current index was built under. */
 export const SEARCH_INDEX_VERSION_KEY = 'search_index_version';
 
 /**
  * The FTS5 columns, in order. `bm25` weights follow the same order: a hit in
- * the post itself counts most, then its author and saved summary.
+ * the post itself counts most, then its author and saved summary. Image text
+ * weighs like the summary: a screenshot is often the post's whole substance,
+ * but OCR can misread.
  */
-export const SEARCH_COLUMNS = ['post', 'author', 'quoted', 'article', 'summary'] as const;
-export const SEARCH_WEIGHTS = [4, 2, 1.5, 1, 1.5];
+export const SEARCH_COLUMNS = ['post', 'author', 'quoted', 'article', 'summary', 'images'] as const;
+export const SEARCH_WEIGHTS = [4, 2, 1.5, 1, 1.5, 1.5];
 
 const TRIGGER_PREFIX = 'bookmark_fts_';
 
 /**
  * The search document of every bookmark `b` matched by `where`, as
- * `(rowid, post, author, quoted, article, summary)`.
+ * `(rowid, post, author, quoted, article, summary, images)`.
  *
  * A linked page's metadata is URL-keyed and the URL lives inside the post
  * text (X shortens every link to `t.co`), so it joins on containment; a
@@ -66,7 +71,9 @@ function documentSelectSql(where: string): string {
       COALESCE((SELECT group_concat(COALESCE(xa.title, '') || ' ' || COALESCE(xa.preview_text, '') || ' ' ||
                                     COALESCE(xa.plain_text, ''), ' ')
                   FROM x_articles xa WHERE xa.post_id = b.post_id OR xa.post_id = b.quoted_post_id), ''),
-      COALESCE((SELECT s.summary FROM summaries s WHERE s.bookmark_id = b.id), '')
+      COALESCE((SELECT s.summary FROM summaries s WHERE s.bookmark_id = b.id), ''),
+      COALESCE((SELECT group_concat(COALESCE(pm.alt_text, '') || ' ' || COALESCE(pm.ocr_text, ''), ' ')
+                  FROM post_media pm WHERE pm.post_id = b.post_id OR pm.post_id = b.quoted_post_id), '')
     FROM bookmarks b
     WHERE ${where}`;
 }
@@ -134,6 +141,11 @@ ${sourceTriggers(
   'quoted_posts',
   (r) => `SELECT id FROM bookmarks WHERE quoted_post_id = ${r}.post_id`,
   ['post_id', 'author_username', 'author_name', 'text'],
+)}
+${sourceTriggers(
+  'post_media',
+  (r) => `SELECT id FROM bookmarks WHERE post_id = ${r}.post_id OR quoted_post_id = ${r}.post_id`,
+  ['post_id', 'alt_text', 'ocr_text'],
 )}
 ${sourceTriggers(
   'article_link_metadata',

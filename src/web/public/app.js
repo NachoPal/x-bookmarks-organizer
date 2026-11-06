@@ -37,9 +37,12 @@
   const summaryModalEl = document.getElementById("summary-modal");
   const summaryMetaEl = document.getElementById("summary-meta");
   const summaryBodyEl = document.getElementById("summary-body");
+  const summaryImagesEl = document.getElementById("summary-images");
   const summaryCloseBtn = document.getElementById("summary-close");
   let summaryReturnFocusEl = null;
   let summaryRequestSeq = 0;
+  /** The same guard for the modal's "Text in image" read: a reopen discards an older answer. */
+  let summaryImagesSeq = 0;
   // Optimistic default: corrected once /api/summary-status resolves. A stale
   // "true" is still safe - the endpoint itself degrades gracefully (503) if no
   // provider is available, and that renders the same message in the modal.
@@ -729,7 +732,7 @@
       // the keyboard to is inside the drawer that just went `inert`.
       if (isCatEditorOpen() || isCatDeleteOpen() || isCatFindOpen() || isMovePickerOpen() || isRubricOpen()) return;
       // And the two paid confirmations, which own Escape the same way.
-      if (isRankOpen() || isSyncConfirmOpen()) return;
+      if (isRankOpen() || isSyncConfirmOpen() || isRefreshConfirmOpen()) return;
       // Inside a sidebar page, Escape is Back - one level at a time, so a
       // second Escape on the menu is what closes the sidebar. Only with focus
       // in the sidebar: from the posts, Escape still just closes it.
@@ -1146,7 +1149,7 @@
     popovers.forEach((p) => p.toggle.addEventListener("click", () => setPopoverOpen(p, !isPopoverOpen(p))));
 
     document.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape" || isSetupOpen() || isRankOpen() || isSyncConfirmOpen()) return;
+      if (e.key !== "Escape" || isSetupOpen() || isRankOpen() || isSyncConfirmOpen() || isRefreshConfirmOpen()) return;
       // Inside a Settings sub-page, Escape is Back: one level at a time, so a
       // second Escape at the root is what closes the panel.
       const settings = popovers.find((p) => p.name === "settings");
@@ -6893,6 +6896,46 @@
     document.addEventListener("keydown", onSummaryKeydown);
 
     fetchSummary(bm);
+    fetchSummaryImages(bm);
+  }
+
+  /**
+   * The words in the post's images (alt text + local OCR), collapsed under the
+   * summary - independent of the summary's own state, so a failed or
+   * unavailable summary still shows them. Hidden when no image has any words.
+   */
+  function fetchSummaryImages(bm) {
+    if (!summaryImagesEl) return;
+    summaryImagesEl.hidden = true;
+    summaryImagesEl.replaceChildren();
+    const seq = ++summaryImagesSeq;
+    getJSON(`/api/bookmarks/${bm.id}/images`)
+      .then((data) => {
+        if (seq !== summaryImagesSeq || !isSummaryOpen()) return;
+        renderSummaryImages(data.images || []);
+      })
+      .catch(() => {
+        // Optional extra: the summary itself is unaffected.
+      });
+  }
+
+  function renderSummaryImages(images) {
+    const entries = refreshApi().imageTextEntries(images);
+    if (entries.length === 0) return;
+    const details = el("details", "summary-images-details");
+    details.appendChild(el("summary", "summary-images-summary", refreshApi().imageTextSummary(entries)));
+    const list = el("ul", "summary-images-list");
+    for (const entry of entries) {
+      const item = el("li", "summary-image");
+      item.appendChild(el("p", "summary-image-label", entry.label));
+      // Someone else's words, rendered as text - never as markup.
+      if (entry.altText) item.appendChild(el("p", "summary-image-alt", `Alt text: ${entry.altText}`));
+      if (entry.text) item.appendChild(el("p", "summary-image-text", entry.text));
+      list.appendChild(item);
+    }
+    details.appendChild(list);
+    summaryImagesEl.replaceChildren(details);
+    summaryImagesEl.hidden = false;
   }
 
   /**
@@ -6951,6 +6994,7 @@
     summaryModalEl.hidden = true;
     summaryBackdropEl.hidden = true;
     summaryRequestSeq += 1; // discard any in-flight fetch's result
+    summaryImagesSeq += 1;
     document.removeEventListener("keydown", onSummaryKeydown);
     if (summaryReturnFocusEl && summaryReturnFocusEl.isConnected) summaryReturnFocusEl.focus();
     summaryReturnFocusEl = null;
@@ -7281,6 +7325,7 @@
     renderDotenvWarning(document.getElementById("settings-dotenv-warning"), "settings");
     updateSyncButton();
     updateRankControl();
+    updateRefreshControls();
     renderRankRulesPicker();
     updateEmptyLibraryState();
     updateToolbarVisibility();
@@ -7311,8 +7356,10 @@
     const blockers = setupState ? categorization().syncBlockers(setupState) : [];
     const blocked = !setupState || !syncAvailable();
 
+    // A refresh from X holds the same one-job slot (the server answers 409).
+    const refreshing = refreshApi().isRunning(refreshState());
     syncBtn.classList.toggle("is-syncing", running);
-    syncBtn.disabled = running || blocked;
+    syncBtn.disabled = running || blocked || refreshing;
     const label = syncBtn.querySelector(".sync-btn-label");
     if (label) label.textContent = running ? "Syncing…" : "Sync";
     syncBtn.setAttribute("aria-label", running ? "Syncing your bookmarks" : "Sync bookmarks from X");
@@ -7320,6 +7367,8 @@
     // never a dead end.
     if (blocked && setupState && setupState.sync && setupState.sync.reason) {
       syncBtn.title = setupState.sync.reason;
+    } else if (refreshing) {
+      syncBtn.title = "Your bookmarks are being refreshed from X. Sync when it finishes.";
     } else if (!running && blockers.length > 0) {
       syncBtn.title = blockers[0];
     } else {
@@ -7468,6 +7517,208 @@
     });
   }
 
+  // ---- "Refresh from X" (Sync panel) -------------------------------------
+  // A paid re-read of the stored bookmarks, in place, to pick up their images
+  // and the text in them. The same discipline as a paid sync: the price before
+  // the scope, Cancel focused first, and the dialog's Confirm the only thing
+  // that sends `confirm: true`. Its progress - and the background OCR that
+  // follows it - lands in the ONE shared strip.
+
+  const refreshTestBtn = document.getElementById("refresh-test-btn");
+  const refreshAllBtn = document.getElementById("refresh-all-btn");
+  const refreshTestCostEl = document.getElementById("refresh-test-cost");
+  const refreshAllCostEl = document.getElementById("refresh-all-cost");
+  const refreshBlockerEl = document.getElementById("refresh-blocker");
+  const refreshImagesEl = document.getElementById("refresh-images");
+  const refreshConfirmModalEl = document.getElementById("refresh-confirm-modal");
+  const refreshConfirmBackdropEl = document.getElementById("refresh-confirm-backdrop");
+  const refreshConfirmTitleEl = document.getElementById("refresh-confirm-title");
+  const refreshConfirmCostTextEl = document.getElementById("refresh-confirm-cost-text");
+  const refreshConfirmErrorEl = document.getElementById("refresh-confirm-error");
+  const refreshConfirmCancelBtn = document.getElementById("refresh-confirm-cancel");
+  const refreshConfirmOkBtn = document.getElementById("refresh-confirm-ok");
+  const REFRESH_POLL_MS = 1500;
+  let refreshPollTimer = null;
+  /** The scope the open dialog authorizes, and the last one started (for the strip's Try again). */
+  let refreshConfirmScope = null;
+  let lastRefreshScope = "newest";
+  let refreshReturnFocusEl = null;
+
+  // Inert defaults: a missing script leaves the paid control OFF.
+  const NO_REFRESH = {
+    costText: () => "",
+    blocker: () => "Refreshing from X is unavailable in this viewer.",
+    canRefresh: () => false,
+    isRunning: () => false,
+    buttonLabel: (scope) => (scope === "newest" ? "Test: refresh the 10 newest bookmarks" : "Refresh all bookmarks"),
+    scopeLine: () => "",
+    confirmTitle: () => "Refresh from X?",
+    confirmCost: () => "This refresh is billed by X per post read.",
+    confirmLabel: () => "Refresh",
+    imagesLine: () => "",
+    stripStatus: (s) => s,
+    progressLine: () => "",
+    needsPolling: () => false,
+    imageTextEntries: () => [],
+    imageTextSummary: () => "Text in image",
+  };
+
+  function refreshApi() {
+    return window.XBORefresh || NO_REFRESH;
+  }
+
+  function refreshState() {
+    return (setupState && setupState.refresh) || null;
+  }
+
+  function isRefreshConfirmOpen() {
+    return !!refreshConfirmModalEl && !refreshConfirmModalEl.hidden;
+  }
+
+  /** Paint the panel's two actions, their costs, the blocker and the image-text line. */
+  function updateRefreshControls() {
+    if (!refreshTestBtn || !refreshAllBtn) return;
+    const state = refreshState();
+    const api = refreshApi();
+    const blocker = state ? api.blocker(state) : null;
+    // Any other one-at-a-time job holds the slot; the server would refuse.
+    const busy = api.isRunning(state) || syncIsRunning() || ranking().isRunning(rankState());
+    for (const [btn, costEl, scope] of [
+      [refreshTestBtn, refreshTestCostEl, "newest"],
+      [refreshAllBtn, refreshAllCostEl, "all"],
+    ]) {
+      btn.disabled = !state || !!blocker || busy;
+      btn.classList.toggle("is-refreshing", api.isRunning(state) && lastRefreshScope === scope);
+      costEl.textContent = state && !blocker ? api.scopeLine(state, scope) : "";
+      if (blocker) btn.setAttribute("aria-describedby", "refresh-blocker");
+      else btn.removeAttribute("aria-describedby");
+    }
+    refreshBlockerEl.hidden = !blocker || !state;
+    refreshBlockerEl.textContent = blocker && state ? blocker : "";
+    refreshImagesEl.textContent = state ? api.imagesLine(state.images) : "";
+    if (state && api.needsPolling(state)) pollRefresh();
+  }
+
+  function openRefreshConfirm(scope) {
+    const state = refreshState();
+    if (!refreshConfirmModalEl || !state) return;
+    const estimate = (state.estimates && state.estimates[scope]) || null;
+    refreshConfirmScope = scope;
+    refreshReturnFocusEl = document.activeElement;
+    const syncPopover = popovers.find((p) => p.name === "sync");
+    if (syncPopover && isPopoverOpen(syncPopover)) setPopoverOpen(syncPopover, false, { returnFocus: false });
+    refreshConfirmTitleEl.textContent = refreshApi().confirmTitle(scope, estimate);
+    refreshConfirmCostTextEl.textContent = refreshApi().confirmCost(estimate);
+    refreshConfirmOkBtn.textContent = refreshApi().confirmLabel(scope, estimate);
+    refreshConfirmOkBtn.disabled = false;
+    refreshConfirmErrorEl.hidden = true;
+    refreshConfirmErrorEl.textContent = "";
+    refreshConfirmModalEl.hidden = false;
+    refreshConfirmBackdropEl.hidden = false;
+    // Cancel first: the button that spends money is never the default target.
+    refreshConfirmCancelBtn.focus();
+  }
+
+  function closeRefreshConfirm() {
+    if (!isRefreshConfirmOpen()) return;
+    refreshConfirmScope = null;
+    refreshConfirmModalEl.hidden = true;
+    refreshConfirmBackdropEl.hidden = true;
+    const target = refreshReturnFocusEl;
+    refreshReturnFocusEl = null;
+    const usable = (elm) => !!elm && elm.isConnected && !elm.disabled && elm.offsetParent !== null;
+    if (usable(target)) target.focus();
+    else {
+      const toggle = document.getElementById("sync-toggle");
+      if (toggle) toggle.focus();
+    }
+  }
+
+  /** The authorization: the ONE place a refresh is started with `confirm: true`. */
+  async function confirmRefresh() {
+    const scope = refreshConfirmScope;
+    if (!scope) return;
+    refreshConfirmOkBtn.disabled = true;
+    let res;
+    let body = {};
+    try {
+      res = await fetch("/api/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope, confirm: true }),
+      });
+      body = await res.json().catch(() => ({}));
+    } catch (_) {
+      body = { error: "Could not reach the server." };
+    }
+    if (!res || !res.ok) {
+      // Kept open, with the reason: nothing was read and nothing was billed.
+      refreshConfirmErrorEl.textContent = body.error || "Could not start the refresh.";
+      refreshConfirmErrorEl.hidden = false;
+      refreshConfirmOkBtn.disabled = false;
+      return;
+    }
+    lastRefreshScope = scope;
+    closeRefreshConfirm();
+    if (setupState && setupState.refresh) setupState.refresh.status = body.status;
+    renderRefreshProgress();
+    updateRefreshControls();
+    pollRefresh();
+  }
+
+  /** The refresh's status as the strip shows it - kept "running" while its images are read. */
+  function renderRefreshProgress() {
+    const state = refreshState();
+    refreshStatusView = state ? refreshApi().stripStatus(state.status, state.images) : null;
+    renderSharedProgress();
+  }
+
+  function pollRefresh() {
+    if (refreshPollTimer) return;
+    const tick = async () => {
+      let data;
+      try {
+        data = await getJSON("/api/refresh");
+      } catch (_) {
+        return; // transient; the next tick tries again
+      }
+      if (!setupState) return;
+      const wasRunning = refreshApi().isRunning(setupState.refresh);
+      setupState.refresh = data.refresh;
+      renderRefreshProgress();
+      updateSyncButton();
+      if (!refreshApi().needsPolling(data.refresh)) {
+        clearInterval(refreshPollTimer);
+        refreshPollTimer = null;
+        updateRefreshControls();
+        // The posts' X data and their image text changed: re-read what depends on it.
+        if (wasRunning || (data.refresh.status && data.refresh.status.state === "done")) await fetchSetup();
+        return;
+      }
+      updateRefreshControls();
+    };
+    refreshPollTimer = setInterval(tick, REFRESH_POLL_MS);
+    void tick();
+  }
+
+  function initRefresh() {
+    if (!refreshTestBtn || !refreshAllBtn || !refreshConfirmModalEl) return;
+    refreshTestBtn.addEventListener("click", () => openRefreshConfirm("newest"));
+    refreshAllBtn.addEventListener("click", () => openRefreshConfirm("all"));
+    refreshConfirmCancelBtn.addEventListener("click", () => closeRefreshConfirm());
+    refreshConfirmBackdropEl.addEventListener("click", () => closeRefreshConfirm());
+    refreshConfirmOkBtn.addEventListener("click", () => void confirmRefresh());
+    document.addEventListener("keydown", (e) => {
+      if (!isRefreshConfirmOpen()) return;
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeRefreshConfirm();
+        return;
+      }
+      trapModalFocus(refreshConfirmModalEl, e);
+    });
+  }
+
   /**
    * The server has taken the run: put every control that reflects it in step
    * now rather than a poll interval later. The first-run view's scrim hangs
@@ -7605,21 +7856,33 @@
   let syncStatusView = null;
   let rankStatusView = null;
   let findStatusView = null;
+  let refreshStatusView = null;
   /** Which job the strip is currently showing - drives retry and dismiss. */
   let progressOwner = null;
 
   function renderSharedProgress() {
-    progressOwner = ranking().progressSource(syncStatusView, rankStatusView, findStatusView);
+    progressOwner = ranking().progressSource(syncStatusView, rankStatusView, findStatusView, refreshStatusView);
     const isRank = progressOwner === "rank";
     const isFind = progressOwner === "find";
+    const isRefresh = progressOwner === "refresh";
     if (syncProgressDismissBtn) {
       syncProgressDismissBtn.setAttribute(
         "aria-label",
-        isRank ? "Dismiss ranking status" : isFind ? "Dismiss find-bookmarks status" : "Dismiss sync status",
+        isRank
+          ? "Dismiss ranking status"
+          : isFind
+            ? "Dismiss find-bookmarks status"
+            : isRefresh
+              ? "Dismiss refresh status"
+              : "Dismiss sync status",
       );
     }
     if (isRank) renderProgressStrip(progressEls, rankStatusView, (s) => ranking().progressLine(s));
     else if (isFind) renderProgressStrip(progressEls, findStatusView, (s) => editor().findProgressLine(s));
+    else if (isRefresh) {
+      const images = refreshState() && refreshState().images;
+      renderProgressStrip(progressEls, refreshStatusView, (s) => refreshApi().progressLine(s, images));
+    }
     else renderProgressStrip(progressEls, syncStatusView, (s) => categorization().progressLine(s));
   }
 
@@ -7645,6 +7908,7 @@
     if (syncProgressRetryBtn) {
       syncProgressRetryBtn.addEventListener("click", () => {
         if (progressOwner === "rank") openRankConfirm();
+        else if (progressOwner === "refresh") openRefreshConfirm(lastRefreshScope);
         else if (progressOwner === "find") {
           // A retry is a fresh authorization: the confirmation again, never a silent re-run.
           if (lastFindNode) void requestFindBookmarks(lastFindNode, null);
@@ -10505,6 +10769,7 @@
   initSummary();
   initSync();
   initSyncConfirm();
+  initRefresh();
   initCategorizationSettings();
   initMcpSettings();
   initSetup();

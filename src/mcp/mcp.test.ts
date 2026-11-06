@@ -205,6 +205,32 @@ describe('the MCP endpoint', () => {
     await client.close();
   });
 
+  it("get_bookmark and search_bookmarks carry the text in a post's and its quoted post's images", async () => {
+    db.storeCategorizedBatch(
+      [bm('5', 'Look at this', { quotedPostId: 'q5', media: [] })],
+      () => [],
+      WHEN,
+    );
+    const shot = { type: 'photo', previewImageUrl: null, width: null, height: null };
+    db.savePostMedia('5', [{ ...shot, mediaKey: '3_1', url: 'https://pbs.twimg.com/media/a.png', altText: 'A slide' }]);
+    db.savePostMedia('q5', [{ ...shot, mediaKey: '3_2', url: 'https://pbs.twimg.com/media/b.png', altText: null }]);
+    db.setMediaOcrResult('q5', '3_2', { status: 'done', text: 'Quarterly zephyrine report' });
+
+    const client = await connect();
+    const answer = (await call(client, 'get_bookmark', { postId: '5' })).json();
+    expect(answer.images).toEqual([
+      { from: 'post', type: 'photo', altText: 'A slide', text: null },
+      { from: 'quoted post', type: 'photo', altText: null, text: 'Quarterly zephyrine report' },
+    ]);
+    const found = (await call(client, 'search_bookmarks', { query: 'zephyrine' })).json();
+    expect(found.results.map((r: { postId: string }) => r.postId)).toEqual(['5']);
+    const tools = await client.listTools();
+    const getTool = tools.tools.find((t) => t.name === 'get_bookmark')!;
+    expect(getTool.description).toMatch(/image/);
+    expect(getTool.description).toMatch(/untrusted/);
+    await client.close();
+  });
+
   it('list_categories returns the tree with descriptions and rolled-up counts', async () => {
     const client = await connect();
     const { categories } = (await call(client, 'list_categories')).json();

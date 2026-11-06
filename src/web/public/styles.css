@@ -1270,7 +1270,8 @@ body[data-sidebar-page="lists"] .sidebar-view:not([data-sidebar-view="lists"]),
   box-shadow: var(--shadow-lg);
 }
 .sync-panel {
-  width: min(17rem, calc(100vw - 2 * var(--space-4)));
+  /* Wide enough for "Refresh from X"'s longest action on one line. */
+  width: min(20.5rem, calc(100vw - 2 * var(--space-4)));
 }
 .settings-panel-title {
   margin: 0;
@@ -4842,6 +4843,116 @@ body[data-restoring] .topbar-prompt {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--text-small);
+}
+/* "Refresh from X": two secondary actions (Sync stays the panel's one
+   primary), each with what it reads and costs on the line under it. */
+.sync-refresh {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.sync-refresh-title {
+  margin: 0;
+  font-size: var(--text-small);
+  font-weight: 700;
+}
+.sync-refresh-note,
+.sync-refresh-cost,
+.sync-refresh-images {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+}
+.sync-refresh-option {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.sync-refresh-cost:empty,
+.sync-refresh-images:empty {
+  display: none;
+}
+.sync-refresh .panel-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  color: var(--color-text-muted);
+}
+.sync-refresh .panel-action.is-refreshing {
+  cursor: progress;
+}
+/* Why the refresh cannot start - stated in the panel, not only in a tooltip. */
+.sync-refresh-blocker {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  overflow-wrap: break-word;
+}
+
+/* The summary modal's "Text in image": collapsed under the summary, with its
+   own scroll so a long screenshot never pushes the summary out of view. */
+.summary-images {
+  flex: 0 0 auto;
+  max-height: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-3) var(--space-5) var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+/* The same column as the summary above it, so the two read as one text. */
+.summary-images-details {
+  max-width: var(--reader-measure);
+  margin: 0 auto;
+}
+.summary-images-summary {
+  /* Left at the default `list-item` so the disclosure marker survives. */
+  width: fit-content;
+  padding: var(--space-1) 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-weight: 600;
+  cursor: pointer;
+}
+.summary-images-summary:hover {
+  color: var(--color-text);
+}
+.summary-images-summary:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.summary-images-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.summary-image-label {
+  margin: 0 0 var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+.summary-image-alt {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-small);
+  font-style: italic;
+}
+.summary-image-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: var(--leading-body);
 }
 .reset-panel {
   width: min(28rem, 100%);

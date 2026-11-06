@@ -38,7 +38,7 @@ import { buildArticleContext, type ArticleMetadataCache } from '../articles/link
 import { HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
 import { Database } from '../db/database';
 import { resolveExistingPathToLeafId } from '../ingest';
-import type { ArticleLinkMetadata, CategoryTreeNode, RawBookmark, StoredBookmark, XArticle } from '../types';
+import type { ArticleLinkMetadata, BookmarkImage, CategoryTreeNode, RawBookmark, StoredBookmark, XArticle } from '../types';
 import { compareFilings, type Comparison, type FiledPath, type Filing, type PairedFiling } from './compare';
 import { fileWithJev, newJevUsage, type FileWithJevOptions, type JevUsage } from './jev';
 import { renderEvalReport, type EvalCost, type EvalReport, type EvalReportMeta } from './report';
@@ -76,6 +76,11 @@ export class ReadThroughMetadataCache implements ArticleMetadataCache {
     bookmarks: Pick<RawBookmark, 'postId' | 'quotedPostId'>[],
   ): Map<string, { article: XArticle }> {
     return this.live.getXArticlesForBookmarks?.(bookmarks) ?? new Map();
+  }
+
+  /** A pure read of the stored image text, so both methods are judged on the same signal a sync has. */
+  getBookmarkImages(bookmarks: Pick<RawBookmark, 'postId' | 'quotedPostId'>[]): Map<string, BookmarkImage[]> {
+    return this.live.getBookmarkImages?.(bookmarks) ?? new Map();
   }
 }
 

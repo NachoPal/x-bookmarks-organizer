@@ -27,7 +27,7 @@
  * `Uncategorized`.
  */
 import type { EntryType, JsonValue } from '@typesafe-ai/sdk';
-import type { ArticleContext } from '../../articles/link-metadata';
+import { imageContextText, linkedArticleText, type ArticleContext } from '../../articles/link-metadata';
 import type { Database } from '../../db/database';
 import type { Assignment, CategoryTreeNode, RawBookmark } from '../../types';
 import type { BatchCategorizer } from '../llm';
@@ -40,6 +40,8 @@ const MAX_TEXT_CHARS = 500;
 
 /** Text budget for the linked article's title+description in the state. */
 const MAX_ARTICLE_CHARS = 300;
+/** Budget for the words in a bookmark's images (alt text + OCR) - bounded like the article line. */
+const MAX_IMAGE_CHARS = 300;
 
 export interface TypeSafeCategorizerOptions extends WalkOptions {
   /** How many bookmarks to walk at once. Each is independent, so this is pure throughput. */
@@ -74,11 +76,11 @@ export function buildBookmarkState(
     author: `@${bookmark.authorUsername}`,
     post_text: bookmark.text.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_CHARS),
   };
-  const article = articleContext?.get(bookmark.postId);
-  if (article) {
-    const combined = article.description ? `${article.title} - ${article.description}` : article.title;
-    state.linked_article = combined.replace(/\s+/g, ' ').trim().slice(0, MAX_ARTICLE_CHARS);
-  }
+  const context = articleContext?.get(bookmark.postId);
+  const article = linkedArticleText(context, MAX_ARTICLE_CHARS);
+  if (article) state.linked_article = article;
+  const images = imageContextText(context, MAX_IMAGE_CHARS);
+  if (images) state.text_in_images = images;
   return state;
 }
 

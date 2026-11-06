@@ -16,8 +16,10 @@ import {
   htmlToPlainText,
   NOTHING_TO_SUMMARIZE_MESSAGE,
   type SummaryGenerator,
+  MAX_SUMMARY_IMAGE_CHARS,
   type SummaryInput,
 } from '../summarize/summarizer';
+import { formatImageText } from '../images/image-text';
 import { xArticleUrl } from '../x/article';
 import type { BookmarkXArticle } from '../db/database';
 import { buildBookmarkContent, buildBookmarkContents } from '../content/bookmark-content';
@@ -54,6 +56,10 @@ import { SyncRunner, type SyncJob } from './sync';
 import { RankRunner } from './rank';
 import { FindRunner, type FindWiring } from './find-job';
 import type { RankWiring } from './rank-job';
+import type { RefreshWiring } from './refresh-job';
+import type { ImageTextWorker } from '../images/worker';
+import { OCR_MAX_ATTEMPTS } from '../images/ocr';
+import { isRefreshScope } from '../x/refresh';
 import type { ArticleRecord, StoredBookmark, SummaryRecord } from '../types';
 import type { PaidPass, RoleSpend } from './paid-spend';
 import { SummaryFailureBackoff } from './summary-backoff';
@@ -201,6 +207,17 @@ export interface ServerOptions {
    */
   claudeCliCheck?: () => Promise<Health>;
   /**
+   * The in-app "Refresh from X" (a paid, confirmed re-read of the stored
+   * bookmarks in place). Undefined answers its routes 503 and the panel says
+   * it is unavailable - which is what a test-built `buildServer(db)` gets.
+   */
+  refresh?: RefreshWiring;
+  /**
+   * The background reader of image text, for its live progress and which
+   * recognizer it uses. Undefined still reports the stored counts.
+   */
+  images?: ImageTextWorker;
+  /**
    * `XBOOKMARKS_MAX_DEPTH`: how deep a category move may take the tree. Served
    * on `/api/tree` so the drag can mark a too-deep drop before it is made.
    * Defaults to the config default.
@@ -217,6 +234,13 @@ const FIND_UNAVAILABLE_MESSAGE = 'Finding bookmarks is unavailable in this viewe
 const FIND_RUNNING_MESSAGE = 'Bookmarks are being found for a category. Wait for it to finish.';
 const FIND_CONFIRM_MESSAGE =
   'The filing method is billed per token. Send { "confirm": true } to find bookmarks for this category.';
+
+/** Why "Refresh from X" cannot run in a viewer built without its wiring. */
+export const REFRESH_UNAVAILABLE_MESSAGE =
+  'Refreshing from X is not available in this viewer. Start it with `node dist/index.js serve`.';
+const REFRESH_RUNNING_MESSAGE = 'Your bookmarks are being refreshed from X. Wait for it to finish.';
+const REFRESH_CONFIRM_MESSAGE =
+  'A refresh reads your bookmarks from X, billed per post. Send { "confirm": true } with the scope to start it.';
 
 /** Shown when the Sync button is pressed on a viewer with no ingest wiring. */
 export const SYNC_UNAVAILABLE_MESSAGE =
@@ -553,6 +577,10 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // category links, so it too takes a single slot and never races a sync.
   const findWiring = opts.findBookmarks;
   const findRunner = findWiring ? new FindRunner() : undefined;
+  // A refresh re-reads (and pays for) the stored bookmarks and rewrites their
+  // X data, so it takes the same single-slot rule against a sync.
+  const refreshWiring = opts.refresh;
+  const refreshRunner = refreshWiring?.runner;
   const catalog: SettingsCatalog = buildSettingsCatalog();
   const xLoginStatus: XLoginStatus = { state: 'idle', error: null };
 
@@ -619,6 +647,26 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     };
   }
 
+  /**
+   * The refresh's whole state for the Sync panel: whether it can run, what
+   * each scope would read and cost (a free count), the current run, and how
+   * far the library's images have been read. Every field is a local read.
+   */
+  function refreshState() {
+    return {
+      available: !!refreshWiring,
+      reason: refreshWiring ? undefined : REFRESH_UNAVAILABLE_MESSAGE,
+      estimates: refreshWiring
+        ? { newest: refreshWiring.estimate('newest'), all: refreshWiring.estimate('all') }
+        : null,
+      status: refreshRunner ? refreshRunner.status() : null,
+      images: {
+        ...db.getImageStats(OCR_MAX_ATTEMPTS),
+        worker: opts.images ? opts.images.status() : null,
+      },
+    };
+  }
+
   /** The rubric every score read in this server is scoped to. */
   function activeRubricVersion(): string {
     return resolveActiveRubric(db, opts.rankerInterests).version;
@@ -679,6 +727,8 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       // The current (or last) "Find bookmarks" run, so a reload picks up one
       // still running in the shared progress strip.
       find: { available: !!findRunner, status: findRunner ? findRunner.status() : null },
+      // "Refresh from X" and the image-text progress, for the Sync panel.
+      refresh: refreshState(),
     };
   });
 
@@ -753,6 +803,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (findRunner?.isRunning()) {
       return reply.code(409).send({ error: FIND_RUNNING_MESSAGE });
     }
+    if (refreshRunner?.isRunning()) {
+      return reply.code(409).send({ error: REFRESH_RUNNING_MESSAGE });
+    }
     if (!syncRunner.isRunning()) {
       if (opts.syncPreflight) {
         try {
@@ -809,6 +862,9 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (syncRunner?.isRunning()) {
       return reply.code(409).send({ error: 'A sync is running. Wait for it to finish, then rank.' });
     }
+    if (refreshRunner?.isRunning()) {
+      return reply.code(409).send({ error: REFRESH_RUNNING_MESSAGE });
+    }
     const { started, status } = rankRunner.start();
     if (!started) {
       return reply.code(409).send({ error: 'A ranking run is already running.', status });
@@ -819,6 +875,47 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
   // The current (or last) ranking run's progress, plus the counts the Order
   // control's hint reads - so one poll refreshes both.
   app.get('/api/rank', async () => ({ ranking: rankingState() }));
+
+  // Start a refresh of the stored bookmarks from X ("Refresh from X" in the
+  // Sync panel). PAID (owned X reads), so - like a ranking run - it demands
+  // an explicit `{ confirm: true }` that the viewer only sends from a dialog
+  // naming the scope's estimated cost, and the preflight runs BEFORE the
+  // confirmation is even asked for, so a refresh that cannot start says why
+  // instead. It never races a sync or a ranking run. 202 at once; the client
+  // polls GET /api/refresh (which also carries the image-text progress).
+  app.post<{ Body?: { scope?: unknown; confirm?: unknown } }>('/api/refresh', async (req, reply) => {
+    if (!refreshWiring || !refreshRunner) return reply.code(503).send({ error: REFRESH_UNAVAILABLE_MESSAGE });
+    const body = req.body ?? {};
+    if (!isRefreshScope(body.scope)) {
+      return reply.code(400).send({ error: 'Send { "scope": "newest" } or { "scope": "all" }.' });
+    }
+    if (syncRunner?.isRunning()) {
+      return reply.code(409).send({ error: 'A sync is running. Wait for it to finish, then refresh.' });
+    }
+    if (rankRunner?.isRunning()) {
+      return reply.code(409).send({ error: 'A ranking run is in progress. Wait for it to finish, then refresh.' });
+    }
+    if (findRunner?.isRunning()) return reply.code(409).send({ error: FIND_RUNNING_MESSAGE });
+    if (!refreshRunner.isRunning()) {
+      try {
+        await refreshWiring.preflight();
+      } catch (err) {
+        return reply.code(422).send({ error: err instanceof Error ? err.message : String(err) });
+      }
+      if (body.confirm !== true) {
+        return reply.code(400).send({
+          error: REFRESH_CONFIRM_MESSAGE,
+          confirmRequired: true,
+          estimate: refreshWiring.estimate(body.scope),
+        });
+      }
+    }
+    const { started, status } = refreshRunner.start(refreshWiring.job(body.scope));
+    if (!started) return reply.code(409).send({ error: REFRESH_RUNNING_MESSAGE, status });
+    return reply.code(202).send({ status });
+  });
+
+  app.get('/api/refresh', async () => ({ refresh: refreshState() }));
 
   // ---- the rubric editor (issue #102) ------------------------------------
   //
@@ -1079,10 +1176,14 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     if (findRunner?.isRunning()) {
       return reply.code(409).send({ error: FIND_RUNNING_MESSAGE });
     }
+    if (refreshRunner?.isRunning()) {
+      return reply.code(409).send({ error: REFRESH_RUNNING_MESSAGE });
+    }
     db.resetLibrary();
     syncRunner?.clear();
     rankRunner?.clear();
     findRunner?.clear();
+    refreshRunner?.clear();
     return { ok: true, bookmarkCount: db.getBookmarkCount() };
   });
 
@@ -1531,6 +1632,25 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     serveSummary(req.params.id, reply, { manualRetry: true }),
   );
 
+  // The words in a bookmark's images - alt text and what local OCR read - for
+  // the summary modal's collapsed "Text in image". A pure DB read.
+  app.get<{ Params: { id: string } }>('/api/bookmarks/:id/images', async (req, reply) => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
+    const bookmark = db.getBookmarkById(id);
+    if (!bookmark) return reply.code(404).send({ error: 'bookmark not found' });
+    const images = db.getBookmarkImages([bookmark]).get(bookmark.postId) ?? [];
+    return {
+      images: images.map((img) => ({
+        source: img.source,
+        type: img.type,
+        altText: img.altText,
+        text: img.ocrText,
+        status: img.ocrStatus,
+      })),
+    };
+  });
+
   async function serveSummary(rawId: string, reply: FastifyReply, opt: { manualRetry: boolean }) {
     const id = Number.parseInt(rawId, 10);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid bookmark id' });
@@ -1564,9 +1684,11 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
     // An X-native Article (hosted or quoted) brings its own body from the X
     // API, stored at ingest - no link fetch, and it is the substance to
     // summarize. Its t.co link only leads back to x.com, so skip that fetch.
+    const imageText = formatImageText(db.getBookmarkImages([bookmark]).get(bookmark.postId), MAX_SUMMARY_IMAGE_CHARS);
     const xArticle = db.getXArticlesForBookmarks([bookmark]).get(bookmark.postId)?.article;
     if (xArticle) {
       const xInput: SummaryInput = {
+        imageText,
         postText: bookmark.text,
         authorName: bookmark.authorName,
         authorUsername: bookmark.authorUsername,
@@ -1602,6 +1724,7 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
         cachedPreview?.siteName ??
         (cachedPreview ? domainFromUrl(cachedPreview.resolvedUrl ?? cachedPreview.url) : null),
       articleText: readableArticle ? htmlToPlainText(readableArticle.contentHtml ?? '') : null,
+      imageText,
     };
 
     // A post that is only a link, whose link could not be read, holds nothing a

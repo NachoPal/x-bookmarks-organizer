@@ -45,6 +45,20 @@ export interface BookmarkContentXArticle {
 }
 
 /**
+ * One image attached to the post or to the post it quotes, with the words in
+ * it: the author's alt text and what local OCR read (`text`, null until read).
+ */
+export interface BookmarkContentImage {
+  kind: 'image';
+  /** Whether the image is on the bookmarked post itself or on the post it quotes. */
+  from: 'post' | 'quoted-post';
+  /** `photo`, `video` or `animated_gif`. Only photos are read by OCR. */
+  mediaType: string;
+  altText: string | null;
+  text: string | null;
+}
+
+/**
  * A bookmark's full content, assembled into clearly named, self-describing
  * parts for a downstream consumer (e.g. a content-scoring/ranking tool) that
  * must never have to guess what a piece of text represents. Every part but
@@ -59,6 +73,8 @@ export interface BookmarkContent {
   quotedPost: BookmarkContentQuotedPost | null;
   linkedArticle: BookmarkContentLinkedArticle | null;
   xArticle: BookmarkContentXArticle | null;
+  /** Every image on the post and the quoted post, in order; empty when there are none. */
+  images: BookmarkContentImage[];
 }
 
 function buildLinkedArticle(db: Database, bookmark: StoredBookmark): BookmarkContentLinkedArticle | null {
@@ -97,6 +113,7 @@ export function buildBookmarkContents(db: Database, bookmarks: StoredBookmark[])
     .filter((b) => b.quotedPostId && !xArticles.get(b.postId))
     .map((b) => b.quotedPostId!);
   const quotedPosts = db.getQuotedPosts(quotedPostIds);
+  const images = db.getBookmarkImages(bookmarks);
 
   return bookmarks.map((bookmark) => {
     const xArticleEntry = xArticles.get(bookmark.postId);
@@ -122,6 +139,15 @@ export function buildBookmarkContents(db: Database, bookmarks: StoredBookmark[])
       quotedPost,
       linkedArticle: buildLinkedArticle(db, bookmark),
       xArticle,
+      images: (images.get(bookmark.postId) ?? []).map(
+        (img): BookmarkContentImage => ({
+          kind: 'image',
+          from: img.source,
+          mediaType: img.type,
+          altText: img.altText,
+          text: img.ocrStatus === 'done' && img.ocrText ? img.ocrText : null,
+        }),
+      ),
     };
   });
 }
