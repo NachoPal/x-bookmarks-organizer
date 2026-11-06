@@ -44,7 +44,7 @@ import { DEFAULT_TYPESAFE_MODEL } from '../categorize/typesafe/client';
 import { billingLabel, createLlmFactory, type LlmFactory } from '../llm/factory';
 import { toRunner } from '../llm/runner';
 import { buildSettingsCatalog } from '../settings/catalog';
-import { createModelBrowser, type ModelBrowser } from '../settings/model-browser';
+import { createModelBrowser, requireCatalogModels, retiredModelProblem, type ModelBrowser } from '../settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from '../settings/settings';
 import { JobRunner, type Job, type JobStatus } from './job-runner';
 import { describeRoleSpend, type RoleSpend } from './paid-spend';
@@ -116,13 +116,14 @@ export function createFindWiring(deps: FindWiringDeps): FindWiring {
   // panel applies to the next find without a restart. No `env` argument, so
   // the owner's visible choice wins over a stray variable in the shell.
   const current = () => {
-    const config = applySettingsToConfig(deps.config, effectiveSettings(deps.db, catalog));
-    return { config, llm: createLlm(config) };
+    const settings = effectiveSettings(deps.db, catalog);
+    const config = applySettingsToConfig(deps.config, settings);
+    return { settings, config, llm: createLlm(config) };
   };
 
   return {
     async describe() {
-      const { config, llm } = current();
+      const { settings, config, llm } = current();
       if (isJev(config.categorizer)) {
         // A local read of the credential chain: never the key's value.
         const hasKey = !!deps.store.get(TYPESAFE_API_KEY).value;
@@ -132,8 +133,10 @@ export function createFindWiring(deps: FindWiringDeps): FindWiring {
           spend: jevSpend(config),
         };
       }
-      const health = await llm.check('assignment');
       const spend = await describeRoleSpend(llm, 'assignment', catalog, browser);
+      const retired = await retiredModelProblem(settings, catalog, browser, FILING_SETTING, passSettingProblem);
+      if (retired) return { available: false, reason: retired, ...(spend ? { spend } : {}) };
+      const health = await llm.check('assignment');
       let warning: string | undefined;
       try {
         warning = llm.describe('assignment').warning;
@@ -152,7 +155,7 @@ export function createFindWiring(deps: FindWiringDeps): FindWiring {
 
     job(categoryId) {
       return async (log) => {
-        const { config, llm } = current();
+        const { settings, config, llm } = current();
         let matcher: FindMatcher;
         if (isJev(config.categorizer)) {
           // Refuses without the key before anything can spend money.
@@ -160,6 +163,7 @@ export function createFindWiring(deps: FindWiringDeps): FindWiring {
           log(`Filing method: ${jevBillingLine(config)}`);
           matcher = filingFindMatcher(jev, renderTreeForPrompt(buildCategoryTree(deps.db)));
         } else {
+          await requireCatalogModels(settings, catalog, browser, [FILING_SETTING], passSettingProblem);
           await requirePassSettings(llm, [FILING_SETTING]);
           const role = llm.describe('assignment');
           const line = `Filing model: ${role.providerId} / ${role.model} - ${billingLabel(role.billing)}.`;

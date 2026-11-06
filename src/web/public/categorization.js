@@ -300,6 +300,22 @@
     };
   }
 
+  /**
+   * What the picker and the form's note say about a model that was saved
+   * before the installed model library dropped it: the catalog the picker just
+   * loaded no longer lists it. It is never switched for the owner - this
+   * sentence is how they find out, and it blocks Save until they choose again.
+   */
+  function unlistedModelText(model, source) {
+    return (
+      '"' +
+      model +
+      '" is no longer in the ' +
+      (source && source.label ? source.label : "provider's") +
+      " model list - the installed model library dropped it. Choose another model."
+    );
+  }
+
   var CHAIN =
     "an environment variable, a .env file in the project root, your OS keychain, or " +
     "~/.config/x-bookmarks-organizer/credentials.json";
@@ -347,7 +363,10 @@
    * one with no model chosen. `values` carries each pass's `<pass>Source`
    * beside its model. `providerAvailability` covers a provider with no
    * credential-chain key of its own (only `claude-cli` today, issue #35) -
-   * a keyed provider/source is covered by `providerKeys` instead. `savedSettings`,
+   * a keyed provider/source is covered by `providerKeys` instead.
+   * `<pass>ModelUnlisted` (set by the form once the picker's catalog has
+   * loaded) marks a saved model that catalog no longer lists, which blocks
+   * Save with {@link unlistedModelText}. `savedSettings`,
    * when given, adds a selection identical to it (issue #122) as one more
    * `blocksSave` reason - a save that would change nothing is no more useful
    * than one the server would reject.
@@ -389,6 +408,10 @@
             : p.name + ": choose a model from " + chosen.label + ".",
           blocksSave: true,
         });
+        continue;
+      }
+      if (model && values[p.pass + "ModelUnlisted"]) {
+        problems.push({ text: p.name + ": " + unlistedModelText(model, source || chosen), blocksSave: true });
         continue;
       }
       var notice = sourceNotice(source, providerKeys);
@@ -637,6 +660,7 @@
     pickerEntries: pickerEntries,
     sourceNotice: sourceNotice,
     passProblems: passProblems,
+    unlistedModelText: unlistedModelText,
     hasSaveBlocker: hasSaveBlocker,
     isUnchanged: isUnchanged,
     providerNotice: providerNotice,

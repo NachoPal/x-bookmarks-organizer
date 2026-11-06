@@ -54,6 +54,7 @@ async function boot(
     failSources?: string[];
     providerKeys?: Record<string, { present: boolean; source?: string }>;
     providerAvailability?: Record<string, { available: boolean; reason?: string }>;
+    settings?: Record<string, unknown>;
   } = {},
 ) {
   const sent: Sent[] = [];
@@ -71,7 +72,11 @@ async function boot(
     unobserve() {}
   };
   w.HTMLElement.prototype.scrollIntoView = function () {};
-  let settings: Record<string, unknown> = { categorizer: "claude-cli", taxonomyProvider: "claude-cli", assignmentProvider: "claude-cli" };
+  let settings: Record<string, unknown> = opts.settings ?? {
+    categorizer: "claude-cli",
+    taxonomyProvider: "claude-cli",
+    assignmentProvider: "claude-cli",
+  };
   w.fetch = async (url: string, init?: { method?: string; body?: string }) => {
     const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body });
     const method = (init && init.method) || "GET";
@@ -207,6 +212,48 @@ describe("the searchable model picker", () => {
     });
     expect(put.body).not.toHaveProperty("assignmentModel");
     expect(put.body).not.toHaveProperty("taxonomySource");
+  });
+
+  it("says a saved model the installed catalog dropped is gone, keeps it as saved, and blocks Save until another is chosen", async () => {
+    const { $, key, type, sent } = await boot({
+      providerKeys: { OPENCODE_API_KEY: { present: true, source: "env" } },
+      settings: {
+        categorizer: "claude-cli",
+        taxonomyProvider: "pi-ai",
+        taxonomyModel: "opencode/kimi-k1-retired",
+        assignmentProvider: "claude-cli",
+        configuredAt: "2026-09-21T10:28:55.227Z",
+      },
+    });
+    const input = $<HTMLInputElement>("settings-taxonomyModelSearch");
+    const hint = $("settings-taxonomyModelSearch-hint");
+    const note = $("settings-categorization-note");
+    const saveBtn = $<HTMLButtonElement>("settings-save");
+    // Never switched for the owner: the saved id is still what the picker holds.
+    expect($<HTMLSelectElement>("settings-taxonomySource").value).toBe("opencode");
+    expect(input.value).toBe("opencode/kimi-k1-retired");
+    const sentence =
+      '"opencode/kimi-k1-retired" is no longer in the OpenCode Zen model list - the installed model library ' +
+      "dropped it. Choose another model.";
+    // Said in words, with the hint's "!" marker - never by color alone.
+    expect(hint.textContent).toBe(sentence);
+    expect(hint.dataset.key).toBe("missing");
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toContain(`Phase 1: ${sentence}`);
+    expect(saveBtn.disabled).toBe(true);
+    expect(saveBtn.getAttribute("aria-describedby")).toBe(note.id);
+
+    input.focus();
+    type(input, "kimi k2");
+    key(input, "Enter");
+    expect(input.value).toBe("Kimi K2");
+    expect(hint.dataset.key).toBeUndefined();
+    expect(hint.textContent).not.toContain("no longer");
+    expect(note.textContent).not.toContain("no longer");
+    expect(saveBtn.disabled).toBe(false);
+    saveBtn.click();
+    await tick();
+    expect(sent.filter((s) => s.method === "PUT").at(-1)!.body).toMatchObject({ taxonomyModel: "opencode/kimi-k2" });
   });
 
   it("says when nothing matches, and Escape closes the list without closing the panel", async () => {

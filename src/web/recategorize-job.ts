@@ -43,8 +43,8 @@ import {
 } from '../categorize/recategorize';
 import { billingLabel, createLlmFactory, type LlmFactory } from '../llm/factory';
 import { buildSettingsCatalog } from '../settings/catalog';
-import { createModelBrowser, type ModelBrowser } from '../settings/model-browser';
-import { applySettingsToConfig, effectiveSettings } from '../settings/settings';
+import { createModelBrowser, requireCatalogModels, retiredModelProblem, type ModelBrowser } from '../settings/model-browser';
+import { applySettingsToConfig, effectiveSettings, type AppSettings } from '../settings/settings';
 import { jevSpend } from './find-job';
 import { JobRunner, type Job, type JobStatus } from './job-runner';
 import { describeRoleSpend, type RoleSpend } from './paid-spend';
@@ -112,13 +112,20 @@ export function createRecategorizeWiring(deps: RecategorizeWiringDeps): Recatego
   // No `env` argument: the owner's visible choice wins over a stray variable
   // in the shell that launched `serve` (`applySettingsToConfig`).
   const current = () => {
-    const config = applySettingsToConfig(deps.config, effectiveSettings(deps.db, catalog));
-    return { config, llm: createLlm(config) };
+    const settings = effectiveSettings(deps.db, catalog);
+    const config = applySettingsToConfig(deps.config, settings);
+    return { settings, config, llm: createLlm(config) };
   };
 
-  async function describeRole(llm: LlmFactory, setting: PassSetting): Promise<RecategorizePass> {
-    const health = await llm.check(setting.role);
+  /** A pass whose saved model the installed catalog no longer lists is refused, named, never swapped. */
+  const requireListed = (settings: AppSettings, setting: PassSetting) =>
+    requireCatalogModels(settings, catalog, browser, [setting], passSettingProblem);
+
+  async function describeRole(llm: LlmFactory, setting: PassSetting, settings: AppSettings): Promise<RecategorizePass> {
     const spend = await describeRoleSpend(llm, setting.role, catalog, browser);
+    const retired = await retiredModelProblem(settings, catalog, browser, setting, passSettingProblem);
+    if (retired) return { available: false, reason: retired, ...(spend ? { spend } : {}) };
+    const health = await llm.check(setting.role);
     let warning: string | undefined;
     try {
       warning = llm.describe(setting.role).warning;
@@ -140,12 +147,13 @@ export function createRecategorizeWiring(deps: RecategorizeWiringDeps): Recatego
   }
 
   /** Phase 2's filer, refusing (before anything can spend) when it cannot run. */
-  async function filer(config: Config, llm: LlmFactory, log: Log): Promise<BatchCategorizer> {
+  async function filer(settings: AppSettings, config: Config, llm: LlmFactory, log: Log): Promise<BatchCategorizer> {
     if (config.categorizer === 'typesafe') {
       const jev = buildFiler(config, llm, deps.db, deps.store, log);
       log(`Filing pass: ${jevBillingLine(config)}`);
       return jev;
     }
+    await requireListed(settings, FILING_SETTING);
     await requirePassSettings(llm, [FILING_SETTING]);
     log(`Filing pass: ${passLine(llm, FILING_SETTING)}`);
     return buildFiler(config, llm, deps.db, deps.store, log);
@@ -153,8 +161,8 @@ export function createRecategorizeWiring(deps: RecategorizeWiringDeps): Recatego
 
   return {
     async describe() {
-      const { config, llm } = current();
-      const taxonomy = await describeRole(llm, TAXONOMY_SETTING);
+      const { settings, config, llm } = current();
+      const taxonomy = await describeRole(llm, TAXONOMY_SETTING, settings);
       let filing: RecategorizePass;
       if (config.categorizer === 'typesafe') {
         // A local read of the credential chain: never the key's value.
@@ -165,14 +173,15 @@ export function createRecategorizeWiring(deps: RecategorizeWiringDeps): Recatego
           spend: jevSpend(config),
         };
       } else {
-        filing = await describeRole(llm, FILING_SETTING);
+        filing = await describeRole(llm, FILING_SETTING, settings);
       }
       return { taxonomy, filing };
     },
 
     proposalJob(mode) {
       return async (log) => {
-        const { config, llm } = current();
+        const { settings, config, llm } = current();
+        await requireListed(settings, TAXONOMY_SETTING);
         await requirePassSettings(llm, [TAXONOMY_SETTING]);
         log(`Taxonomy pass: ${passLine(llm, TAXONOMY_SETTING)}`);
         return generateProposal(
@@ -190,8 +199,8 @@ export function createRecategorizeWiring(deps: RecategorizeWiringDeps): Recatego
 
     acceptJob() {
       return async (log) => {
-        const { config, llm } = current();
-        const categorizer = await filer(config, llm, log);
+        const { settings, config, llm } = current();
+        const categorizer = await filer(settings, config, llm, log);
         return acceptProposal({
           db: deps.db,
           categorizer,
@@ -205,8 +214,8 @@ export function createRecategorizeWiring(deps: RecategorizeWiringDeps): Recatego
 
     refileJob() {
       return async (log) => {
-        const { config, llm } = current();
-        const categorizer = await filer(config, llm, log);
+        const { settings, config, llm } = current();
+        const categorizer = await filer(settings, config, llm, log);
         return refileRemaining({
           db: deps.db,
           categorizer,

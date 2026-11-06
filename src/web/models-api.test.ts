@@ -9,7 +9,8 @@ import { createPiAiProvider, type PiRuntime } from '../llm/providers/pi-ai';
 import { createClaudeCliProvider } from '../llm/providers/claude-cli';
 import type { CredentialStore, ResolvedCredential } from '../creds/resolve';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import type { ProviderDefinition } from '../llm/types';
+import { suggestedModelFor, type ProviderDefinition } from '../llm/types';
+import { getProvider } from '../llm/registry';
 
 /**
  * The model picker's server half: `GET /api/models` lists one source of a
@@ -350,6 +351,120 @@ describe('the pi-ai 0.87.1 models, through the real installed catalog', () => {
         taxonomy: 'anthropic/claude-opus-5-5',
         assignment: 'anthropic/claude-haiku-4-5',
       });
+    }
+  });
+});
+
+/**
+ * The models `@earendil-works/pi-ai` 1.5.0 added - and the ids it retired -
+ * through the REAL registry and the REAL installed catalog, still with no
+ * request and no spend.
+ */
+describe('the pi-ai 1.5.0 models, through the real installed catalog', () => {
+  let db: Database;
+  let app: FastifyInstance;
+  let realFetch: typeof fetch;
+  let requests = 0;
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    realFetch = globalThis.fetch;
+    requests = 0;
+    globalThis.fetch = (async () => {
+      requests += 1;
+      throw new Error('browsing the catalog must never reach the network');
+    }) as typeof fetch;
+    app = buildServer(db, { modelBrowser: createModelBrowser() });
+    await app.ready();
+  });
+  afterEach(async () => {
+    await app?.close();
+    db.close();
+    globalThis.fetch = realFetch;
+    expect(requests).toBe(0);
+  });
+
+  async function listed(provider: string, source: string) {
+    const res = await app.inject({ method: 'GET', url: `/api/models?provider=${provider}&source=${source}` });
+    expect(res.statusCode).toBe(200);
+    const models = res.json().models as Array<{
+      id: string;
+      label: string;
+      description: string;
+      contextWindow: number;
+      maxOutputTokens: number;
+      price?: { input: number; output: number };
+    }>;
+    return new Map(models.map((m) => [m.id, m]));
+  }
+
+  it('lists Claude Sonnet 5.5 and Haiku 5.5 on every Claude route, as quick picks too', async () => {
+    const setup = (await app.inject({ method: 'GET', url: '/api/setup' })).json();
+    for (const provider of ['claude-cli', 'pi-claude-subscription', 'pi-ai']) {
+      const anthropic = await listed(provider, 'anthropic');
+      expect(anthropic.get('anthropic/claude-sonnet-5-5'), provider).toMatchObject({
+        label: 'Claude Sonnet 5.5',
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+      });
+      expect(anthropic.get('anthropic/claude-haiku-5-5'), provider).toMatchObject({
+        label: 'Claude Haiku 5.5',
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+      });
+      const picks = (setup.catalog.providers as Array<{ id: string; models: Array<{ id: string }> }>)
+        .find((p) => p.id === provider)!
+        .models.map((m) => m.id);
+      expect(picks, provider).toEqual(expect.arrayContaining(['anthropic/claude-sonnet-5-5', 'anthropic/claude-haiku-5-5']));
+    }
+  });
+
+  it("lists GPT-6.1 Sol, GPT-6.1 Terra and GPT-5.6 Cyber in pi-ai's OpenAI source, priced from the catalog", async () => {
+    const openai = await listed('pi-ai', 'openai');
+    expect(openai.get('openai/gpt-6.1-sol')).toMatchObject({
+      label: 'GPT-6.1 Sol',
+      contextWindow: 272_000,
+      maxOutputTokens: 128_000,
+      price: { input: 2, output: 10 },
+    });
+    expect(openai.get('openai/gpt-6.1-terra')).toMatchObject({
+      label: 'GPT-6.1 Terra',
+      contextWindow: 272_000,
+      maxOutputTokens: 128_000,
+      price: { input: 1, output: 5 },
+    });
+    expect(openai.get('openai/gpt-6.1-terra')!.description).toContain('PAID: $1 in / $5 out per 1M tokens');
+    expect(openai.get('openai/gpt-5.6-cyber')).toMatchObject({ label: 'GPT-5.6 Cyber' });
+  });
+
+  it('no longer lists the ids 1.5.0 retired, and refuses to save one', async () => {
+    const openai = await listed('pi-ai', 'openai');
+    for (const id of ['openai/gpt-5.2-chat-latest', 'openai/gpt-5.3-chat-latest']) {
+      expect(openai.has(id), id).toBe(false);
+    }
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        categorizer: 'claude-cli',
+        taxonomyProvider: 'pi-ai',
+        taxonomyModel: 'openai/gpt-5.2-chat-latest',
+        assignmentProvider: 'claude-cli',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain('"openai/gpt-5.2-chat-latest" is not in the OpenAI API catalog');
+  });
+
+  it('keeps every default model where it was: the new models are selectable, never suggested', async () => {
+    for (const id of ['claude-cli', 'pi-claude-subscription', 'pi-ai']) {
+      const provider = catalog.providers.find((p) => p.id === id)!;
+      expect(provider.suggested, id).toEqual({
+        taxonomy: 'anthropic/claude-opus-5-5',
+        assignment: 'anthropic/claude-haiku-4-5',
+      });
+      expect(suggestedModelFor(getProvider(id)!, 'summary'), id).toBe('anthropic/claude-sonnet-5');
+      expect(suggestedModelFor(getProvider(id)!, 'chat'), id).toBe('anthropic/claude-haiku-4-5');
     }
   });
 });
