@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import type { ProviderDefinition, ProviderModel } from '../llm/types';
 import { buildSettingsCatalog } from './catalog';
-import { createModelBrowser, verifyCatalogModels } from './model-browser';
+import {
+  createModelBrowser,
+  requireCatalogModels,
+  retiredModelProblem,
+  verifyCatalogModels,
+  type CatalogPass,
+} from './model-browser';
 
 /** A provider with a catalog of two sources, counting how often each is read. */
 function catalogProvider() {
@@ -109,5 +115,66 @@ describe('verifyCatalogModels', () => {
     expect(errors).toEqual([
       'Filing model "opencode/kimi-k9" is not in the OpenCode Zen catalog. Pick one from the list, or check the id.',
     ]);
+  });
+});
+
+describe('a saved model the installed catalog no longer lists (run-time check)', () => {
+  const catalog = buildSettingsCatalog();
+  const TAXONOMY: CatalogPass = { role: 'taxonomy', label: 'The taxonomy model', field: 'Taxonomy provider', phase: 'Phase 1' };
+  const FILING: CatalogPass = { role: 'assignment', label: 'The filing model', field: 'Filing method', phase: 'Phase 2' };
+  const problem = (pass: CatalogPass, detail: string) => `${pass.label} cannot run: ${detail}. Change "${pass.field}".`;
+
+  it('names the saved model and the Settings field, and never swaps the model', async () => {
+    const browser = createModelBrowser(catalogProvider().lookup);
+    const settings = {
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'opencode/kimi-k1-retired',
+      assignmentProvider: 'pi-ai',
+      assignmentModel: 'opencode/kimi-k2',
+    };
+    expect(await retiredModelProblem(settings, catalog, browser, TAXONOMY, problem)).toBe(
+      'The taxonomy model cannot run: the saved model "opencode/kimi-k1-retired" is no longer in the OpenCode Zen ' +
+        'model list - the installed model library dropped it. Change "Taxonomy provider".',
+    );
+    expect(await retiredModelProblem(settings, catalog, browser, FILING, problem)).toBeUndefined();
+    await expect(requireCatalogModels(settings, catalog, browser, [FILING, TAXONOMY], problem)).rejects.toThrow(
+      '"opencode/kimi-k1-retired" is no longer in the OpenCode Zen model list',
+    );
+    expect(settings.taxonomyModel).toBe('opencode/kimi-k1-retired');
+  });
+
+  it("checks claude-cli's Claude catalog too, against the real installed pi catalog", async () => {
+    const browser = createModelBrowser();
+    const settings = { taxonomyProvider: 'claude-cli', taxonomyModel: 'anthropic/claude-sonnet-3-retired', assignmentProvider: 'claude-cli' };
+    expect(await retiredModelProblem(settings, catalog, browser, TAXONOMY, problem)).toContain(
+      '"anthropic/claude-sonnet-3-retired" is no longer in the Claude models (Anthropic) model list',
+    );
+    // A new 1.5.0 model is listed, so it runs.
+    await expect(
+      requireCatalogModels({ ...settings, taxonomyModel: 'anthropic/claude-sonnet-5-5' }, catalog, browser, [TAXONOMY], problem),
+    ).resolves.toBeUndefined();
+  });
+
+  it('says nothing for Recommended, a local name, a legacy unprefixed id, an unread catalog or another role', async () => {
+    const browser = createModelBrowser(catalogProvider().lookup);
+    const cases = [
+      { taxonomyProvider: 'pi-ai', assignmentProvider: 'pi-ai' },
+      { taxonomyProvider: 'pi-ai', taxonomyModel: 'local/qwen3', assignmentProvider: 'pi-ai' },
+      { taxonomyProvider: 'claude-cli', taxonomyModel: 'claude-sonnet-5', assignmentProvider: 'pi-ai' },
+      // openrouter's first read throws: the provider's own check() decides instead.
+      { taxonomyProvider: 'pi-ai', taxonomyModel: 'openrouter/x/y', assignmentProvider: 'pi-ai' },
+    ];
+    for (const settings of cases) {
+      expect(await retiredModelProblem(settings, catalog, browser, TAXONOMY, problem), JSON.stringify(settings)).toBeUndefined();
+    }
+    expect(
+      await retiredModelProblem(
+        { taxonomyProvider: 'pi-ai', taxonomyModel: 'opencode/gone', assignmentProvider: 'pi-ai' },
+        catalog,
+        browser,
+        { ...TAXONOMY, role: 'summary' },
+        problem,
+      ),
+    ).toBeUndefined();
   });
 });

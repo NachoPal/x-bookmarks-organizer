@@ -201,6 +201,8 @@ describe('the pi-claude-subscription provider (opt-in, fake runtime)', () => {
       'anthropic/claude-haiku-4-5',
       'anthropic/claude-sonnet-5',
       'anthropic/claude-opus-4-8',
+      'anthropic/claude-sonnet-5-5',
+      'anthropic/claude-haiku-5-5',
     ]);
     expect(p.models.every((m) => m.requiresKey === 'CLAUDE_CODE_OAUTH_TOKEN')).toBe(true);
     expect(p.models.every((m) => typeof m.contextWindow === 'number')).toBe(true);

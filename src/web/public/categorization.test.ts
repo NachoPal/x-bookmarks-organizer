@@ -482,6 +482,32 @@ describe('catalog sources (the full pi catalog)', () => {
     );
   });
 
+  it('names a model the loaded catalog no longer lists, blocking Save even when nothing else changed', () => {
+    const values = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'opencode/kimi-k1-retired',
+      taxonomySource: 'opencode',
+      taxonomyModelUnlisted: true,
+      assignmentProvider: 'claude-cli',
+    };
+    const keys = { OPENCODE_API_KEY: { present: true } };
+    const saved = { categorizer: 'claude-cli', taxonomyProvider: 'pi-ai', taxonomyModel: 'opencode/kimi-k1-retired', assignmentProvider: 'claude-cli' };
+    const problems = XBO.passProblems(values, piCatalog, keys, {}, saved);
+    expect(problems[0]).toEqual({
+      text:
+        'Phase 1: "opencode/kimi-k1-retired" is no longer in the OpenCode Zen model list - the installed model ' +
+        'library dropped it. Choose another model.',
+      blocksSave: true,
+    });
+    // Visible even though the selection is the saved one (that reason stays silent).
+    expect(problems.filter((p: { silent?: boolean }) => !p.silent)).toHaveLength(1);
+    expect(XBO.hasSaveBlocker(values, piCatalog, keys, {}, saved)).toBe(true);
+    // The marker is form state, never part of what a save sends.
+    expect(XBO.toPayload(values)).not.toHaveProperty('taxonomyModelUnlisted');
+    expect(XBO.passProblems({ ...values, taxonomyModelUnlisted: false }, piCatalog, keys)).toEqual([]);
+  });
+
   it('leaves a provider with no catalog out of all of it', () => {
     const values = { categorizer: 'claude-cli', taxonomyProvider: 'claude-cli', assignmentProvider: 'claude-cli' };
     expect(XBO.passProblems(values, piCatalog, {})).toEqual([]);

@@ -528,12 +528,12 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // The Sync button's work. `baseConfig` (not `config`) is handed over on
     // purpose: the job re-reads the settings on every run, so changing them in
     // the Settings panel takes effect without restarting the viewer.
-    syncJob: createSyncJob({ db, store, config: baseConfig, images }),
+    syncJob: createSyncJob({ db, store, config: baseConfig, images, browser: modelBrowser }),
     // Which of the next sync's passes are billed per token - a paid sync is
     // confirmed in the app before it starts (security review 2, #20).
     syncSpend: createSyncSpend({ db, store, config: baseConfig, browser: modelBrowser }),
     // ...and whether it can start at all, checked before that confirmation.
-    syncPreflight: createSyncPreflight({ db, store, config: baseConfig }),
+    syncPreflight: createSyncPreflight({ db, store, config: baseConfig, browser: modelBrowser }),
     // The "Rank now" button's work (issue #80). `baseConfig` again, for the
     // same reason as the sync job - and because the ranker's opt-in and knobs
     // are deliberately NOT settings-panel choices: turning ranking on stays an

@@ -8438,7 +8438,7 @@
    * through it; Enter picks; Escape closes it (restoring the current choice)
    * without closing the panel around it; Tab leaves with the choice intact.
    */
-  function buildModelPicker(idPrefix, name, labelText, onPick) {
+  function buildModelPicker(idPrefix, name, labelText, onPick, onLoad) {
     const field = el("div", "field model-picker");
     const inputId = `${idPrefix}-${name}`;
     const listId = `${inputId}-list`;
@@ -8610,7 +8610,24 @@
       if (onPick) onPick();
     }
 
+    /**
+     * A saved model the catalog just loaded no longer lists (the installed
+     * model library dropped it). Kept as the value - never switched for the
+     * owner - and said so in the hint and the form's note.
+     */
+    function isUnlisted() {
+      return state.load === "ready" && !!state.value && !state.models.some((m) => m.id === state.value);
+    }
+
     function renderHint() {
+      if (isUnlisted()) {
+        const source = categorization().findSource(state.provider, state.sourceId);
+        hint.textContent = categorization().unlistedModelText(state.value, source);
+        hint.dataset.key = "missing";
+        hint.classList.remove("field-billing");
+        return;
+      }
+      delete hint.dataset.key;
       const match = categorization()
         .pickerEntries(state.provider, state.sourceId, state.models, state.pass, "")
         .find((e) => e.value === state.value);
@@ -8637,6 +8654,7 @@
       renderList();
       syncInput();
       renderHint();
+      if (onLoad) onLoad();
     }
 
     function move(delta) {
@@ -8720,6 +8738,7 @@
       getValue() {
         return state.value;
       },
+      isUnlisted,
     };
   }
 
@@ -8739,7 +8758,7 @@
    * and the bookmarks filed on another. Returns the mounted root plus the
    * small API `app.js` drives it with.
    */
-  function createCategorizationForm(container, idPrefix, onChange) {
+  function createCategorizationForm(container, idPrefix, onChange, onRefresh) {
     // ONE control for "who files each bookmark": Jev sits alongside every LLM
     // provider (bug: choosing an LLM provider here used to leave a separate,
     // independently-settable "Filing provider" field that `buildCategorizers`
@@ -8763,10 +8782,20 @@
      */
     function catalogFields(pass, noun) {
       const source = buildField(idPrefix, `${pass}Source`, `${noun} API provider`);
-      const picker = buildModelPicker(idPrefix, `${pass}ModelSearch`, `${noun} model`, () => {
-        renderHints();
-        if (onChange) onChange();
-      });
+      const picker = buildModelPicker(
+        idPrefix,
+        `${pass}ModelSearch`,
+        `${noun} model`,
+        () => {
+          renderHints();
+          if (onChange) onChange();
+        },
+        // A loaded catalog can reveal that the saved model is no longer in
+        // it, which the form's note must say - without marking it edited.
+        () => {
+          if (onRefresh) onRefresh();
+        },
+      );
       const local = el("div", "field");
       const localInput = document.createElement("input");
       localInput.type = "text";
@@ -9034,7 +9063,10 @@
           effort: effort.select.value,
         };
         for (const pass of PASSES) {
-          if (usesCatalog(pass)) values[pass + "Source"] = passes[pass].source.select.value;
+          if (!usesCatalog(pass)) continue;
+          values[pass + "Source"] = passes[pass].source.select.value;
+          const src = chosenSource(pass);
+          if (src && !src.freeform && passes[pass].picker.isUnlisted()) values[pass + "ModelUnlisted"] = true;
         }
         return values;
       },
@@ -9158,11 +9190,16 @@
 
   function initCategorizationSettings() {
     if (!settingsFormEl || !window.XBOCategorization) return;
-    settingsForm = createCategorizationForm(settingsFormEl, "settings", () => {
-      settingsDirty = true;
-      setSaveStatus("");
-      updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn, setupState && setupState.settings);
-    });
+    settingsForm = createCategorizationForm(
+      settingsFormEl,
+      "settings",
+      () => {
+        settingsDirty = true;
+        setSaveStatus("");
+        updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn, setupState && setupState.settings);
+      },
+      () => updateFormNote(settingsForm, settingsNoteEl, settingsSaveBtn, setupState && setupState.settings),
+    );
     if (!settingsSaveBtn) return;
     settingsSaveBtn.addEventListener("click", async () => {
       settingsSaveBtn.classList.add("is-loading");
@@ -9614,8 +9651,11 @@
 
   function initSetup() {
     if (!setupModalEl || !window.XBOCategorization) return;
-    setupForm = createCategorizationForm(setupFormEl, "setup", () =>
-      updateFormNote(setupForm, setupNoteEl),
+    setupForm = createCategorizationForm(
+      setupFormEl,
+      "setup",
+      () => updateFormNote(setupForm, setupNoteEl),
+      () => updateFormNote(setupForm, setupNoteEl),
     );
     setupCloseBtn.addEventListener("click", closeSetup);
     setupBackdropEl.addEventListener("click", closeSetup);
@@ -9691,10 +9731,15 @@
     firstRunDotenvEl = el("div", "creds-alert dotenv-warning");
     firstRunDotenvEl.hidden = true;
     const formHost = el("div", "first-run-steps");
-    firstRunForm = createCategorizationForm(formHost, "firstrun", () => {
-      firstRunDirty = true;
-      updateFirstRun();
-    });
+    firstRunForm = createCategorizationForm(
+      formHost,
+      "firstrun",
+      () => {
+        firstRunDirty = true;
+        updateFirstRun();
+      },
+      () => updateFirstRun(),
+    );
     firstRunNoteEl = el("p", "settings-note");
     firstRunNoteEl.hidden = true;
     firstRunStatusEl = el("p", "phase-helper");

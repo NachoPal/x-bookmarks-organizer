@@ -65,6 +65,8 @@ export const CURATED_ANTHROPIC_MODELS: readonly CuratedAnthropicModel[] = [
   },
   { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', role: 'Balanced - the pick for summaries', suggestedFor: ['summary'] },
   { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', role: 'Previous Opus', suggestedFor: [] },
+  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', role: 'Newest Sonnet - balanced', suggestedFor: [] },
+  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', role: 'Newest Haiku - fast', suggestedFor: [] },
 ];
 
 export function anthropicModelId(bareId: string): string {

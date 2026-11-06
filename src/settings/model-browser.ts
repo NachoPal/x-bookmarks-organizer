@@ -98,22 +98,110 @@ export async function verifyCatalogModels(
     { label: 'Filing model', providerId: settings.assignmentProvider, model: settings.assignmentModel },
   ];
   for (const { label, providerId, model } of passes) {
-    if (!model) continue;
-    const provider = catalogProvider(catalog, providerId);
-    if (!provider || provider.models.some((m) => m.id === model)) continue;
-    const source = sourceOfModel(provider, model);
-    if (!source || source.freeform) continue;
-    const listing = await browser.list(providerId, source.id);
-    if (!listing.ok) {
-      errors.push(`${label} "${model}": ${listing.error}`);
-    } else if (!listing.models.some((m) => m.id === model)) {
+    const found = await lookupCatalogModel(catalog, browser, providerId, model);
+    if (found.state === 'unreadable') {
+      errors.push(`${label} "${model}": ${found.error}`);
+    } else if (found.state === 'unlisted') {
       errors.push(
-        `${label} "${model}" is not in the ${source.label} catalog. ` +
+        `${label} "${model}" is not in the ${found.sourceLabel} catalog. ` +
           'Pick one from the list, or check the id.',
       );
     }
   }
   return errors;
+}
+
+type CatalogLookup =
+  | { state: 'listed' | 'not-applicable' }
+  | { state: 'unlisted'; sourceLabel: string }
+  | { state: 'unreadable'; error: string };
+
+/**
+ * Whether a pass's model is one its provider's catalog lists. Not applicable
+ * to "Recommended" (no model), to a provider without a catalog, or to a
+ * `freeform` source (a local server), whose names no catalog knows.
+ */
+async function lookupCatalogModel(
+  catalog: SettingsCatalog,
+  browser: ModelBrowser,
+  providerId: string,
+  model: string | undefined,
+): Promise<CatalogLookup> {
+  if (!model) return { state: 'not-applicable' };
+  const provider = catalogProvider(catalog, providerId);
+  if (!provider) return { state: 'not-applicable' };
+  if (provider.models.some((m) => m.id === model)) return { state: 'listed' };
+  const source = sourceOfModel(provider, model);
+  if (!source || source.freeform) return { state: 'not-applicable' };
+  const listing = await browser.list(providerId, source.id);
+  if (!listing.ok) return { state: 'unreadable', error: listing.error };
+  return listing.models.some((m) => m.id === model)
+    ? { state: 'listed' }
+    : { state: 'unlisted', sourceLabel: source.label };
+}
+
+/** One pass a run would make, as the Settings field that chose its model. */
+export interface CatalogPass {
+  /** `taxonomy` or `assignment` - the two passes Settings chooses a model for; any other role is skipped. */
+  role: string;
+  label: string;
+  field: string;
+  phase: string;
+}
+
+/**
+ * The run-time half of the same check: a model SAVED before the installed
+ * model library was upgraded can name an id the new catalog no longer lists
+ * (pi drops retired models between versions). The save-time check above
+ * cannot catch that - it ran against the OLD catalog - so a run checks the
+ * stored choice again before it starts, and names the Settings field to
+ * change instead of running a model the catalog no longer vouches for. The
+ * saved choice is never switched for the owner.
+ *
+ * Answers the owner-facing sentence (`problem` words it, naming the field),
+ * or undefined when the model is listed or nothing can be said. A catalog
+ * that cannot be read is not a reason to refuse: the provider's own `check()`
+ * still decides whether the model can run, so this only ever ADDS a clearer
+ * refusal.
+ */
+export async function retiredModelProblem(
+  settings: Pick<AppSettings, 'taxonomyProvider' | 'taxonomyModel' | 'assignmentProvider' | 'assignmentModel'>,
+  catalog: SettingsCatalog,
+  browser: ModelBrowser,
+  pass: CatalogPass,
+  problem: (pass: CatalogPass, detail: string) => string,
+): Promise<string | undefined> {
+  if (pass.role !== 'taxonomy' && pass.role !== 'assignment') return undefined;
+  const providerId = pass.role === 'taxonomy' ? settings.taxonomyProvider : settings.assignmentProvider;
+  const model = pass.role === 'taxonomy' ? settings.taxonomyModel : settings.assignmentModel;
+  try {
+    const found = await lookupCatalogModel(catalog, browser, providerId, model);
+    return found.state === 'unlisted' ? problem(pass, retiredModelDetail(model!, found.sourceLabel)) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** {@link retiredModelProblem} for each pass a run makes, thrown - for a preflight. */
+export async function requireCatalogModels(
+  settings: Pick<AppSettings, 'taxonomyProvider' | 'taxonomyModel' | 'assignmentProvider' | 'assignmentModel'>,
+  catalog: SettingsCatalog,
+  browser: ModelBrowser,
+  passes: readonly CatalogPass[],
+  problem: (pass: CatalogPass, detail: string) => string,
+): Promise<void> {
+  for (const pass of passes) {
+    const refusal = await retiredModelProblem(settings, catalog, browser, pass, problem);
+    if (refusal) throw new Error(refusal);
+  }
+}
+
+/** Why a saved model cannot be used: the installed catalog no longer lists it. */
+export function retiredModelDetail(model: string, sourceLabel: string): string {
+  return (
+    `the saved model "${model}" is no longer in the ${sourceLabel} model list - ` +
+    'the installed model library dropped it'
+  );
 }
 
 /**

@@ -153,6 +153,31 @@ describe('recategorize API', () => {
     expect(cost.filing.available).toBe(true);
   });
 
+  it('names a saved model the installed catalog dropped, before any pass runs, and refuses the run', async () => {
+    db.setState(
+      'app_settings',
+      JSON.stringify({
+        categorizer: 'claude-cli',
+        taxonomyProvider: 'pi-ai',
+        taxonomyModel: 'openai/gpt-5.2-chat-latest',
+        assignmentProvider: 'claude-cli',
+      }),
+    );
+    // A catalog that has moved on: it lists the OpenAI models, minus the retired one.
+    const browser = {
+      list: async () => ({ ok: true, models: [{ id: 'openai/gpt-6.1-sol', label: 'GPT-6.1 Sol', suggestedFor: [] }] }),
+    } as never;
+    const recat = wiring({ browser });
+    const cost = await recat.describe();
+    expect(cost.taxonomy.available).toBe(false);
+    expect(cost.taxonomy.reason).toBe(
+      'The phase 1 (taxonomy) language model cannot run: the saved model "openai/gpt-5.2-chat-latest" is no ' +
+        'longer in the OpenAI API model list - the installed model library dropped it. ' +
+        'To use a different one, open Settings and change "Taxonomy provider" under Phase 1 - Taxonomy.',
+    );
+    await expect(recat.proposalJob('redesign')(() => {})).rejects.toThrow('no longer in the OpenAI API model list');
+  });
+
   it('runs a proposal without changing data, then cancel leaves everything as it was', async () => {
     await start();
     const before = snapshot();

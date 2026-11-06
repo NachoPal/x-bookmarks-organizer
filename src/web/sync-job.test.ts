@@ -269,6 +269,27 @@ describe('a Jev sync requires only the phase-1 language model', () => {
     await expect(run()).rejects.toThrow(/Taxonomy provider/);
     expect(seen).toEqual([]);
   });
+
+  it('refuses a model saved before the installed catalog retired it, and keeps it saved as it was', async () => {
+    // Stored straight into the document, the way a choice saved under an older
+    // pi-ai reads after the upgrade: 1.5.0 no longer lists this OpenAI id.
+    const doc = {
+      categorizer: 'claude-cli',
+      taxonomyProvider: 'pi-ai',
+      taxonomyModel: 'openai/gpt-5.2-chat-latest',
+      assignmentProvider: 'claude-cli',
+      configuredAt: '2026-09-21T10:28:55.227Z',
+    };
+    db.setState('app_settings', JSON.stringify(doc));
+    const keys = { ...OWNER_KEYS, OPENAI_API_KEY: 'sk-openai-test' };
+    const failure = createSyncPreflight({ db, store: storeWith(keys), config: loadConfig({ ...X_CREDS }) })();
+    await expect(failure).rejects.toThrow(
+      'The phase 1 (taxonomy) language model cannot run: the saved model "openai/gpt-5.2-chat-latest" is no ' +
+        'longer in the OpenAI API model list - the installed model library dropped it. ' +
+        'To use a different one, open Settings and change "Taxonomy provider" under Phase 1 - Taxonomy.',
+    );
+    expect(JSON.parse(db.getState('app_settings')!)).toEqual(doc);
+  });
 });
 
 /**

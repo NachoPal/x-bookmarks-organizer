@@ -580,12 +580,18 @@ describe('outputCeiling (security review 2, #19)', () => {
     expect(outputCeiling({ maxTokens: 128_000 }, 0, 'off')).toBeUndefined();
   });
 
-  it("resolves a real cap for the models pi-ai 0.87.1 added, from the installed catalog's own maximum", async () => {
+  it("resolves a real cap for the models pi-ai 0.87.1 and 1.5.0 added, from the installed catalog's own maximum", async () => {
     const runtime = await loadPiRuntime();
     for (const [upstream, id] of [
+      // 0.87.1
       ['anthropic', 'claude-opus-5-5'],
       ['openai', 'gpt-6-sol'],
       ['openai', 'gpt-6-luna'],
+      // 1.5.0
+      ['anthropic', 'claude-sonnet-5-5'],
+      ['anthropic', 'claude-haiku-5-5'],
+      ['openai', 'gpt-6.1-sol'],
+      ['openai', 'gpt-6.1-terra'],
     ] as const) {
       const model = await runtime.findModel(upstream, id);
       expect(model, `${upstream}/${id} is not in the installed pi catalog`).toBeDefined();

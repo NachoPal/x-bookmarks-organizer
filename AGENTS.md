@@ -171,6 +171,12 @@ ARIA combobox whose listbox opens IN FLOW so the scrolling panel cannot clip it)
 `XBOCategorization.pickerEntries`/`sourceNotice`/`passProblems`. `CURATED_PI_MODELS` is now only
 the RECOMMENDED picks (surfaced first, and the source of `suggestedFor`); `pi-ai.test.ts` still
 pins its restated numbers against the installed catalog, so re-check on every pi bump.
+**A pi bump can RETIRE a model a saved setting still names** (1.5.0 dropped e.g.
+`openai/gpt-5.2-chat-latest`); the save-time check ran against the old catalog, so it cannot catch
+that. Never switch it for the owner: the picker marks it (`isUnlisted` -> `<pass>ModelUnlisted` ->
+`passProblems`, blocks Save), and every run's preflight (sync, find, recategorize) refuses it by
+name through `requireCatalogModels`/`retiredModelProblem` in `model-browser.ts` before the
+provider's own `check()`. A new job that runs a pass must call it too.
 `@earendil-works/pi-telemetry` is type contracts + no-op/in-memory contexts, never
 imported at runtime by pi-ai - inert. Tests use a fake `PiRuntime` (`createPiAiProvider(load)`)
 and one real-SDK round trip against a localhost stub server; never a hosted API.

@@ -24,6 +24,7 @@ import type { XClient } from '../x/client';
 import { getAuthenticatedClient } from '../x/auth';
 import {
   buildCategorizers as defaultBuildCategorizers,
+  passSettingProblem,
   reportCategorizerBilling,
   requirePassSettings,
   syncPassSettings,
@@ -33,7 +34,7 @@ import {
 import { createLlmFactory, type LlmFactory } from '../llm/factory';
 import { runIngest as defaultRunIngest, type IngestSummary } from '../ingest';
 import { buildSettingsCatalog } from '../settings/catalog';
-import { createModelBrowser, type ModelBrowser } from '../settings/model-browser';
+import { createModelBrowser, requireCatalogModels, type ModelBrowser } from '../settings/model-browser';
 import { applySettingsToConfig, effectiveSettings } from '../settings/settings';
 import { DEFAULT_TYPESAFE_MODEL } from '../categorize/typesafe/client';
 import { asPaidPass, describeRoleSpend, type PaidPass } from './paid-spend';
@@ -69,6 +70,8 @@ export interface SyncJobDeps {
    * not read.
    */
   images?: ImageTextWorker;
+  /** Where a saved model is checked against the installed catalog. Defaults to the real (local, free) browser. */
+  browser?: ModelBrowser;
 }
 
 /**
@@ -132,21 +135,27 @@ export function createSyncJob(deps: SyncJobDeps): SyncJob {
  * names the Settings field that chose the model (`requirePassSettings`).
  */
 export function createSyncPreflight(
-  deps: Pick<SyncJobDeps, 'db' | 'store' | 'config'>,
+  deps: Pick<SyncJobDeps, 'db' | 'store' | 'config' | 'browser'>,
 ): () => Promise<{ config: Config; llm: LlmFactory }> {
   const catalog = buildSettingsCatalog();
+  const browser = deps.browser ?? createModelBrowser();
   return async () => {
     const { db, store } = deps;
     // No `env` argument: in the app the owner's visible choice wins over a
     // stray variable in the shell that launched `serve` - see
     // `applySettingsToConfig`.
-    const config = applySettingsToConfig(deps.config, effectiveSettings(db, catalog));
+    const settings = effectiveSettings(db, catalog);
+    const config = applySettingsToConfig(deps.config, settings);
 
     requireXCredentials(config);
     if (!db.getRefreshToken()) throw new Error(NOT_CONNECTED_MESSAGE);
 
+    const passes = syncPassSettings(config);
+    // A model saved before the installed catalog dropped it is named as such,
+    // rather than run or silently swapped.
+    await requireCatalogModels(settings, catalog, browser, passes, passSettingProblem);
     const llm = createLlmFactory(config, process.env, store);
-    await requirePassSettings(llm, syncPassSettings(config));
+    await requirePassSettings(llm, passes);
     return { config, llm };
   };
 }

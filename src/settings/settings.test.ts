@@ -479,7 +479,7 @@ describe('a provider with a full model catalog (pi-ai)', () => {
     const viaPi = catalog.providers.find((p) => p.id === 'pi-claude-subscription')!;
     expect(cli.sources!.map((s) => s.id)).toEqual(['anthropic']);
     expect(viaPi.sources!.map((s) => s.id)).toEqual(['anthropic']);
-    expect(cli.models.length).toBe(4);
+    expect(cli.models.length).toBe(6);
   });
 
   it('accepts (and reads back) any <source>/<model> of the catalog, per pass', () => {
