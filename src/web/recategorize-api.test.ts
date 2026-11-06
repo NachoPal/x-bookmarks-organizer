@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import { buildServer } from './server';
 import { createRecategorizeWiring, type RecategorizeWiring } from './recategorize-job';
 import type { SyncJob } from './sync';
+import { createRefreshWiring } from './refresh-job';
+import type { XClient } from '../x/client';
 import { Database } from '../db/database';
 import { loadConfig } from '../config';
 import type { CredentialStore, ResolvedCredential } from '../creds/resolve';
@@ -325,6 +327,56 @@ describe('recategorize API', () => {
     expect(during.statusCode).toBe(409);
     expect(during.json().error).toMatch(/A sync is running/);
     syncRelease();
+  });
+
+  it('never runs beside a refresh from X, in either order', async () => {
+    let unblock: (() => void) | undefined;
+    const slowX: XClient = {
+      fetchBookmarksPage: () =>
+        new Promise((resolve) => {
+          unblock = () => resolve({ bookmarks: [] });
+        }),
+    };
+    db.setRefreshToken('stored-refresh-token');
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    app = buildServer(db, {
+      refresh: createRefreshWiring({
+        db,
+        config: loadConfig({ XBOOKMARKS_CLIENT_ID: 'id', XBOOKMARKS_CLIENT_SECRET: 'secret' }),
+        connect: async () => slowX,
+      }),
+      recategorize: wiring({
+        buildTaxonomer: () => ({
+          designTaxonomy: async () => {
+            await gate;
+            return designed;
+          },
+        }),
+      }),
+    });
+    await app.ready();
+    const refresh = () => app!.inject({ method: 'POST', url: '/api/refresh', payload: { scope: 'newest', confirm: true } });
+    const propose = () =>
+      app!.inject({ method: 'POST', url: '/api/recategorize/proposal', payload: { mode: 'redesign', confirm: true } });
+
+    expect((await refresh()).statusCode).toBe(202);
+    for (let i = 0; i < 200 && !unblock; i++) await new Promise((r) => setTimeout(r, 5));
+    const during = await propose();
+    expect(during.statusCode).toBe(409);
+    expect(during.json().error).toMatch(/refreshed from X/);
+    unblock!();
+    for (let i = 0; i < 200; i++) {
+      if ((await app.inject({ method: 'GET', url: '/api/refresh' })).json().refresh.status.state !== 'running') break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    expect((await propose()).statusCode).toBe(202);
+    const blocked = await refresh();
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().error).toMatch(/being recategorized/);
+    release();
+    await waitFor(app);
   });
 
   it('builds both proposals on the REAL designer and prompts, over every stored post', async () => {

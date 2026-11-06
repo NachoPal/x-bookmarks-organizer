@@ -17,8 +17,8 @@ import {
   type RecategorizeDraft,
 } from './proposal';
 import { acceptProposal, generateProposal, readRefileState, refileRemaining } from './recategorize';
-import type { BatchCategorizer } from './llm';
-import type { TaxonomyDesigner } from './taxonomy';
+import { Categorizer, type BatchCategorizer } from './llm';
+import { LlmTaxonomyDesigner, type TaxonomyDesigner } from './taxonomy';
 
 const WHEN = '2026-11-01T00:00:00.000Z';
 const bm = (postId: string, text = `t-${postId}`): RawBookmark => ({
@@ -334,5 +334,67 @@ describe('generating a proposal', () => {
     const ok = editDraft(db, draft, [{ id: 1, name: 'B', edited: true, children: [{ id: 2, name: 'C', children: [] }] }], 4);
     expect(ok.errors).toEqual([]);
     expect(shape(ok.draft!.tree)).toEqual([['B', ['C']]]);
+  });
+});
+
+describe('image text (alt text + OCR) reaches every recategorize prompt', () => {
+  const photo = (mediaKey: string, altText: string | null = null) => ({
+    mediaKey,
+    type: 'photo' as const,
+    url: `https://pbs.twimg.com/media/${mediaKey}.png`,
+    previewImageUrl: null,
+    altText,
+    width: null,
+    height: null,
+  });
+  const IMAGE_TEXT =
+    '[image 1 in the post] alt: A zephyrine chart text: Quarterly zephyrine report | ' +
+    '[image 1 in the quoted post] text: Memo on quokka migration';
+  let db: Database;
+  let prompts: string[];
+  /** The real pass-1 designer and filing categorizer, over a runner that records each prompt. */
+  const recording = (response: string) => async (prompt: string) => {
+    prompts.push(prompt);
+    return response;
+  };
+  const designer = (response: string) => new LlmTaxonomyDesigner(recording(response), { minDepth: 1, maxDepth: 4 });
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    prompts = [];
+    const ai = db.getOrCreateCategory('AI', null, WHEN).id;
+    const post = { ...bm('1', 'look'), media: [photo('3_1', 'A zephyrine chart')], quotedPostId: 'q', quotedMedia: [photo('3_2')] };
+    db.storeCategorizedBatch([post], () => [ai], WHEN);
+    db.setMediaOcrResult('1', '3_1', { status: 'done', text: 'Quarterly zephyrine report' });
+    db.setMediaOcrResult('q', '3_2', { status: 'done', text: 'Memo on quokka migration' });
+  });
+  afterEach(() => db.close());
+
+  it('Option 1 (propose a new tree): the redesign prompt carries it', async () => {
+    await generateProposal(
+      { db, taxonomer: designer('{"tree":[{"name":"Reports","description":"d","children":[]}]}'), maxDepth: 4, articleFetcher: noFetch },
+      'redesign',
+    );
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('CURRENT category tree, shown for context only');
+    expect(prompts[0]).toContain(`[text in images: ${IMAGE_TEXT}]`);
+  });
+
+  it('Option 2 (keep the tree, only add): the incremental prompt carries it', async () => {
+    await generateProposal({ db, taxonomer: designer('{"tree":[]}'), maxDepth: 4, articleFetcher: noFetch }, 'extend');
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('is FIXED');
+    expect(prompts[0]).toContain(`[text in images: ${IMAGE_TEXT}]`);
+  });
+
+  it('the re-file pass (phase 2) carries it', async () => {
+    writeDraft(db, draftOf(db, 'extend', proposalFromAdditions([], buildCategoryTree(db), 4)));
+    const filer = new Categorizer(recording('{"assignments":[{"post_id":"1","categories":[["AI"]]}]}'), {
+      model: 'test',
+      maxDepth: 4,
+    });
+    await acceptProposal({ db, categorizer: filer, batchSize: 10, maxDepth: 4, articleFetcher: noFetch });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(`    text in images: ${IMAGE_TEXT}`);
   });
 });

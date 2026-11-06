@@ -849,10 +849,12 @@ client pure half `recategorize.js` (`XBORecategorize`). Load-bearing rules:
   strip's Try again) to finish.
 - **Every step needs `{ confirm: true }`**: the chooser's option buttons (they state both passes'
   cost) for phase 1, the accept confirmation (per-post phase 2 pricing) for accept/refile.
-- **Job lock**: a running recategorize refuses sync, rank (both), find, reset, rubric writes, every
-  category write and manual post moves; it refuses to start while any of those runs.
+- **Job lock**: a running recategorize refuses sync, rank (both), find, refresh from X, reset,
+  rubric writes, every category write and manual post moves; it refuses to start while any of
+  those runs.
 - It reuses the sync's builders (`loadArticleContext`, the pass-1 designer, `BatchCategorizer`,
-  `strictFilings`), so anything a sync's prompts gain, recategorize's gain too. The CLI
+  `strictFilings`), so anything a sync's prompts gain, recategorize's gain too - image alt/OCR
+  text included (`proposal.test.ts` pins it for both proposals and the re-file). The CLI
   `recategorize` (anchored redesign, keeps owner categories) is unchanged and shares those builders.
 - The editor reuses the category editor's rows (`.ced-*`), the drag engine (`startRowDrag` +
   `hoverTreeDrop`, which take `roots`/`maxDepth`/`lookup`/`problemFor`/`expand` from the spec) and
