@@ -11821,7 +11821,8 @@
     recatConfirm = null;
     if (opts && opts.returnFocus === false) return;
     const target = pending && pending.returnFocus;
-    if (target && target.isConnected && target.offsetParent !== null) target.focus();
+    if (target && target.isConnected && target.offsetParent !== null && target !== document.body) target.focus();
+    else if (isProposalOpen()) proposalAcceptBtn.focus();
     else if (recatOpenBtn) recatOpenBtn.focus();
   }
 
