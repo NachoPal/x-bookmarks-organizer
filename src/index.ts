@@ -29,6 +29,7 @@ import { NO_RECOGNIZER_MESSAGE } from './images/recognizer';
 import { estimateRefresh, refreshBookmarks } from './x/refresh';
 import { describeRoleSpend } from './web/paid-spend';
 import { createFindWiring } from './web/find-job';
+import { createRecategorizeWiring } from './web/recategorize-job';
 import { createRankWiring } from './web/rank-job';
 import { backfillArticlePreviews } from './articles/backfill';
 import { HttpArticleFetcher } from './articles/fetch-article';
@@ -545,6 +546,9 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // stored bookmarks in place, then their images' text in the background.
     refresh: createRefreshWiring({ db, config: baseConfig, images }),
     images,
+    // The top bar's Recategorize: propose a tree (or additions), review it,
+    // accept it - the same passes as a sync, confirmed before each runs.
+    recategorize: createRecategorizeWiring({ db, store, config: baseConfig, browser: modelBrowser }),
     // The built-in preset's relevance question (issue #102 / `rubric.ts`), so
     // the viewer resolves the ACTIVE preset to the SAME version tag the runs it
     // starts will write under - otherwise a viewer started with interests set

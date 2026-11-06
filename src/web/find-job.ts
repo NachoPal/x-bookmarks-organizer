@@ -93,7 +93,7 @@ export interface FindWiringDeps {
 }
 
 /** Jev's billing as the confirmation shows it - always per token, never a secret. */
-function jevSpend(config: Config): RoleSpend {
+export function jevSpend(config: Config): RoleSpend {
   const model = config.typesafe.model ?? DEFAULT_TYPESAFE_MODEL;
   return {
     providerId: 'typesafe',

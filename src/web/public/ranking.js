@@ -191,19 +191,20 @@
 
   /**
    * Which job owns the ONE shared progress strip (issue #98): a sync, a
-   * ranking run, a "find bookmarks" run or a refresh from X - all
-   * one-at-a-time server jobs whose progress is their own log. A RUNNING job
-   * wins; otherwise the most recently started one, a tie going to the later
-   * job in the argument list. Returns "sync", "rank", "find", "refresh", or
-   * null when none has anything to show.
+   * ranking run, a "find bookmarks" run, a refresh from X or a recategorize
+   * step - all one-at-a-time server jobs whose progress is their own log. A
+   * RUNNING job wins; otherwise the most recently started one, a tie going to
+   * the later job in the argument list. Returns "sync", "rank", "find",
+   * "refresh", "recategorize", or null when none has anything to show.
    */
-  function progressSource(syncStatus, rankStatus, findStatus, refreshStatus) {
+  function progressSource(syncStatus, rankStatus, findStatus, refreshStatus, recatStatus) {
     var live = function (s) { return s && s.state && s.state !== "idle" ? s : null; };
     var candidates = [
       { id: "sync", status: live(syncStatus) },
       { id: "rank", status: live(rankStatus) },
       { id: "find", status: live(findStatus) },
       { id: "refresh", status: live(refreshStatus) },
+      { id: "recategorize", status: live(recatStatus) },
     ].filter(function (c) { return c.status; });
     if (candidates.length === 0) return null;
     var running = candidates.filter(function (c) { return c.status.state === "running"; });

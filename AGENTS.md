@@ -822,6 +822,44 @@ Escape handler bails on `isCatEditorOpen() || isCatDeleteOpen() || isMovePickerO
 way it already bailed for the settings popover and the setup dialog. Without it the drawer closed
 underneath, went `inert`, and the pencil the editor hands focus back to could not take it.
 
+## In-app Recategorize (top bar, between Sync and Settings)
+
+Two options behind one flow: `redesign` ("Propose a new tree": pass 1's `redesign` TaxonomyMode -
+the design prompt with the current tree as CONTEXT, not anchors, so it may restructure the owner's
+categories too) and `extend` ("Keep the tree, only add": the sync's `incremental` pass over EVERY
+stored bookmark). Core: `src/categorize/proposal.ts` (draft model, matching, diff, validation,
+apply) + `src/categorize/recategorize.ts` (generate / accept / refile); web: `recategorize-job.ts`
+(one `RecategorizeRunner` slot, `step` = proposal|accept|refile) and the `/api/recategorize*` routes;
+client pure half `recategorize.js` (`XBORecategorize`). Load-bearing rules:
+
+- **A proposal changes no data.** It is a DRAFT in `run_state` (`RECATEGORIZE_DRAFT_KEY`), edited
+  by `PUT /api/recategorize/draft`, so it survives a reload; Cancel is `DELETE`. Both draft keys
+  are reset-cleared library state.
+- **"Only add" is enforced structurally**: `rebaseAdditions` rebuilds every extend draft (each save
+  and each read) from the LIVE tree plus the client's source-less nodes, so a client cannot rename,
+  move or drop an existing category, and a sync's new categories appear locked.
+- **Origin rule** (`draftOrigin`): a node kept from an owner category (`sourceId`) stays `user`; a
+  node the owner created or renamed in review (`edited`) becomes `user`; the rest `generated`.
+  `replaceCategoryTree` KEEPS matched rows (id, links) - parking them under temp names so the
+  UNIQUE constraints cannot trip - deletes the rest, and stores the editor's order as positions.
+- **Atomicity**: the tree write, draft clear and `RECATEGORIZE_REFILE_KEY` (posts left to re-file)
+  land in ONE transaction; then every post is re-filed from scratch (`refileBookmarks`: links
+  REPLACED, strict resolver, `Uncategorized` fallback), each batch with its progress mark. A failed
+  batch leaves the new tree, a "Re-filed X of N" error and `POST /api/recategorize/refile` (the
+  strip's Try again) to finish.
+- **Every step needs `{ confirm: true }`**: the chooser's option buttons (they state both passes'
+  cost) for phase 1, the accept confirmation (per-post phase 2 pricing) for accept/refile.
+- **Job lock**: a running recategorize refuses sync, rank (both), find, refresh from X, reset,
+  rubric writes, every category write and manual post moves; it refuses to start while any of
+  those runs.
+- It reuses the sync's builders (`loadArticleContext`, the pass-1 designer, `BatchCategorizer`,
+  `strictFilings`), so anything a sync's prompts gain, recategorize's gain too - image alt/OCR
+  text included (`proposal.test.ts` pins it for both proposals and the re-file). The CLI
+  `recategorize` (anchored redesign, keeps owner categories) is unchanged and shares those builders.
+- The editor reuses the category editor's rows (`.ced-*`), the drag engine (`startRowDrag` +
+  `hoverTreeDrop`, which take `roots`/`maxDepth`/`lookup`/`problemFor`/`expand` from the spec) and
+  the move picker (`movePicker.roots`/`lookup`/`commit`), all on the draft, never the live tree.
+
 ## Find bookmarks for a category
 
 The editor row's magnifier asks the configured phase-2 FILING METHOD which already-stored

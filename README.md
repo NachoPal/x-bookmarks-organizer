@@ -279,7 +279,27 @@ node dist/index.js
 
 It prints a summary: how many new bookmarks, how many batches, how many new categories.
 
-**Re-categorize** (optional) - rebuild the taxonomy and reassign **all** already-stored bookmarks
+**Recategorize in the app** - the top bar's Recategorize button (between Sync and Settings)
+re-organizes every saved post, with your review before anything changes. Pick one of two options:
+
+- **Propose a new tree** - the taxonomy pass designs a complete new tree over all your saved posts
+  (shown your current tree as context). It may restructure anything, your own categories included,
+  because you decide in the review.
+- **Keep the tree, only add** - your tree stays exactly as it is; the taxonomy pass looks at all
+  your posts and proposes only new categories (top-level, or inside the ones you have).
+
+The proposal opens in an editor like the category editor - rename, move (drag, or press a handle),
+add with "+", remove with the bin; "only add" shows your current categories locked with the
+additions marked New - plus a summary of what is added, removed, renamed and moved. It is saved
+as you edit and survives a reload. **Cancel** discards it and nothing changes. **Accept** states
+what re-filing costs and, once confirmed, writes the tree and re-files **every** post from scratch
+with your phase 2 filing method (Jev is billed per post). Posts you moved by hand go wherever
+filing puts them now; read state, favorites, scores, summaries and lists are kept. A category kept
+from one of yours stays yours, and a category you create or rename in the review becomes yours.
+If re-filing fails part way, the new tree stays in place and the progress strip's Try again
+finishes the rest.
+
+**Re-categorize from the CLI** (optional) - rebuild the taxonomy and reassign **all** already-stored bookmarks
 from scratch, without re-fetching from X. Use this to redo a shallow earlier run, or after changing
 the taxonomy model / depth settings. Read state and read dates are preserved, and so are
 [your own categories](#your-own-categories) - only the generated ones are rebuilt, around yours:

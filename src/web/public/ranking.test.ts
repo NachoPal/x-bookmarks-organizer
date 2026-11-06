@@ -19,7 +19,13 @@ const ranking = require('./ranking.js') as {
   confirmLabel: (r: unknown) => string;
   confirmCostOne: (r?: unknown) => string;
   confirmLabelOne: (r?: unknown) => string;
-  progressSource: (sync: unknown, rank: unknown, find?: unknown, refresh?: unknown) => string | null;
+  progressSource: (
+    sync: unknown,
+    rank: unknown,
+    find?: unknown,
+    refresh?: unknown,
+    recategorize?: unknown,
+  ) => string | null;
   blockerHeadline: (m: unknown) => string;
   blockerDetail: (m: unknown) => string;
   progressLine: (s: unknown) => string;
@@ -288,5 +294,24 @@ describe('blockerHeadline / blockerDetail', () => {
   it('tolerates a missing message', () => {
     expect(ranking.blockerHeadline(null)).toBe('');
     expect(ranking.blockerDetail(undefined)).toBe('');
+  });
+});
+
+describe('progressSource - a recategorize step shares the strip too', () => {
+  const running = (startedAt: string) => ({ state: 'running', startedAt, messages: [] });
+  const done = (startedAt: string) => ({ state: 'done', startedAt, messages: [] });
+
+  it('shows a recategorize step on its own, and gives a running one the strip', () => {
+    expect(ranking.progressSource(null, null, null, null, done('1'))).toBe('recategorize');
+    expect(ranking.progressSource(done('3'), done('3'), done('3'), done('3'), running('1'))).toBe('recategorize');
+    expect(ranking.progressSource(running('1'), null, null, null, done('2'))).toBe('sync');
+    expect(ranking.progressSource(done('1'), null, null, null, done('2'))).toBe('recategorize');
+  });
+
+  it('shares it with a refresh from X: the running one wins, else the later start', () => {
+    expect(ranking.progressSource(null, null, null, running('1'), done('2'))).toBe('refresh');
+    expect(ranking.progressSource(null, null, null, done('2'), running('1'))).toBe('recategorize');
+    expect(ranking.progressSource(null, null, null, done('1'), done('2'))).toBe('recategorize');
+    expect(ranking.progressSource(null, null, null, done('2'), done('1'))).toBe('refresh');
   });
 });

@@ -9,9 +9,9 @@ import {
   renderTreeForPrompt,
 } from './categorize/tree';
 import { findOwnerAnchor, stripOwnerMarker } from './categorize/owner-categories';
-import { buildArticleContext } from './articles/link-metadata';
+import { buildArticleContext, type ArticleContext } from './articles/link-metadata';
 import { HttpArticleFetcher, type ArticleFetcher } from './articles/fetch-article';
-import type { Assignment, RawBookmark } from './types';
+import type { Assignment, RawBookmark, StoredBookmark } from './types';
 
 /** Root node used when the LLM finds no fitting category, so everything is filed. */
 const FALLBACK_CATEGORY = 'Uncategorized';
@@ -119,7 +119,7 @@ export async function collectNewBookmarks(
   return { newBookmarks, newestPostId };
 }
 
-function chunk<T>(items: T[], size: number): T[][] {
+export function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
@@ -222,6 +222,38 @@ function makeResolver(
   };
 }
 
+/**
+ * A filing batch's answer as the links each bookmark gets: every assigned
+ * path resolved STRICTLY against the tree in the DB, and `Uncategorized` for
+ * a bookmark that resolves nowhere - exactly what a sync stores, keyed by
+ * bookmark id for a re-file that replaces links (a recategorize's phase 2).
+ */
+export function strictFilings(
+  db: Database,
+  batch: StoredBookmark[],
+  assignments: Assignment[],
+  maxDepth: number,
+  when: string,
+): Map<number, number[]> {
+  const resolve = makeResolver(db, indexAssignments(assignments), maxDepth, when, resolveExistingPathToLeafId);
+  return new Map(batch.map((bm) => [bm.id, resolve(bm)]));
+}
+
+/**
+ * The linked-article context both passes read for `bookmarks` (issue #25):
+ * the ONE builder a sync, `recategorize` and the in-app recategorize share,
+ * so whatever context a sync's prompts get, a recategorize's get too.
+ */
+export async function loadArticleContext(
+  db: Database,
+  bookmarks: RawBookmark[],
+  fetcher: ArticleFetcher | undefined,
+  log: (message: string) => void,
+): Promise<Map<string, ArticleContext>> {
+  log('Fetching linked article titles for categorization...');
+  return buildArticleContext(bookmarks, fetcher ?? new HttpArticleFetcher(), db);
+}
+
 /** Index a batch of assignments by post id for O(1) lookup during storage. */
 function indexAssignments(assignments: Assignment[]): Map<string, string[][]> {
   const byPostId = new Map<string, string[][]>();
@@ -297,9 +329,7 @@ export async function runIngest(deps: IngestDeps): Promise<IngestSummary> {
     }
   }
 
-  const articleFetcher = deps.articleFetcher ?? new HttpArticleFetcher();
-  log('Fetching linked article titles for categorization...');
-  const articleContext = await buildArticleContext(ordered, articleFetcher, db);
+  const articleContext = await loadArticleContext(db, ordered, deps.articleFetcher, log);
 
   const when = new Date().toISOString();
   const existing = buildCategoryTree(db);
@@ -375,9 +405,7 @@ export async function recategorizeAll(deps: RecategorizeDeps): Promise<Recategor
 
   log(`Re-categorizing ${bookmarks.length} stored bookmark(s).`);
 
-  const articleFetcher = deps.articleFetcher ?? new HttpArticleFetcher();
-  log('Fetching linked article titles for categorization...');
-  const articleContext = await buildArticleContext(bookmarks, articleFetcher, db);
+  const articleContext = await loadArticleContext(db, bookmarks, deps.articleFetcher, log);
 
   // Pass 1: design the taxonomy over all stored bookmarks BEFORE touching the
   // DB. designTaxonomy throws on a malformed LLM response, so clearing first
