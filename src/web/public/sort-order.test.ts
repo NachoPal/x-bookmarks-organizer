@@ -9,6 +9,7 @@ const {
   SCORE_UNAVAILABLE_MESSAGE,
   isKnownSortOrder,
   isKnownSortDirection,
+  hasDirection,
   readSortOrder,
   writeSortOrder,
   readSortDirection,
@@ -87,6 +88,17 @@ describe("sort order", () => {
     expect(DEFAULT_SORT_ORDER).toBe("recent");
     expect(readSortOrder(fakeStorage())).toBe("recent");
     expect(SORT_ORDERS[0].id).toBe("recent");
+  });
+
+  it("offers `relevance` (search only) with no direction, appended last so the fallback stays `recent`", () => {
+    expect(isKnownSortOrder("relevance")).toBe(true);
+    expect(sortParam("relevance")).toBe("relevance");
+    expect(hasDirection("relevance")).toBe(false);
+    expect(hasDirection("recent")).toBe(true);
+    expect(hasDirection("score")).toBe(true);
+    expect(hasDirection("nonsense")).toBe(true); // an unknown field defaults to having one
+    expect(directionLabel("relevance", "desc")).toBe("Best match first");
+    expect(directionLabel("relevance", "asc")).toBe("Best match first");
   });
 
   it("round-trips a known order and ignores an unknown one", () => {

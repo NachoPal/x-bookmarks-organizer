@@ -35,10 +35,19 @@
    * takes; `desc`/`asc` are what the direction toggle SAYS for this field,
    * because "descending" means newest for a date and highest for a score and
    * neither word belongs on a button.
+   *
+   * `relevance` (search only - there is no ranking signal to order by outside
+   * a search) has no real direction: both labels read the same, and the
+   * direction toggle itself is hidden for it (`hasDirection` below), since
+   * flipping bm25 best-match-first would read as a feature with nothing to do.
    */
   const SORT_ORDERS = [
     { id: "recent", label: "Newest", param: "recent", desc: "Newest first", asc: "Oldest first" },
     { id: "score", label: "Top score", param: "score", desc: "Highest first", asc: "Lowest first" },
+    // Search only - appended last so index 0 (the fallback for an unknown
+    // id, and the pre-existing default) stays `recent` for every category/
+    // list caller untouched by this addition.
+    { id: "relevance", label: "Relevance", param: "relevance", desc: "Best match first", asc: "Best match first", hasDirection: false },
   ];
 
   /**
@@ -64,6 +73,12 @@
 
   function isKnownSortOrder(id) {
     return SORT_ORDERS.some((order) => order.id === id);
+  }
+
+  /** Whether the direction toggle means anything for this field (false only for `relevance`). */
+  function hasDirection(order) {
+    const match = SORT_ORDERS.find((o) => o.id === order);
+    return !match || match.hasDirection !== false;
   }
 
   function isKnownSortDirection(id) {
@@ -379,6 +394,7 @@
     humanizeDimensionId,
     isKnownSortOrder,
     isKnownSortDirection,
+    hasDirection,
     readSortOrder,
     writeSortOrder,
     readSortDirection,

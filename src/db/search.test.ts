@@ -171,6 +171,92 @@ describe('searchBookmarks', () => {
     const second = db.searchBookmarks({ query: 'evaluation', limit: 1, offset: 1 }).hits.map((h) => h.bookmark.postId);
     expect(second).toEqual([all[1]]);
   });
+
+  it('ORs several categories (categoryIds)', () => {
+    const result = db.searchBookmarks({ categoryIds: [agents, cooking], limit: 10 });
+    expect(result.hits.map((h) => h.bookmark.postId).sort()).toEqual(['1', '3', '4']);
+  });
+
+  it('excludes a term or phrase (excludeQuery), regardless of whether there is an include query', () => {
+    expect(db.searchBookmarks({ query: 'evaluation', excludeQuery: 'sourdough', limit: 10 }).hits.map((h) => h.bookmark.postId).sort()).toEqual(['1', '2']);
+    // Exclude-only (no include terms at all) still filters the listed set.
+    expect(db.searchBookmarks({ excludeQuery: 'sourdough', limit: 10 }).hits.map((h) => h.bookmark.postId).sort()).toEqual(['1', '2', '4']);
+  });
+
+  it('orders by `recent` (ingested_at, like a category view) rather than the post\'s own date', () => {
+    const fresh = new Database(':memory:');
+    // Post 'old' was written long ago but saved LAST; post 'new' was written
+    // recently but saved FIRST - the two orders disagree.
+    fresh.storeCategorizedBatch([bm('old', 'kept text', { postCreatedAt: '2020-01-01T00:00:00.000Z' })], () => [], '2024-01-01T00:00:00.000Z');
+    fresh.storeCategorizedBatch([bm('new', 'kept text', { postCreatedAt: '2024-01-01T00:00:00.000Z' })], () => [], '2020-01-01T00:00:00.000Z');
+    expect(fresh.searchBookmarks({ query: 'kept', sort: 'recent', limit: 10 }).hits.map((h) => h.bookmark.postId)).toEqual(['old', 'new']);
+    expect(fresh.searchBookmarks({ query: 'kept', sort: 'relevance', limit: 10 }).hits.map((h) => h.bookmark.postId)).toEqual(['new', 'old']);
+    fresh.close();
+  });
+
+  it('strictly filters by the post\'s own author (from:), never a mention or a quoted author', () => {
+    db.storeCategorizedBatch(
+      [
+        bm('10', 'hello @karpathy, nice work', { authorUsername: 'alice' }),
+        bm('11', 'my own post', { authorUsername: 'karpathy' }),
+        bm(
+          '12',
+          'quoting someone',
+          {
+            authorUsername: 'bob',
+            quotedPostId: '99',
+            quotedPost: { postId: '99', authorUsername: 'karpathy', authorName: 'K', text: 'original', createdAt: '' },
+          },
+        ),
+      ],
+      () => [],
+      when,
+    );
+    expect(db.searchBookmarks({ authors: ['Karpathy'], limit: 10 }).hits.map((h) => h.bookmark.postId)).toEqual(['11']);
+  });
+
+  it('ORs several authors (authors), and combines with other filters as AND', () => {
+    db.storeCategorizedBatch(
+      [bm('20', 'first', { authorUsername: 'carol' }), bm('21', 'second', { authorUsername: 'dave' }), bm('22', 'third', { authorUsername: 'erin' })],
+      () => [],
+      when,
+    );
+    expect(db.searchBookmarks({ authors: ['carol', 'dave'], limit: 10 }).hits.map((h) => h.bookmark.postId).sort()).toEqual(['20', '21']);
+  });
+
+  it('filters to one or more assistant lists (listIds), ANDed with a category filter', () => {
+    db.storeCategorizedBatch([bm('30', 'listed one', { postCreatedAt: '2024-07-01T00:00:00.000Z' })], () => [agents], when);
+    const inAgents = db.getBookmarkByPostId('30')!.id;
+    const inCooking = db.getBookmarkByPostId('3')!.id;
+    const list = db.createAssistantList({ title: 'L', note: null, bookmarkIds: [inAgents, inCooking] });
+
+    expect(db.searchBookmarks({ listIds: [list.id], limit: 10 }).hits.map((h) => h.bookmark.postId).sort()).toEqual(['3', '30']);
+    // Combined with category:AI (agents is a child of AI) - only the one post in both.
+    expect(db.searchBookmarks({ listIds: [list.id], categoryIds: [ai], limit: 10 }).hits.map((h) => h.bookmark.postId)).toEqual(['30']);
+  });
+
+  it('orders by `score`, unranked bookmarks sorting last in either direction', () => {
+    const id1 = db.getBookmarkByPostId('1')!.id;
+    const id2 = db.getBookmarkByPostId('2')!.id;
+    db.saveBookmarkScore({ bookmarkId: id1, score: 0.9, confidence: 1, dimensions: {}, model: 'test', rubricVersion: 'v1', scoredAt: when });
+    db.saveBookmarkScore({ bookmarkId: id2, score: 0.1, confidence: 1, dimensions: {}, model: 'test', rubricVersion: 'v1', scoredAt: when });
+    const result = db.searchBookmarks({ query: 'evaluation', sort: 'score', rubricVersion: 'v1', limit: 10 });
+    // '1' (0.9) > '2' (0.1) > '3' (unranked, sorts last whichever way).
+    expect(result.hits.map((h) => h.bookmark.postId)).toEqual(['1', '2', '3']);
+    const asc = db.searchBookmarks({ query: 'evaluation', sort: 'score', dir: 'asc', rubricVersion: 'v1', limit: 10 });
+    expect(asc.hits.map((h) => h.bookmark.postId)).toEqual(['2', '1', '3']);
+  });
+
+  it('getDistinctAuthors lists every distinct author alphabetically (case-insensitively)', () => {
+    db.storeCategorizedBatch(
+      [bm('40', 'x', { authorUsername: 'bob' }), bm('41', 'y', { authorUsername: 'Alice' }), bm('42', 'z', { authorUsername: 'bob' })],
+      () => [],
+      when,
+    );
+    expect(db.getDistinctAuthors()).toContain('Alice');
+    expect(db.getDistinctAuthors()).toContain('bob');
+    expect(db.getDistinctAuthors().filter((a) => a === 'bob')).toHaveLength(1);
+  });
 });
 
 describe('the search index migration', () => {

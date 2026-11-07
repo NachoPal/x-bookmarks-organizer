@@ -622,7 +622,8 @@ body {
 }
 
 .icon-btn.is-toggle[aria-pressed="true"],
-.icon-btn[aria-expanded="true"].settings-toggle {
+.icon-btn[aria-expanded="true"].settings-toggle,
+.icon-btn[aria-expanded="true"].search-toggle {
   background: var(--color-accent-soft);
   border-color: var(--color-accent-soft);
   color: var(--color-accent);
@@ -3796,6 +3797,82 @@ body[data-restoring] .topbar-prompt {
   100% {
     opacity: 0.7;
   }
+}
+
+/* ============================================================
+   Search bar (toggled by the top bar's magnifier)
+   Full width of the main column, directly under the top bar - a sibling of
+   the toolbar, not a child, so it is unaffected by whether a category tab
+   bar happens to be showing.
+   ============================================================ */
+.search-bar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.search-bar-field {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.search-help-anchor {
+  flex: 0 0 auto;
+}
+/* Wraps to its own full-width row under the field, in flow - the same
+   reason the model picker's own list opens in flow rather than floating:
+   this bar sits at the top of the page, so a floating popup would have
+   nowhere obviously correct to go, and an in-flow one can never be clipped. */
+.search-suggest-list {
+  flex: 0 0 100%;
+  margin: 0;
+}
+.search-bar-note {
+  flex: 0 0 100%;
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--text-small);
+}
+.search-help-popover {
+  /* A short reference list, not a form - narrower than the settings panels
+     it borrows its box (border/padding/shadow) from. */
+  width: min(22rem, calc(100vw - 2 * var(--space-4)));
+}
+.search-help-list {
+  margin: 0;
+  display: grid;
+  gap: var(--space-1) var(--space-3);
+}
+.search-help-op {
+  margin: 0;
+  font-weight: 600;
+}
+.search-help-code,
+.search-help-example {
+  padding: 0 0.3em;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+}
+.search-help-detail {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.search-help-detail:last-child {
+  margin-bottom: 0;
+}
+
+/* The results header, above the sticky sort pill (issue #97's own bar). */
+.search-results-header {
+  margin: 0 0 var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-weight: 600;
 }
 
 /* ============================================================

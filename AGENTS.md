@@ -1698,6 +1698,64 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   document or triggers change - a mismatch rebuilds on open, which is also the migration. Raw query
   text never reaches `MATCH` (`buildMatchQuery` quotes every term); every-term first, any-term fallback.
 
+## In-app post search (`src/search/`, top bar, issue "post search")
+
+The app UI now uses the FTS5 engine described above (`src/db/search.ts`), through an
+X/Twitter-style query syntax parsed and resolved the SAME way for the viewer and the MCP tool -
+`search_bookmarks`'s `query` now accepts this syntax too, documented in its own tool description.
+
+- **`src/search/query.ts`'s `parseSearchQuery`** is the PURE, DOM-free parser (one regex over
+  `from:`/`category:`/`list:`/`since:`/`until:`, `"phrases"` and `-exclusions`): no DB, never
+  throws (a malformed operator value is just dropped), safe to re-run on every keystroke. A
+  CLIENT-SIDE mirror of its token shape lives in `search-suggest.js` for the autocomplete dropdown
+  only (`activeToken`) - approximate on purpose (good enough for "what's being typed right now"),
+  since the real parse always happens server-side.
+- **`src/search/engine.ts`'s `runSearch(db, opts)`** is the ONE place that resolves `category:`/
+  `list:` NAMES against the live tree/lists (reusing `resolveCategoryRef`/`categoryTreePaths` from
+  the new `src/categorize/category-ref.ts`, extracted out of `mcp/tools.ts` so the MCP tool and the
+  web route can never disagree about what a name means or how an ambiguous one is reported) and
+  calls the extended `Database.searchBookmarks` (now takes `categoryIds`/`listIds`/`authors`/
+  `excludeQuery`/`sort: 'relevance'|'recent'|'score'`, additive and back-compat with every existing
+  caller). An unknown `category:`/`list:` name throws `SearchQueryError`, caught at each boundary
+  (400 for `GET /api/search`, a `ToolInputError` for the MCP tool). `from:` is STRICT to
+  `bookmarks.author_username` (never a mention or a quoted author) via a plain `LOWER(...) IN (...)`
+  filter; `-exclusion` is its own `NOT IN (SELECT rowid ... MATCH)` subquery rather than living
+  inside the main MATCH expression, which is what lets it work even with zero include terms (FTS5's
+  `NOT` needs a left operand). `category:`/`list:` repeated = OR; different operators = AND; a
+  legacy MCP `category`/`after`/`before` arg ORs/overrides into whatever the query text also names.
+- **`GET /api/search?q=&sort=&dir=&offset=&limit=`** (`server.ts`) mirrors
+  `/api/categories/:id/bookmarks`'s shape/caps/guards exactly, plus `mode` (`all`/`any`/`none`) and
+  the echoed `query`. `sort` defaults to `relevance` (bm25 when there's a usable text query, else
+  the historic newest-first fallback - same rule `Database.searchBookmarks` already used for an
+  unset `sort`, so old callers are untouched); `recent` orders by `ingested_at` like a category view,
+  not `post_created_at`. `GET /api/search/authors` (`Database.getDistinctAuthors`) backs the bar's
+  `from:` autocomplete; `category:`/`list:` suggestions are drawn from data already loaded
+  client-side (`categoryIndex`'s node paths, `assistantLists`) - no extra endpoint for those two.
+- **The viewer treats an active search as a THIRD view mode**, alongside a selected category and an
+  open assistant list (`activeSearch` in `app.js`, mirroring `activeList`): `selectedCategoryId`
+  goes `null`, the filter tabs stay hidden (never a search concept), and `fetchPage`/`loadMore`/
+  `renderCountLine`/`sortScope`/`currentSortField`/`currentSortDir`/`renderSortBar` all branch on
+  it the same way they already branched on `activeList`. The floating sort pill gains a `Relevance`
+  radio (`sort-order.js`'s `SORT_ORDERS`, appended LAST so index 0 stays `recent` - the fallback for
+  an unknown field and the pre-existing default - untouched for every other caller), hidden via the
+  `hidden` attribute outside search (there is no ranking signal to order a category/list by, so
+  unlike "Top score" it is omitted entirely, never merely disabled); its direction toggle is hidden
+  too (`XBOSortOrder.hasDirection`), since bm25 has no meaningful reverse. Opening the bar
+  (`#search-open`, now `aria-controls="search-bar"`) changes nothing on screen by itself; only
+  actually searching (debounced typing or Enter) leaves the current view, after remembering it
+  in-memory only (`searchPreviousView` - never written to storage, so a reload MID-search restores
+  the pre-search view, never the search itself) for Close/Escape/an emptied bar to restore via
+  `selectCategoryById`/`openAssistantList`/`showNothingSelected`. The magnifier therefore no longer
+  opens the sidebar's OWN category filter (`#category-search`) - that stays reachable only from the
+  Categories page.
+- **The results header never adds its own quote marks** around the echoed query
+  (`search-bar.js`'s `headerText`/`emptyMessage`) - a `"phrase"` or a `from:"Name"` value already
+  carries its own, and wrapping those again would visibly double them (`""phrase""`).
+- **The info popover's content is a plain array** (`search-bar.js`'s `HELP_OPERATORS`), rendered
+  once into `#search-help-list`; it opens on hover (`pointerenter`, mouse only) / `:focus-visible` /
+  click, the identical pattern the score-chip breakdown popover already uses - keep the two in step
+  if this interaction model ever changes.
+
 ## Paid pi-ai paths (security review 2, #19/#20)
 
 - **No call is ever sent without an output cap.** `createLlmFactory`'s `paramsFor` fills

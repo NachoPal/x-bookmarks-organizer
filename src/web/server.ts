@@ -3,12 +3,14 @@ import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import type {
   BookmarkFilter,
+  BookmarkSearchSortOrder,
   BookmarkSortDirection,
   BookmarkSortOrder,
   Database,
 } from '../db/database';
 import { moveCategory } from '../categorize/move';
 import { buildCategoryTree } from '../categorize/tree';
+import { runSearch, SearchQueryError } from '../search/engine';
 import { extractArticleLink } from '../articles/extract-link';
 import { articleRecordFromResult, HttpArticleFetcher, type ArticleFetcher } from '../articles/fetch-article';
 import {
@@ -435,6 +437,11 @@ function parseBookmarkSort(raw: unknown): BookmarkSortOrder {
  */
 function parseBookmarkDirection(raw: unknown): BookmarkSortDirection {
   return raw === 'asc' ? 'asc' : 'desc';
+}
+
+/** `/api/search`'s ordering: `relevance` (default - a search has a ranking signal `/api/categories/:id/bookmarks` never does) or the usual two. */
+function parseSearchSort(raw: unknown): BookmarkSearchSortOrder {
+  return raw === 'recent' || raw === 'score' ? raw : 'relevance';
 }
 
 /** Parse a non-negative integer query param, falling back to {@link fallback}. */
@@ -1676,6 +1683,52 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
       };
     },
   );
+
+  // The search bar: plain keywords plus from:/category:/list:/since:/until:/
+  // -exclusion (`src/search/`, the same engine the MCP `search_bookmarks`
+  // tool runs on). Paged exactly like a category's bookmarks, with `relevance`
+  // as the extra, default ordering a category view never has.
+  app.get<{
+    Querystring: { q?: string; sort?: string; dir?: string; offset?: string; limit?: string };
+  }>('/api/search', async (req, reply) => {
+    const raw = req.query.q ?? '';
+    const sort = parseSearchSort(req.query.sort);
+    const dir = parseBookmarkDirection(req.query.dir);
+    const offset = parseNonNegInt(req.query.offset, 0);
+    const requested = parseNonNegInt(req.query.limit, pageSize);
+    const limit = Math.min(requested > 0 ? requested : pageSize, pageSize);
+    const rubricVersion = activeRubricVersion();
+
+    let result;
+    try {
+      result = runSearch(db, { raw, sort, dir, rubricVersion, offset, limit });
+    } catch (err) {
+      if (err instanceof SearchQueryError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
+    const bookmarks = result.hits.map((h) => h.bookmark);
+    const categoryIdsByBookmark = db.getCategoryIdsForBookmarks(bookmarks.map((b) => b.id));
+    const viewerBookmarks = toViewerBookmarks(db, bookmarks, categoryIdsByBookmark, rubricVersion);
+
+    return {
+      bookmarks: viewerBookmarks.map((bookmark, i) => ({
+        ...bookmark,
+        ...(result.hits[i]!.snippet ? { snippet: result.hits[i]!.snippet } : {}),
+      })),
+      query: raw,
+      mode: result.mode,
+      offset,
+      limit,
+      sort,
+      dir,
+      total: result.total,
+      hasMore: offset + bookmarks.length < result.total,
+    };
+  });
+
+  // The search bar's `from:` autocomplete (category/list names come from
+  // `/api/tree` and `/api/assistant-lists`, already loaded client-side).
+  app.get('/api/search/authors', async () => ({ authors: db.getDistinctAuthors() }));
 
   // Result lists an assistant sent with `show_in_app`, and the live stream that
   // surfaces a new one in the open app right away. Created here, ahead of the
