@@ -133,17 +133,37 @@ export interface AssistantListSortOptions {
   rubricVersion?: string;
 }
 
+/** `relevance` only means something next to a text `query`; see {@link BookmarkSearchOptions.sort}. */
+export type BookmarkSearchSortOrder = 'relevance' | BookmarkSortOrder;
+
 /** Options for {@link Database.searchBookmarks}. Every filter is optional and they combine with AND. */
 export interface BookmarkSearchOptions {
   /** Free text; see `buildMatchQuery`. Omitted or empty lists the filtered set, newest post first. */
   query?: string;
-  /** Only bookmarks filed in this category or any of its descendants. */
+  /**
+   * Terms/phrases that must NOT match (OR among them - excluded if ANY hits),
+   * quoted the same way `query` is. Applied via a `NOT IN` subquery, so it
+   * works even when `query` is empty (operators with no keywords).
+   */
+  excludeQuery?: string;
+  /** Only bookmarks filed in this category or any of its descendants. Superseded by {@link categoryIds} when both are given. */
   categoryId?: number;
+  /** Only bookmarks filed in one of these categories or their descendants (OR). */
+  categoryIds?: number[];
+  /** Only bookmarks in one of these assistant lists (OR). */
+  listIds?: number[];
+  /** Only bookmarks whose post AUTHOR (never a mention or a quoted author) is one of these usernames (OR), case-insensitive. */
+  authors?: string[];
   /** Only posts created at or after this ISO date/time (compared against `post_created_at`). */
   postedFrom?: string;
   /** Only posts created strictly before this ISO date/time. */
   postedBefore?: string;
   filter?: BookmarkFilter;
+  /** Defaults to the historic behavior: bm25 when there is a usable `query`, else newest post first. */
+  sort?: BookmarkSearchSortOrder;
+  dir?: BookmarkSortDirection;
+  /** As {@link BookmarkPageOptions.rubricVersion}; only read when `sort: 'score'`. */
+  rubricVersion?: string;
   limit: number;
   offset?: number;
 }
@@ -815,69 +835,129 @@ export class Database {
 
   /**
    * Full-text search over the library (`src/db/search.ts`), narrowed by
-   * category subtree, post date and read/favorite state.
+   * category subtree, assistant list, author, post date and read/favorite
+   * state. The `from:`/`category:`/`list:`/`since:`/`until:` operators and
+   * `-exclusion` parsing live above this in `src/search/` (`parseSearchQuery`
+   * + `runSearch`); this method only takes already-resolved ids/usernames.
    *
    * A text query first requires EVERY term; only when nothing matches all of
    * them does it fall back to ANY term, ranked by relevance - which is what a
    * question phrased in several words usually needs, without drowning a
-   * precise one in partial matches.
+   * precise one in partial matches. `excludeQuery` is excluded via a
+   * `NOT IN (SELECT rowid ... MATCH)` subquery rather than inside the MATCH
+   * expression itself, which is what lets an exclusion work even with no
+   * include terms at all (FTS5's `NOT` has no meaning with an empty left side).
+   *
+   * `sort: 'relevance'` ranks by bm25 when there is a usable text query, and
+   * otherwise degrades to the historic default (newest post first) - the same
+   * fallback used when `sort` is left unset. `'recent'` orders by the time the
+   * bookmark was SAVED (`ingested_at`), matching {@link getBookmarksForCategory};
+   * `'score'` mirrors that method's "unranked sorts last, in both directions" rule.
    */
   searchBookmarks(opts: BookmarkSearchOptions): BookmarkSearchResult {
+    const categoryIds = opts.categoryIds ?? (opts.categoryId !== undefined ? [opts.categoryId] : []);
+    const ctes: string[] = [];
+    const cteParams: (string | number)[] = [];
+    if (categoryIds.length > 0) {
+      ctes.push(
+        `cat_subtree(id) AS (
+           SELECT id FROM categories WHERE id IN (${categoryIds.map(() => '?').join(', ')})
+           UNION
+           SELECT c.id FROM categories c JOIN cat_subtree s ON c.parent_id = s.id
+         )`,
+      );
+      cteParams.push(...categoryIds);
+    }
+    const cte = ctes.length > 0 ? `WITH RECURSIVE ${ctes.join(', ')} ` : '';
+
     const where: string[] = [];
-    const params: (string | number)[] = [];
-    let cte = '';
-    if (opts.categoryId !== undefined) {
-      cte = `WITH RECURSIVE subtree(id) AS (
-          SELECT ? UNION SELECT c.id FROM categories c JOIN subtree s ON c.parent_id = s.id
-        ) `;
-      params.push(opts.categoryId);
-      where.push('b.id IN (SELECT bc.bookmark_id FROM bookmark_categories bc JOIN subtree s ON s.id = bc.category_id)');
+    const whereParams: (string | number)[] = [];
+    if (categoryIds.length > 0) {
+      where.push('b.id IN (SELECT bc.bookmark_id FROM bookmark_categories bc JOIN cat_subtree s ON s.id = bc.category_id)');
+    }
+    if (opts.listIds && opts.listIds.length > 0) {
+      where.push(`b.id IN (SELECT bookmark_id FROM assistant_list_items WHERE list_id IN (${opts.listIds.map(() => '?').join(', ')}))`);
+      whereParams.push(...opts.listIds);
+    }
+    if (opts.authors && opts.authors.length > 0) {
+      where.push(`LOWER(b.author_username) IN (${opts.authors.map(() => '?').join(', ')})`);
+      whereParams.push(...opts.authors.map((a) => a.toLowerCase()));
     }
     if (opts.postedFrom) {
       where.push("b.post_created_at <> '' AND b.post_created_at >= ?");
-      params.push(opts.postedFrom);
+      whereParams.push(opts.postedFrom);
     }
     if (opts.postedBefore) {
       where.push("b.post_created_at <> '' AND b.post_created_at < ?");
-      params.push(opts.postedBefore);
+      whereParams.push(opts.postedBefore);
     }
     if (opts.filter === 'unread') where.push('b.read = 0');
     else if (opts.filter === 'read') where.push('b.read = 1');
     else if (opts.filter === 'favorite') where.push('b.favorite = 1');
+    // Exclusion is OR among the excluded terms/phrases ("match ANY of them to
+    // be excluded"), built with the same per-term quoting as the include side.
+    const excludeMatch = opts.excludeQuery ? buildMatchQuery(opts.excludeQuery) : null;
+    if (excludeMatch) {
+      where.push('b.id NOT IN (SELECT rowid FROM bookmark_fts WHERE bookmark_fts MATCH ?)');
+      whereParams.push(excludeMatch.any);
+    }
+
+    const scored = opts.sort === 'score';
+    const asc = opts.dir === 'asc';
+    const scoreJoin = scored
+      ? `LEFT JOIN bookmark_scores sc ON sc.bookmark_id = b.id${opts.rubricVersion ? ' AND sc.rubric_version = ?' : ''}`
+      : '';
+    const scoreJoinParams = scored && opts.rubricVersion ? [opts.rubricVersion] : [];
+    // The non-relevance order: `score` (unranked last, either direction, same
+    // as getBookmarksForCategory), `recent` (when the owner saved it - ties
+    // broken the same way), else the historic default (the post's own date).
+    const orderClause = () => {
+      if (scored) return `sc.score IS NULL, sc.score ${asc ? 'ASC' : 'DESC'}, b.ingested_at DESC, b.id DESC`;
+      if (opts.sort === 'recent') return asc ? 'b.ingested_at ASC, b.id ASC' : 'b.ingested_at DESC, b.id DESC';
+      return 'b.post_created_at DESC, b.id DESC';
+    };
     const page = [opts.limit, opts.offset ?? 0];
 
     const trimmed = opts.query?.trim() ?? '';
-    if (!trimmed) {
+    const match = trimmed ? buildMatchQuery(trimmed) : null;
+
+    if (!match) {
+      // No ranking signal exists (no text query, or nothing searchable was
+      // left in it): list the filtered set in the requested, non-relevance order.
+      if (trimmed) return { total: 0, mode: 'all', hits: [] };
       const filters = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
       const total = (
-        this.db.prepare(`${cte}SELECT COUNT(*) AS n FROM bookmarks b ${filters}`).get(...params) as { n: number }
+        this.db
+          .prepare(`${cte}SELECT COUNT(*) AS n FROM bookmarks b ${filters}`)
+          .get(...cteParams, ...whereParams) as { n: number }
       ).n;
       const rows = this.db
-        .prepare(`${cte}SELECT b.* FROM bookmarks b ${filters} ORDER BY b.post_created_at DESC, b.id DESC LIMIT ? OFFSET ?`)
-        .all(...params, ...page) as BookmarkRow[];
+        .prepare(`${cte}SELECT b.* FROM bookmarks b ${scoreJoin} ${filters} ORDER BY ${orderClause()} LIMIT ? OFFSET ?`)
+        .all(...cteParams, ...scoreJoinParams, ...whereParams, ...page) as BookmarkRow[];
       return { total, mode: 'none', hits: rows.map((r) => ({ bookmark: toStoredBookmark(r), snippet: null })) };
     }
 
-    const match = buildMatchQuery(trimmed);
-    if (!match) return { total: 0, mode: 'all', hits: [] };
     const filters = ['bookmark_fts MATCH ?', ...where].join(' AND ');
     const from = 'FROM bookmark_fts JOIN bookmarks b ON b.id = bookmark_fts.rowid';
-    // The CTE's parameter comes first in the statement, the MATCH expression next.
-    const bind = (expr: string) =>
-      opts.categoryId !== undefined ? [params[0]!, expr, ...params.slice(1)] : [expr, ...params];
+    // Relevance is only meaningful when ranking against the match itself;
+    // `score`/`recent` keep filtering by the match but order by their own key.
+    const matchOrderBy = () =>
+      scored || opts.sort === 'recent' ? orderClause() : `bm25(bookmark_fts, ${SEARCH_WEIGHTS.join(', ')}), b.id DESC`;
     const run = (expr: string, mode: 'all' | 'any'): BookmarkSearchResult => {
       const total = (
-        this.db.prepare(`${cte}SELECT COUNT(*) AS n ${from} WHERE ${filters}`).get(...bind(expr)) as { n: number }
+        this.db
+          .prepare(`${cte}SELECT COUNT(*) AS n ${from} WHERE ${filters}`)
+          .get(...cteParams, expr, ...whereParams) as { n: number }
       ).n;
       if (total === 0) return { total, mode, hits: [] };
       const rows = this.db
         .prepare(
           `${cte}SELECT b.*, snippet(bookmark_fts, -1, '«', '»', '…', 24) AS snippet
-           ${from} WHERE ${filters}
-           ORDER BY bm25(bookmark_fts, ${SEARCH_WEIGHTS.join(', ')}), b.id DESC
+           ${from} ${scoreJoin} WHERE ${filters}
+           ORDER BY ${matchOrderBy()}
            LIMIT ? OFFSET ?`,
         )
-        .all(...bind(expr), ...page) as (BookmarkRow & { snippet: string | null })[];
+        .all(...cteParams, ...scoreJoinParams, expr, ...whereParams, ...page) as (BookmarkRow & { snippet: string | null })[];
       return {
         total,
         mode,
@@ -886,6 +966,15 @@ export class Database {
     };
     const every = run(match.all, 'all');
     return every.total > 0 || match.any === match.all ? every : run(match.any, 'any');
+  }
+
+  /** Every distinct post author in the library, alphabetical - the search bar's `from:` autocomplete. */
+  getDistinctAuthors(): string[] {
+    return (
+      this.db.prepare('SELECT DISTINCT author_username FROM bookmarks ORDER BY author_username COLLATE NOCASE').all() as {
+        author_username: string;
+      }[]
+    ).map((r) => r.author_username);
   }
 
   /** Library-wide counts. Pure SQL over the library tables; reads nothing from `run_state`. */

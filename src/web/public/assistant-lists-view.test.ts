@@ -494,12 +494,12 @@ describe("Lists (MCP show_in_app lists)", () => {
     (doc.querySelector(".assistant-list-item") as HTMLElement).click();
     await tick();
     const opt = (v: string) => doc.querySelector(`.sort-opt-input[value="${v}"]`) as HTMLInputElement;
-    // Exactly a category's options: no "Assistant's order".
-    expect([...doc.querySelectorAll<HTMLInputElement>(".sort-opt-input")].map((i) => i.value)).toEqual([
-      "recent",
-      "score",
-    ]);
-    expect(doc.querySelectorAll(".sort-opt[hidden]").length).toBe(0);
+    const visibleOpts = () =>
+      [...doc.querySelectorAll<HTMLInputElement>(".sort-opt-input")].filter((i) => !i.closest(".sort-opt")!.hidden);
+    // Exactly a category's options: no "Assistant's order", and no "Relevance" either -
+    // that one is search-only (there is no ranking signal to order a list by).
+    expect(visibleOpts().map((i) => i.value)).toEqual(["recent", "score"]);
+    expect(doc.querySelectorAll(".sort-opt[hidden]").length).toBe(1);
     expect(opt("recent").checked).toBe(true);
     expect(doc.getElementById("sort-direction-label")!.textContent).toBe("Newest first");
     expect(calls.at(-1)!.url).toBe("/api/assistant-lists/1?sort=recent&dir=desc");
@@ -631,16 +631,19 @@ describe("Sidebar drill-down (menu, Categories, Lists)", () => {
     expect((doc.activeElement as HTMLElement).classList.contains("assistant-list-item")).toBe(true);
   });
 
-  it("the Select-a-category prompt and the top-bar search go to the Categories page", async () => {
+  it("the Select-a-category prompt goes to the Categories page", async () => {
     const { doc } = await boot({ page: "lists" });
     (doc.querySelector("#content-title [data-open-categories]") as HTMLElement).click();
     expect(page(doc)).toBe("categories");
-    homeRow(doc, "lists").click(); // back on another page…
-    (view(doc, "categories").querySelector("[data-sidebar-back]") as HTMLElement).click();
-    homeRow(doc, "lists").click();
+  });
+
+  it("the top-bar magnifier opens the search bar, never the sidebar's own category filter", async () => {
+    const { doc } = await boot({ page: "lists" });
     (doc.getElementById("search-open") as HTMLElement).click();
-    expect(page(doc)).toBe("categories");
-    expect(doc.activeElement!.id).toBe("category-search");
+    // Unchanged: the magnifier no longer touches the sidebar page at all.
+    expect(page(doc)).toBe("lists");
+    expect((doc.getElementById("search-bar") as HTMLElement).hidden).toBe(false);
+    expect(doc.activeElement!.id).toBe("search-bar-input");
   });
 
   it("counts lists never opened, from the server, so a reload agrees", async () => {

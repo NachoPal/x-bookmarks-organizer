@@ -32,6 +32,29 @@
   // keeps the empty states free of a stray 1px border with nothing above it.
   const toolbarEl = document.getElementById("toolbar");
 
+  // ---- the top-bar search bar (plain keywords plus from:/category:/list:/
+  // since:/until:/-exclusion - src/search/) -------------------------------
+  // Toggled by the magnifier, which used to open the sidebar's OWN category
+  // filter (`searchInput` above); that filter is now reachable only from the
+  // Categories page. Opening the bar changes nothing on screen by itself -
+  // only actually searching (typing or Enter) leaves the current view.
+  const searchBarEl = document.getElementById("search-bar");
+  const searchBarInputEl = document.getElementById("search-bar-input");
+  const searchBarClearEl = document.getElementById("search-bar-clear");
+  const searchBarNoteEl = document.getElementById("search-bar-note");
+  const searchSuggestListEl = document.getElementById("search-suggest-list");
+  const searchHelpToggleEl = document.getElementById("search-help-toggle");
+  const searchHelpPopoverEl = document.getElementById("search-help-popover");
+  const searchHelpListEl = document.getElementById("search-help-list");
+  const searchResultsHeaderEl = document.getElementById("search-results-header");
+  // Autocomplete state for the active from:/category:/list: token, if any.
+  let searchSuggestToken = null; // { kind, prefix, start, end } from search-suggest.js, or null
+  let searchSuggestItems = [];
+  let searchSuggestActive = -1;
+  // Fetched once, lazily, the first time the bar is opened; `null` means
+  // "not fetched yet", `[]` a genuinely empty library.
+  let searchAuthors = null;
+
   // ---- summary modal ------------------------------------------------------
   const summaryBackdropEl = document.getElementById("summary-backdrop");
   const summaryModalEl = document.getElementById("summary-modal");
@@ -110,6 +133,11 @@
   // options, but its own stored preference.
   let listSort = "recent";
   let listDir = "desc";
+  // An open search's ordering. Deliberately NOT persisted (search itself
+  // never survives a reload - see `activeSearch` below), so it always opens
+  // on "relevance", the one order that actually ranks by the query.
+  let searchSort = "relevance";
+  let searchDir = "desc";
 
   // ---- lazy loading (paged, filtered, infinite scroll) ------------------
   // The selected category is loaded one batch at a time as the owner scrolls,
@@ -136,6 +164,19 @@
   // one is open no category is selected: the list IS the view, in the order
   // the assistant gave, with no tabs, sort or paging (it holds at most 100).
   let activeList = null;
+  // The search on screen (the bar typed something and it ran), or null while
+  // the bar is merely open with nothing typed yet, or closed. `{ raw, total,
+  // mode }` - the query text and what the last fetch answered. Like a list,
+  // no category is selected and there are no filter tabs while this is set;
+  // unlike a list, it pages (the library can hold far more than 100 matches).
+  let activeSearch = null;
+  // What to show again once the search closes: whichever of a category or a
+  // list was open before the owner started typing, captured once on the
+  // FIRST keystroke/Enter (never touched again while the search runs, and
+  // never written to localStorage - a reload mid-search restores THIS, not
+  // the search, exactly as if the search had never been opened).
+  let searchPreviousView = null;
+  let searchDebounceTimer = null;
 
   // ---- client-side view cache + per-post card pool (issues #33, #67) -----
   // Rendered cards are pooled PER POST, not per view: a post loaded under any
@@ -711,21 +752,12 @@
     });
     backdropEl.addEventListener("click", () => setCollapsed(true));
 
-    // The bar's search control is an entry point to the drawer's own filter
-    // field - one search, reachable from the top bar.
-    if (searchOpenBtn && searchInput) {
-      searchOpenBtn.addEventListener("click", () => {
-        showSidebarPage("categories", { animate: !isCollapsed() && "forward" });
-        setCollapsed(false, { moveFocus: false });
-        searchInput.focus();
-        searchInput.select();
-      });
-    }
-
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape" || isCollapsed()) return;
       // The settings popover and the setup dialog each own Escape while open.
       if (popovers.some(isPopoverOpen) || isSetupOpen()) return;
+      // And the search bar's own "How to search" popover.
+      if (isSearchHelpOpen()) return;
       // So does any modal dialog over the tree. Without this, Escape closed
       // the dialog AND collapsed the drawer behind it - which for the
       // category editor also stranded focus, because the pencil it returns
@@ -1242,17 +1274,22 @@
    * checked, whether "Top score" is offered at all, and what the direction
    * toggle reads. Pure display - it never re-pages the list.
    */
-  /** Whose ordering the selector is showing: an open list's, or a category's. */
+  /** Whose ordering the selector is showing: a search's, an open list's, or a category's. */
   function sortScope() {
-    return activeList ? "list" : "category";
+    return activeSearch ? "search" : activeList ? "list" : "category";
   }
 
   function currentSortField() {
-    return activeList ? listSort : activeSort;
+    return activeSearch ? searchSort : activeList ? listSort : activeSort;
   }
 
   function currentSortDir() {
-    return activeList ? listDir : activeDir;
+    return activeSearch ? searchDir : activeList ? listDir : activeDir;
+  }
+
+  /** `data-sort-order="relevance"` on the radio's own `<label>` - hidden outside a search; see `renderSortBar`. */
+  function relevanceOptionEl() {
+    return sortFieldEl ? sortFieldEl.querySelector('[data-sort-order="relevance"]') : null;
   }
 
   function renderSortBar() {
@@ -1261,6 +1298,13 @@
     const scoreOk = scoreOrderAvailable();
     const field = currentSortField();
     const dir = currentSortDir();
+    const searching = sortScope() === "search";
+
+    // Relevance only means anything next to a search's ranking signal - a
+    // category or a list never offers it at all, rather than offering it
+    // disabled (unlike "Top score", there's nothing to turn on here).
+    const relOpt = relevanceOptionEl();
+    if (relOpt) relOpt.hidden = !searching;
 
     for (const input of sortFieldInputs()) {
       input.checked = input.value === field;
@@ -1290,6 +1334,13 @@
       sortDirBtn.setAttribute("aria-label", name);
       sortDirBtn.title = name;
     }
+    // Relevance has no real direction (bm25 is always best-match-first), so
+    // the toggle - and the divider that separates it from the fields - are
+    // hidden rather than offering a flip that would change nothing.
+    const showDirection = api.hasDirection(field);
+    if (sortDirBtn) sortDirBtn.hidden = !showDirection;
+    const divider = sortFieldEl ? sortFieldEl.querySelector(".sort-pill-divider") : null;
+    if (divider) divider.hidden = !showDirection;
   }
 
   /**
@@ -1330,26 +1381,32 @@
     const scope = sortScope();
     if (!api || id === currentSortField() || !api.isKnownSortOrder(id)) return;
     if (id === "score" && !scoreOrderAvailable()) return;
-    api.writeSortOrder(window.localStorage, id, scope);
-    if (activeList) listSort = id;
+    if (id === "relevance" && scope !== "search") return;
+    // A search's ordering is never persisted - see `searchSort` above.
+    if (scope !== "search") api.writeSortOrder(window.localStorage, id, scope);
+    if (activeSearch) searchSort = id;
+    else if (activeList) listSort = id;
     else activeSort = id;
     renderSortBar();
     resortCurrentView();
   }
 
-  /** Re-order whatever is open: a list is re-read whole, a category re-paged. */
+  /** Re-order whatever is open: a search or a list is re-read whole, a category re-paged. */
   function resortCurrentView() {
-    if (activeList) void refreshOpenList();
+    if (activeSearch) void repageSearch();
+    else if (activeList) void refreshOpenList();
     else repageForSort();
   }
 
   /** Flip the DIRECTION the current field runs in. */
   function toggleSortDirection() {
     const api = sortOrderApi();
-    if (!api) return;
+    if (!api || !api.hasDirection(currentSortField())) return;
     const dir = api.flipDirection(currentSortDir());
-    api.writeSortDirection(window.localStorage, dir, sortScope());
-    if (activeList) listDir = dir;
+    const scope = sortScope();
+    if (scope !== "search") api.writeSortDirection(window.localStorage, dir, scope);
+    if (activeSearch) searchDir = dir;
+    else if (activeList) listDir = dir;
     else activeDir = dir;
     renderSortBar();
     resortCurrentView();
@@ -2624,8 +2681,9 @@
     return window.XBOTreeCounts.tabCounts(categoryCounts);
   }
 
-  /** How many bookmarks match the active tab in this category. */
+  /** How many bookmarks match the active tab in this category - or a search's total, or a list's length. */
   function filteredTotal() {
+    if (activeSearch) return activeSearch.total;
     if (activeList) return currentViewBookmarks.length;
     return tabCounts()[activeFilter];
   }
@@ -2640,6 +2698,7 @@
    * post list (issue #97).
    */
   function renderCountLine() {
+    if (activeSearch) return; // the toolbar (and its tabs) stay hidden during a search
     const counts = tabCounts();
     for (const tab of filterTabButtons()) {
       const badge = tab.querySelector(".filter-tab-count");
@@ -2674,7 +2733,7 @@
     toolbarEl.hidden = !show;
     // The sort selector is a control OF the open category's list too, so it
     // comes and goes with the tabs rather than floating over an empty pane.
-    updateSortBarVisibility(show || !!activeList);
+    updateSortBarVisibility(show || !!activeList || !!activeSearch);
     if (show) {
       listRoot.setAttribute("role", "tabpanel");
       renderFilterTabs(); // re-establishes aria-labelledby on the active tab
@@ -2703,9 +2762,17 @@
     return "No bookmarks are filed under this category.";
   }
 
-  /** Fetch one page of the current category under the active filter. */
+  /** Fetch one page of the current category under the active filter, or - while a search is on - one page of its results. */
   function fetchPage(offset) {
     const api = window.XBOSortOrder;
+    if (activeSearch) {
+      const sort = api ? api.sortParam(searchSort) : "relevance";
+      const dir = api ? api.dirParam(searchDir) : "desc";
+      const url =
+        `/api/search?q=${encodeURIComponent(activeSearch.raw)}` +
+        `&sort=${encodeURIComponent(sort)}&dir=${encodeURIComponent(dir)}&offset=${offset}`;
+      return getJSON(url);
+    }
     const sort = api ? api.sortParam(activeSort) : "recent";
     const dir = api ? api.dirParam(activeDir) : "desc";
     const url =
@@ -2904,6 +2971,448 @@
       spinner.setAttribute("aria-hidden", "true");
       sentinelEl.append(spinner, el("span", "list-sentinel-label", "Loading more…"));
     }
+  }
+
+  // ---- the search bar -----------------------------------------------------
+  // Toggled by the top bar's magnifier (which used to open the sidebar's own
+  // category filter - that filter is reachable only from the Categories page
+  // now). Opening the bar changes nothing else; only actually searching
+  // (typing, debounced, or Enter) replaces the view, the same "no category
+  // selected" shape an open assistant list already uses - see `activeSearch`.
+
+  function isSearchBarOpen() {
+    return !!searchBarEl && !searchBarEl.hidden;
+  }
+
+  /** The bar's title while a search is on screen: plain text, not a breadcrumb. */
+  function renderSearchBarTitle() {
+    closeCrumbMenu();
+    titleEl.replaceChildren(el("span", "topbar-leaf crumb-static crumb-current", "Search"));
+    titleEl.removeAttribute("title");
+  }
+
+  /** "N results for <query>", plus the any-term fallback note, right above the sort selector. */
+  function renderSearchHeader() {
+    if (!searchResultsHeaderEl) return;
+    const api = window.XBOSearchBar;
+    if (!activeSearch || !api) {
+      searchResultsHeaderEl.hidden = true;
+      searchResultsHeaderEl.textContent = "";
+      return;
+    }
+    const header = api.headerText(activeSearch.total, activeSearch.raw);
+    searchResultsHeaderEl.textContent = activeSearch.mode === "any" ? `${header} · ${api.ANY_MODE_NOTE}` : header;
+    searchResultsHeaderEl.hidden = false;
+  }
+
+  /** Clears the bar's own error note (a 400 from an unknown category:/list: name, or a request failure). */
+  function renderSearchBarNote(message) {
+    if (!searchBarNoteEl) return;
+    searchBarNoteEl.textContent = message || "";
+    searchBarNoteEl.hidden = !message;
+  }
+
+  /**
+   * Run (or re-run) the search: parses/resolves/pages entirely server-side
+   * (`GET /api/search`), rendered through the same card-pool/infinite-scroll
+   * machinery a category or a list uses (`fetchPage` branches on
+   * `activeSearch`). The FIRST call (`entering`) remembers whatever was open
+   * before, in memory only - never written to storage, so a reload mid-search
+   * restores THAT, not the search (see `searchPreviousView`).
+   */
+  async function runSearchQuery(raw, opts) {
+    const options = opts || {};
+    const entering = !activeSearch;
+    if (entering) {
+      searchPreviousView = { categoryId: selectedCategoryId, listId: activeList ? activeList.id : null };
+      if (selectedCategoryId != null) saveCurrentViewToCache();
+      if (selectedButton) {
+        selectedButton.removeAttribute("aria-current");
+        selectedButton = null;
+      }
+      selectedCategoryId = null;
+      if (activeList) {
+        activeList = null;
+        renderAssistantLists();
+      }
+      searchSort = "relevance";
+      searchDir = "desc";
+      activeSearch = { raw, total: 0, mode: "none" };
+      renderSearchBarTitle();
+      renderSortBar();
+      updateToolbarVisibility();
+      if (drawerQuery.matches && !isCollapsed()) setCollapsed(true, { returnFocus: false });
+      contentEl.scrollTop = 0;
+    } else {
+      activeSearch.raw = raw;
+    }
+    renderSearchBarNote("");
+
+    const seq = ++requestSeq;
+    teardownObserver();
+    pageLoading = false;
+    viewReady = false;
+    pageOffset = 0;
+    pageHasMore = false;
+
+    // A re-page for a sort change keeps the current results on screen
+    // (dimmed) until the new page lands, exactly like `repageForSort`; any
+    // other run (entering, or a new query while already searching) is enough
+    // of a different view to show the loading state plainly.
+    const keep = options.sameSearch && hostMounted;
+    if (keep) {
+      listRoot.setAttribute("aria-busy", "true");
+    } else {
+      currentViewBookmarks = [];
+      ensureViewHost();
+      paintViewCards();
+      stateMessage(listEl, "loading", "Searching…");
+    }
+
+    let data;
+    try {
+      data = await fetchPage(0);
+    } catch (err) {
+      if (seq !== requestSeq) return;
+      currentViewBookmarks = [];
+      ensureViewHost();
+      paintViewCards();
+      activeSearch.total = 0;
+      activeSearch.mode = "none";
+      renderSearchHeader();
+      const message =
+        err && err.status === 400 && err.body && err.body.error ? err.body.error : "Could not run that search.";
+      renderSearchBarNote(message);
+      stateMessage(listEl, "error", message);
+      return;
+    }
+    if (seq !== requestSeq) return;
+    if (keep) {
+      currentViewBookmarks = [];
+      ensureViewHost();
+    }
+
+    viewReady = true;
+    activeSearch.total = data.total;
+    activeSearch.mode = data.mode;
+    pageOffset = data.offset + data.bookmarks.length;
+    pageHasMore = Boolean(data.hasMore);
+    renderSearchHeader();
+
+    if (data.bookmarks.length === 0) {
+      const empty = window.XBOSearchBar ? window.XBOSearchBar.emptyMessage(raw) : "No results.";
+      stateMessage(listEl, "empty", empty);
+      return;
+    }
+    appendToView(data.bookmarks);
+    updateTail();
+  }
+
+  /** Re-run the CURRENT query under a new sort/direction - the search's `repageForSort`. */
+  async function repageSearch() {
+    if (!activeSearch) return;
+    await runSearchQuery(activeSearch.raw, { sameSearch: true });
+  }
+
+  /**
+   * Leave search mode: drop the results and restore whatever was open
+   * before, the same way closing an assistant list falls back to its prior
+   * state. A category/list that no longer exists (deleted mid-search) falls
+   * back to the empty landing rather than a blank pane.
+   */
+  function leaveSearchMode() {
+    if (!activeSearch) return;
+    activeSearch = null;
+    requestSeq += 1; // cancel any search fetch still in flight
+    teardownObserver();
+    pageLoading = false;
+    renderSearchHeader();
+    renderSearchBarNote("");
+    renderSortBar();
+    updateToolbarVisibility();
+    const prev = searchPreviousView;
+    searchPreviousView = null;
+    if (prev && prev.listId != null && assistantLists.some((l) => l.id === prev.listId)) {
+      void openAssistantList(prev.listId);
+    } else if (prev && prev.categoryId != null && categoryIndex.has(prev.categoryId)) {
+      void selectCategoryById(prev.categoryId);
+    } else {
+      showNothingSelected();
+    }
+  }
+
+  /** Authors for the `from:` autocomplete, fetched once and cached for the session. */
+  function ensureSearchAuthorsLoaded() {
+    if (searchAuthors !== null) return;
+    searchAuthors = [];
+    getJSON("/api/search/authors")
+      .then((data) => {
+        searchAuthors = Array.isArray(data.authors) ? data.authors : [];
+      })
+      .catch(() => {
+        searchAuthors = [];
+      });
+  }
+
+  /** Candidate strings for one operator kind - categories/lists are already loaded client-side. */
+  function searchSuggestCandidates(kind) {
+    if (kind === "from") return searchAuthors || [];
+    if (kind === "category") {
+      const paths = new Set();
+      for (const node of categoryIndex.values()) paths.add(node.path.join(" > "));
+      return [...paths].sort((a, b) => a.localeCompare(b));
+    }
+    if (kind === "list") return assistantLists.map((l) => l.title);
+    return [];
+  }
+
+  function closeSearchSuggest() {
+    searchSuggestToken = null;
+    searchSuggestItems = [];
+    searchSuggestActive = -1;
+    if (searchSuggestListEl) {
+      searchSuggestListEl.hidden = true;
+      searchSuggestListEl.replaceChildren();
+    }
+    if (searchBarInputEl) {
+      searchBarInputEl.setAttribute("aria-expanded", "false");
+      searchBarInputEl.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  /** Re-derive the suggestion list from the caret's current position; closes it when nothing applies. */
+  function renderSearchSuggest() {
+    const api = window.XBOSearchSuggest;
+    if (!api || !searchSuggestListEl || !searchBarInputEl) return;
+    const token = api.activeToken(searchBarInputEl.value, searchBarInputEl.selectionStart || 0);
+    searchSuggestToken = token;
+    if (!token) {
+      closeSearchSuggest();
+      return;
+    }
+    const items = api.filterSuggestions(searchSuggestCandidates(token.kind), token.prefix, 8);
+    searchSuggestItems = items;
+    if (items.length === 0) {
+      closeSearchSuggest();
+      return;
+    }
+    searchSuggestActive = 0;
+    searchSuggestListEl.replaceChildren(
+      ...items.map((item, i) => {
+        const option = el("li", "model-picker-option");
+        option.id = `search-suggest-opt-${i}`;
+        option.setAttribute("role", "option");
+        if (i === searchSuggestActive) option.classList.add("is-active");
+        const label = token.kind === "from" ? `@${item}` : item;
+        option.append(el("span", "model-picker-option-label", label));
+        option.addEventListener("pointerdown", (e) => e.preventDefault());
+        option.addEventListener("click", () => {
+          searchSuggestActive = i;
+          applySearchSuggestActive();
+        });
+        return option;
+      }),
+    );
+    searchSuggestListEl.hidden = false;
+    searchBarInputEl.setAttribute("aria-expanded", "true");
+    searchBarInputEl.setAttribute("aria-activedescendant", `search-suggest-opt-${searchSuggestActive}`);
+  }
+
+  function moveSearchSuggestActive(delta) {
+    if (searchSuggestItems.length === 0) return;
+    searchSuggestActive = (searchSuggestActive + delta + searchSuggestItems.length) % searchSuggestItems.length;
+    Array.from(searchSuggestListEl.children).forEach((node, i) => {
+      node.classList.toggle("is-active", i === searchSuggestActive);
+    });
+    searchBarInputEl.setAttribute("aria-activedescendant", `search-suggest-opt-${searchSuggestActive}`);
+    const node = searchSuggestListEl.children[searchSuggestActive];
+    if (node) node.scrollIntoView({ block: "nearest" });
+  }
+
+  /** Splice the active suggestion into the bar, then re-evaluate (clear button, debounce) as if typed. */
+  function applySearchSuggestActive() {
+    const api = window.XBOSearchSuggest;
+    if (!api || !searchSuggestToken || searchSuggestActive < 0) return;
+    const suggestion = searchSuggestItems[searchSuggestActive];
+    const result = api.applySuggestion(searchBarInputEl.value, searchSuggestToken, suggestion);
+    searchBarInputEl.value = result.value;
+    searchBarInputEl.setSelectionRange(result.caret, result.caret);
+    closeSearchSuggest();
+    handleSearchBarInput();
+  }
+
+  function handleSearchBarInput() {
+    const value = searchBarInputEl.value;
+    if (searchBarClearEl) searchBarClearEl.hidden = value.length === 0;
+    renderSearchSuggest();
+    if (searchDebounceTimer) {
+      window.clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = null;
+    }
+    if (!value.trim()) {
+      leaveSearchMode();
+      return;
+    }
+    const debounceMs = window.XBOSearchBar ? window.XBOSearchBar.DEBOUNCE_MS : 300;
+    searchDebounceTimer = window.setTimeout(() => {
+      searchDebounceTimer = null;
+      void runSearchQuery(value);
+    }, debounceMs);
+  }
+
+  function handleSearchBarKeydown(e) {
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && searchSuggestItems.length > 0) {
+      e.preventDefault();
+      moveSearchSuggestActive(e.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (searchSuggestActive >= 0 && searchSuggestItems.length > 0) {
+        applySearchSuggestActive();
+        return;
+      }
+      if (searchDebounceTimer) {
+        window.clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = null;
+      }
+      const value = searchBarInputEl.value;
+      if (!value.trim()) leaveSearchMode();
+      else void runSearchQuery(value);
+      return;
+    }
+    if (e.key === "Escape") {
+      // The bar owns Escape over the sidebar drawer's own handler, which
+      // would otherwise also collapse it on a narrow screen.
+      e.stopPropagation();
+      if (searchSuggestItems.length > 0) {
+        closeSearchSuggest();
+        return;
+      }
+      closeSearchBar();
+    }
+  }
+
+  function openSearchBar() {
+    if (!searchBarEl) return;
+    searchBarEl.hidden = false;
+    if (searchOpenBtn) {
+      searchOpenBtn.setAttribute("aria-expanded", "true");
+      searchOpenBtn.setAttribute("aria-label", "Close search");
+    }
+    ensureSearchAuthorsLoaded();
+    if (searchBarInputEl) {
+      searchBarInputEl.focus();
+      searchBarInputEl.select();
+    }
+  }
+
+  function closeSearchBar(opts) {
+    if (!isSearchBarOpen()) return;
+    const options = opts || {};
+    closeSearchSuggest();
+    closeSearchHelp();
+    searchBarEl.hidden = true;
+    if (searchOpenBtn) {
+      searchOpenBtn.setAttribute("aria-expanded", "false");
+      searchOpenBtn.setAttribute("aria-label", "Search posts");
+    }
+    if (searchDebounceTimer) {
+      window.clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = null;
+    }
+    renderSearchBarNote("");
+    leaveSearchMode();
+    if (options.returnFocus !== false && searchOpenBtn) searchOpenBtn.focus();
+  }
+
+  // ---- the search bar's "How to search" popover (hover, focus, or tap) ---
+
+  function renderSearchHelpContent() {
+    const api = window.XBOSearchBar;
+    if (!searchHelpListEl || !api || searchHelpListEl.childElementCount > 0) return;
+    const nodes = [];
+    for (const row of api.HELP_OPERATORS) {
+      const dt = el("dt", "search-help-op");
+      dt.append(el("code", "search-help-code", row.op));
+      const dd = el("dd", "search-help-detail");
+      dd.append(el("code", "search-help-example", row.example), document.createTextNode(` — ${row.detail}`));
+      nodes.push(dt, dd);
+    }
+    searchHelpListEl.replaceChildren(...nodes);
+  }
+
+  function isSearchHelpOpen() {
+    return !!searchHelpPopoverEl && !searchHelpPopoverEl.hidden;
+  }
+
+  function openSearchHelp() {
+    if (!searchHelpPopoverEl) return;
+    renderSearchHelpContent();
+    searchHelpPopoverEl.hidden = false;
+    if (searchHelpToggleEl) searchHelpToggleEl.setAttribute("aria-expanded", "true");
+  }
+
+  function closeSearchHelp() {
+    if (!isSearchHelpOpen()) return;
+    searchHelpPopoverEl.hidden = true;
+    if (searchHelpToggleEl) searchHelpToggleEl.setAttribute("aria-expanded", "false");
+  }
+
+  function initSearchHelp() {
+    if (!searchHelpToggleEl || !searchHelpPopoverEl) return;
+    searchHelpToggleEl.addEventListener("pointerenter", (e) => {
+      if (e.pointerType === "mouse") openSearchHelp();
+    });
+    searchHelpToggleEl.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "mouse" && document.activeElement !== searchHelpToggleEl) closeSearchHelp();
+    });
+    // `:focus-visible`, not plain focus: a mouse click focuses the button
+    // too, and opening from that would fight the click's own toggle below.
+    searchHelpToggleEl.addEventListener("focus", () => {
+      if (searchHelpToggleEl.matches(":focus-visible")) openSearchHelp();
+    });
+    searchHelpToggleEl.addEventListener("blur", () => closeSearchHelp());
+    searchHelpToggleEl.addEventListener("click", () => {
+      if (isSearchHelpOpen()) closeSearchHelp();
+      else openSearchHelp();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || !isSearchHelpOpen()) return;
+      e.stopPropagation();
+      closeSearchHelp();
+      searchHelpToggleEl.focus();
+    });
+    document.addEventListener("pointerdown", (e) => {
+      if (!isSearchHelpOpen() || searchHelpToggleEl.contains(e.target) || searchHelpPopoverEl.contains(e.target)) return;
+      closeSearchHelp();
+    });
+  }
+
+  function initSearchBar() {
+    if (!searchBarEl || !searchOpenBtn) return;
+    searchOpenBtn.addEventListener("click", () => {
+      if (isSearchBarOpen()) closeSearchBar();
+      else openSearchBar();
+    });
+    if (searchBarInputEl) {
+      searchBarInputEl.addEventListener("input", handleSearchBarInput);
+      searchBarInputEl.addEventListener("keydown", handleSearchBarKeydown);
+    }
+    if (searchBarClearEl) {
+      searchBarClearEl.addEventListener("click", () => {
+        searchBarInputEl.value = "";
+        searchBarClearEl.hidden = true;
+        closeSearchSuggest();
+        if (searchDebounceTimer) {
+          window.clearTimeout(searchDebounceTimer);
+          searchDebounceTimer = null;
+        }
+        leaveSearchMode();
+        searchBarInputEl.focus();
+      });
+    }
+    initSearchHelp();
   }
 
   /**
@@ -11964,6 +12473,7 @@
   initThemeToggle();
   initColorToggle();
   initSearch();
+  initSearchBar();
   initFilterTabs();
   initSummary();
   initSync();

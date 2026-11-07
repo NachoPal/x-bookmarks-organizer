@@ -4,6 +4,8 @@ import { z } from 'zod';
 import type { AssistantList, BookmarkFilter, Database } from '../db/database';
 import { buildBookmarkContent } from '../content/bookmark-content';
 import { buildCategoryTree } from '../categorize/tree';
+import { categoryTreePaths, resolveCategoryRef } from '../categorize/category-ref';
+import { runSearch, SearchQueryError } from '../search/engine';
 import type { CategoryTreeNode, StoredBookmark } from '../types';
 
 /**
@@ -87,51 +89,26 @@ function parseDateBound(raw: string, name: string, endOfDay: boolean): string {
 }
 
 /** Every category as `id -> "Root > Child"`, from one read of the tree. */
-function categoryPaths(tree: CategoryTreeNode[]): Map<number, string> {
-  const paths = new Map<number, string>();
-  const walk = (nodes: CategoryTreeNode[]) => {
-    for (const node of nodes) {
-      paths.set(node.id, node.path.join(' > '));
-      walk(node.children);
-    }
-  };
-  walk(tree);
-  return paths;
-}
+const categoryPaths = categoryTreePaths;
 
-function findNode(tree: CategoryTreeNode[], id: number): CategoryTreeNode | undefined {
-  for (const node of tree) {
-    if (node.id === id) return node;
-    const found = findNode(node.children, id);
-    if (found) return found;
-  }
-  return undefined;
+/** This tool's own guidance appended to a generic "no category matches" message. */
+function withCategoryGuidance(message: string): string {
+  return message.startsWith('No category matches') ? `${message} Call list_categories for the ids and paths.` : message;
 }
 
 /**
  * A category named by its id or its path (`AI > Agents`, `AI/Agents`, or a
- * name that is unique in the tree), case-insensitively.
+ * name that is unique in the tree), case-insensitively. Thin wrapper over the
+ * shared `resolveCategoryRef` (also used by the in-app search bar's
+ * `category:` operator) that turns its plain `Error` into this tool
+ * boundary's `ToolInputError`, with MCP-specific guidance appended.
  */
 export function resolveCategory(tree: CategoryTreeNode[], ref: string | number): CategoryTreeNode {
-  const asText = String(ref).trim();
-  if (/^\d+$/.test(asText)) {
-    const node = findNode(tree, Number(asText));
-    if (node) return node;
+  try {
+    return resolveCategoryRef(tree, ref);
+  } catch (e) {
+    throw new ToolInputError(withCategoryGuidance((e as Error).message));
   }
-  const key = asText.toLowerCase().replace(/\s*(>|\/)\s*/g, '>');
-  const all: CategoryTreeNode[] = [];
-  const walk = (nodes: CategoryTreeNode[]) => nodes.forEach((n) => (all.push(n), walk(n.children)));
-  walk(tree);
-  const byPath = all.filter((n) => n.path.join('>').toLowerCase() === key);
-  if (byPath.length === 1) return byPath[0]!;
-  const byName = all.filter((n) => n.name.toLowerCase() === asText.toLowerCase());
-  if (byName.length === 1) return byName[0]!;
-  if (byName.length > 1) {
-    throw new ToolInputError(
-      `"${asText}" names several categories: ${byName.map((n) => n.path.join(' > ')).join('; ')}. Pass the full path or the id.`,
-    );
-  }
-  throw new ToolInputError(`No category matches "${asText}". Call list_categories for the ids and paths.`);
 }
 
 /** A bookmark as a list entry: enough to judge it and to cite it. */
@@ -181,20 +158,28 @@ export interface SearchArgs {
 }
 
 export function searchBookmarks(db: Database, args: SearchArgs) {
-  const tree = buildCategoryTree(db);
-  const category = args.category ? resolveCategory(tree, args.category) : undefined;
   const limit = pageLimit(args.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
   const offset = Math.max(0, Math.floor(args.offset ?? 0));
-  const result = db.searchBookmarks({
-    query: args.query,
-    categoryId: category?.id,
-    postedFrom: args.after ? parseDateBound(args.after, 'after', false) : undefined,
-    postedBefore: args.before ? parseDateBound(args.before, 'before', true) : undefined,
-    filter: (args.status ?? 'all') as BookmarkFilter,
-    limit,
-    offset,
-  });
-  const paths = categoryPaths(tree);
+  let result;
+  try {
+    result = runSearch(db, {
+      // `query` carries the same from:/category:/list:/since:/until:/-exclusion
+      // syntax the app's search bar does; `category`/`after`/`before` are this
+      // tool's original args and keep working exactly as before, ORed/ANDed
+      // in with anything the query text also names (see `runSearch`).
+      raw: args.query ?? '',
+      categoryRef: args.category,
+      after: args.after ? parseDateBound(args.after, 'after', false) : undefined,
+      before: args.before ? parseDateBound(args.before, 'before', true) : undefined,
+      filter: (args.status ?? 'all') as BookmarkFilter,
+      limit,
+      offset,
+    });
+  } catch (e) {
+    if (e instanceof SearchQueryError) throw new ToolInputError(withCategoryGuidance(e.message));
+    throw e;
+  }
+  const paths = categoryTreePaths(buildCategoryTree(db));
   const entries = listEntries(db, result.hits.map((h) => h.bookmark), paths);
   return {
     total: result.total,
@@ -519,10 +504,15 @@ export function createMcpServer(db: Database, version: string, opts: McpServerOp
       title: 'Search bookmarks',
       description:
         'Full-text search over saved posts, their linked articles, the text in their images and saved summaries, best match first. ' +
-        'Pass keywords, not a sentence; "quoted phrase" for exact phrases. Omit query to list by filters only ' +
-        `(newest post first). ${UNTRUSTED}`,
+        'Pass keywords, not a sentence; "quoted phrase" for exact phrases; -word or -"phrase" to exclude. ' +
+        'query also takes from:@user (that post\'s own author, not a mention or a quote; multiple from: = OR), ' +
+        'category:Name or category:"Name > Sub" (that category and its sub-categories; repeat to OR), ' +
+        'list:Name (an assistant result list; repeat to OR), and since:/until:YYYY-MM-DD, all usable with or ' +
+        'without keywords and combinable (category:/list:/from: AND each other). The category/after/before/status ' +
+        'args below still work standalone and OR/AND into whatever the query text also names. Omit query and every ' +
+        `arg to list by filters only (newest post first). ${UNTRUSTED}`,
       inputSchema: {
-        query: z.string().max(500).optional().describe('Keywords to search for.'),
+        query: z.string().max(500).optional().describe('Keywords, optionally with from:/category:/list:/since:/until: and -exclusions - see the tool description.'),
         category: category.optional().describe('Only this category and its sub-categories (id or path).'),
         after: z.string().optional().describe('Posted on or after this date (YYYY-MM-DD).'),
         before: z.string().optional().describe('Posted on or before this date (YYYY-MM-DD).'),

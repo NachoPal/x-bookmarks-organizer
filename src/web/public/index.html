@@ -316,10 +316,12 @@
         <div class="topbar-right">
           <button
             id="search-open"
-            class="icon-btn"
+            class="icon-btn search-toggle"
             type="button"
-            aria-controls="category-search"
-            aria-label="Search categories"
+            aria-haspopup="true"
+            aria-expanded="false"
+            aria-controls="search-bar"
+            aria-label="Search posts"
           >
             <svg class="icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
               <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
@@ -784,6 +786,58 @@
 
     <div class="app-body">
       <div class="main-column">
+        <!-- The search bar (toggled by the top bar's magnifier, which no
+             longer opens the sidebar's category filter - see AGENTS.md).
+             Full width of the main column, directly under the top bar;
+             Escape clears then closes, returning focus to the magnifier. -->
+        <div id="search-bar" class="search-bar" hidden>
+          <div class="search-bar-field search-field">
+            <svg class="search-icon icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2" />
+              <line x1="12.5" y1="12.5" x2="17" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            <input
+              id="search-bar-input"
+              class="search-input search-bar-input"
+              type="text"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="search-suggest-list"
+              aria-describedby="search-bar-note"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Search posts - try from:@user, category:Name, list:Name"
+              aria-label="Search posts"
+            />
+            <button id="search-bar-clear" class="icon-btn search-clear" type="button" aria-label="Clear search" hidden>
+              <span class="icon-x" aria-hidden="true"></span>
+            </button>
+          </div>
+          <ul id="search-suggest-list" class="model-picker-list search-suggest-list" role="listbox" aria-label="Suggestions" hidden></ul>
+          <div class="settings-anchor search-help-anchor">
+            <button
+              id="search-help-toggle"
+              class="icon-btn search-help-toggle"
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="search-help-popover"
+              aria-label="How to search"
+            >
+              <svg class="icon-glyph" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="1.6" />
+                <line x1="10" y1="9" x2="10" y2="14.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                <circle cx="10" cy="6.3" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            <div id="search-help-popover" class="settings-panel search-help-popover" role="dialog" aria-label="How to search" hidden>
+              <dl id="search-help-list" class="search-help-list"></dl>
+            </div>
+          </div>
+          <p id="search-bar-note" class="search-bar-note" hidden></p>
+        </div>
+
         <!-- Hidden until a category is open (updateToolbarVisibility in
              app.js): the tabs are views OF one category, so a load must
              never paint them over the empty landing first. -->
@@ -904,6 +958,10 @@
             <span class="visually-hidden">Back to the first post</span>
           </button>
           <div class="content-inner">
+            <!-- The search results header ("N results for <query>"), shown only
+                 while a search is on screen; scrolls away with the list,
+                 unlike the sort pill right below it. -->
+            <p id="search-results-header" class="search-results-header" role="status" hidden></p>
             <!-- Sticky sort selector (issue #97). It starts below the content
                  pane's top padding, clear of the first post, and pins itself
                  there as the list scrolls under it. `#sort-sentinel` is a
@@ -918,6 +976,13 @@
                 role="radiogroup"
                 aria-label="Sort bookmarks by"
               >
+                <!-- Search-only: no ranking signal exists outside a search, so
+                     this option is HIDDEN (not merely disabled) for a category
+                     or a list - see `updateSortFieldOffering` in app.js. -->
+                <label class="sort-opt" data-sort-order="relevance" hidden>
+                  <input class="sort-opt-input" type="radio" name="sort-field" value="relevance" />
+                  <span class="sort-opt-label">Relevance</span>
+                </label>
                 <label class="sort-opt" data-sort-order="recent">
                   <input
                     class="sort-opt-input"
@@ -1726,6 +1791,8 @@
     <script src="assistant-lists.js" defer></script>
     <script src="sidebar-nav.js" defer></script>
     <script src="sort-order.js" defer></script>
+    <script src="search-bar.js" defer></script>
+    <script src="search-suggest.js" defer></script>
     <script src="ranking.js" defer></script>
     <script src="refresh.js" defer></script>
     <script src="paid-spend.js" defer></script>
