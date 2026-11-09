@@ -1698,6 +1698,38 @@ after sending the 401 (phase 1 shipped that; harmless for reads, a real bypass f
   document or triggers change - a mismatch rebuilds on open, which is also the migration. Raw query
   text never reaches `MATCH` (`buildMatchQuery` quotes every term); every-term first, any-term fallback.
 
+## In-app "Ask Claude" chat (`src/chat/`, top bar bot icon left of the gear)
+
+Claude Code driven through the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`, pinned EXACTLY,
+ESM-only so `sdkQuery` loads it with a real `import()` like pi-ai) on the owner's SUBSCRIPTION login -
+Anthropic's own binary, the same class of route as `claude-cli`. `src/chat/claude.ts`'s
+`replyOptions` is the whole contract and `claude.test.ts` pins every field: `subscriptionEnv` strips
+`API_CREDENTIAL_ENV_VARS` (key, auth token, base URL, Bedrock/Vertex/Foundry), `settingSources: []`,
+`tools: []` (no shell/files/web), `strictMcpConfig: true`, `allowedTools` = exactly
+`MCP_TOOL_NAMES`, `permissionMode: 'dontAsk'`, `persistSession: false` (history is the app DB's
+`chat_conversations`/`chat_messages`, re-sent per reply by `chatReplyPrompt`), `maxTurns`.
+
+- **The tools ARE the MCP endpoint's server**: each reply hands Claude Code a fresh
+  `createMcpServer(db, ...)` as an in-process `{ type: 'sdk', instance }` server (the SDK only calls
+  `instance.connect`; the cast is a CJS/ESM typing twin). Never re-declare tools with the SDK's
+  `tool()`; a new MCP tool reaches the chat by being added to `MCP_TOOL_NAMES` (`mcp.test.ts`
+  asserts that list equals the registered set). Works with `/mcp` switched off, no token;
+  `show_in_app` publishes through the same `assistantListEvents`, so the existing toast/Lists flow
+  handles it. Status (`GET /api/chat`) and the send gate reuse `claudeCliStatus` (the `claude-cli`
+  probe). Routes: `src/web/chat-routes.ts`; a reply is POST + SSE-framed stream, Stop is
+  `POST /api/chat/replies/:requestId/stop`, a closed request aborts Claude Code, and an exchange is
+  stored only once written (a stopped one is kept, marked `stopped`). Chats are not library state: a
+  reset keeps them.
+- **Never make a real Claude call to test it.** `src/chat/scripted-query.ts` is the offline `QueryFn`
+  (plays text/tool turns and runs each tool against the real in-process server); tests use it, and
+  `scripts/serve-chat-demo.js [db] [port]` serves the viewer with it for browser work
+  (`CHAT_DEMO_DELAY_MS` slows the stream to watch Stop/working states).
+- Frontend: `chat.js` (DOM) + pure `chat-view.js` (`XBOChatView`); replies render ONLY through
+  `renderSummaryMarkdown` (links get `target=_blank`), everything else is `textContent`. The drawer
+  overlays the posts and only pads `.main-column` at >=1180px (cards move, never resize - the #86
+  rule); it owns Escape (`stopPropagation`). A chip's "Open list" fires `xbo:open-list`, which
+  `app.js` answers like the arrival toast's Open.
+
 ## In-app post search (`src/search/`, top bar, issue "post search")
 
 The app UI now uses the FTS5 engine described above (`src/db/search.ts`), through an

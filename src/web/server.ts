@@ -79,6 +79,7 @@ import type { PaidPass, RoleSpend } from './paid-spend';
 import { SummaryFailureBackoff } from './summary-backoff';
 import { installMcpEndpoint, MCP_PATH } from '../mcp/http';
 import { AssistantListEvents, installAssistantListRoutes } from './assistant-lists';
+import { installChatRoutes, type ChatWiring } from './chat-routes';
 
 /** Directory holding the built static viewer assets (relative to this file). */
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -226,6 +227,13 @@ export interface ServerOptions {
    * `cmdServe` wires the real provider's `check()`.
    */
   claudeCliCheck?: () => Promise<Health>;
+  /**
+   * The top bar's "Ask Claude" chat: Claude Code through the Agent SDK, on
+   * the owner's subscription (`src/chat/`). Undefined (a test-built
+   * `buildServer(db)`) leaves the conversation routes live and answers a
+   * send with 503; tests inject a fake `run`.
+   */
+  chat?: ChatWiring;
   /**
    * The in-app "Refresh from X" (a paid, confirmed re-read of the stored
    * bookmarks in place). Undefined answers its routes 503 and the panel says
@@ -2025,6 +2033,14 @@ export function buildServer(db: Database, opts: ServerOptions = {}): FastifyInst
 
   // The MCP endpoint for AI assistants (reads, plus `show_in_app`), and its Settings routes.
   installMcpEndpoint(app, db, {
+    onListCreated: (list) => assistantListEvents.publish({ type: 'created', list }),
+  });
+
+  // "Ask Claude": the same MCP tools, served to Claude Code in-process, and
+  // the same list announcement - whether or not `/mcp` itself is switched on.
+  installChatRoutes(app, db, {
+    chat: opts.chat,
+    status: claudeCliStatus,
     onListCreated: (list) => assistantListEvents.publish({ type: 'created', list }),
   });
 

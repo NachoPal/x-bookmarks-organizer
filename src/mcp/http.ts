@@ -16,7 +16,7 @@ export const MCP_UNAUTHORIZED_MESSAGE =
   'Missing or wrong token. Send "Authorization: Bearer <token>" with the token from Settings > AI assistants (MCP).';
 
 /** The app's own package version, reported to MCP clients. */
-const VERSION = (JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8')) as { version: string })
+export const MCP_SERVER_VERSION = (JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8')) as { version: string })
   .version;
 
 function jsonRpcError(reply: FastifyReply, code: number, message: string) {
@@ -78,7 +78,7 @@ export function installMcpEndpoint(app: FastifyInstance, db: Database, opts: Mcp
   app.post(MCP_PATH, async (req, reply) => {
     if (refused(req, reply)) return reply;
 
-    const server = createMcpServer(db, VERSION, opts);
+    const server = createMcpServer(db, MCP_SERVER_VERSION, opts);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.hijack();
     reply.raw.on('close', () => {

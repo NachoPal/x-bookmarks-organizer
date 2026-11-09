@@ -19,6 +19,7 @@ import {
   ARTICLE_TEXT_CHARS,
   LIST_TEXT_CHARS,
   MAX_ASSISTANT_LISTS,
+  MCP_TOOL_NAMES,
   SHOW_MAX_POSTS,
   SHOW_NOTE_MAX_CHARS,
   SHOW_TITLE_MAX_CHARS,
@@ -133,6 +134,8 @@ describe('the MCP endpoint', () => {
       'search_bookmarks',
       'show_in_app',
     ]);
+    // The in-app chat pre-approves MCP_TOOL_NAMES on this same server: it must be exactly the registered set.
+    expect(tools.map((t) => t.name)).toEqual([...MCP_TOOL_NAMES]);
     for (const tool of tools) {
       expect(tool.annotations?.readOnlyHint).toBe(tool.name !== 'show_in_app');
       expect(tool.annotations?.destructiveHint).toBe(false);

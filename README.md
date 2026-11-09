@@ -377,6 +377,37 @@ bookmarks by learning value" below):
 node dist/index.js rank --dry-run
 ```
 
+## Ask Claude in the app
+
+The bot icon in the top bar (left of the gear) opens **Ask Claude**: a chat beside your posts that
+answers questions about your library - "what have I saved about eval harnesses?", "find my unread
+posts from @simonw and show them in the app" - with links to the posts it used.
+
+- **It runs on your Claude subscription, never the paid API.** The app drives Claude Code through
+  the Claude Agent SDK with your own Claude login, and removes every API-billing variable
+  (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, the Bedrock/Vertex/Foundry
+  switches) from what it hands Claude Code. If Claude Code is not logged in, the chat says so and how
+  to fix it (`claude`, then `/login`). A `CLAUDE_CODE_OAUTH_TOKEN` in your credential chain is used
+  when you have one; a CLI you logged into interactively needs none.
+- **It uses the same tools as the MCP endpoint** below - search (with the search bar's
+  `from:`/`category:`/`list:`/`since:`/`until:` syntax), reading a post, the category tree, the
+  stats, your lists, and `show_in_app`. They are served to Claude inside the app, so the chat works
+  whether or not you switched the MCP endpoint on, and needs no token. Each call shows as a chip
+  under the reply ("Searched bookmarks for "evals"", "Showing 12 posts in the app"); a
+  `show_in_app` list arrives like any assistant's (the toast, the **Lists** page), and its chip has
+  **Open list**.
+- **Nothing else.** No web, file or shell tool, none of your own Claude Code settings, skills,
+  `CLAUDE.md` or MCP servers, and the only thing it can change is creating a list.
+- **Pick the model and effort** under the message box (Sonnet 5.5 at medium effort by default; the
+  choice is remembered). Conversations are saved in the app's database, so they survive a reload:
+  the list icon at the top left of the chat shows them, the pencil starts a new one, and each can be
+  deleted. **Stop** ends a reply and keeps what was written so far. Enter sends; Shift+Enter is a
+  new line.
+
+To try the chat UI without Claude at all (no model call, no quota), run the offline demo, which
+answers from a script but runs every tool for real:
+`npm run build && npm run seed:dev && node scripts/serve-chat-demo.js` (port 5199).
+
 ## Ask an AI assistant about your bookmarks (MCP)
 
 The app can serve an [MCP](https://modelcontextprotocol.io) endpoint, so the AI tool you
