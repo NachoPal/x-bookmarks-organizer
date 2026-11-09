@@ -65,6 +65,24 @@ export const SHOW_NOTE_MAX_CHARS = 500;
  */
 export const MAX_ASSISTANT_LISTS = 200;
 
+/**
+ * Every tool {@link createMcpServer} registers, in registration order. The
+ * in-app chat (`src/chat/claude.ts`) pre-approves exactly these on the SAME
+ * server instance, so the two surfaces cannot drift apart; `mcp.test.ts`
+ * asserts the server lists exactly this set.
+ */
+export const MCP_TOOL_NAMES = [
+  'search_bookmarks',
+  'get_bookmark',
+  'list_categories',
+  'list_category_bookmarks',
+  'library_stats',
+  'list_lists',
+  'get_list',
+  'show_in_app',
+] as const;
+export type McpToolName = (typeof MCP_TOOL_NAMES)[number];
+
 /** A tool's failure the model can act on - answered as an MCP tool error, never thrown. */
 export class ToolInputError extends Error {}
 

@@ -243,6 +243,31 @@ CREATE TABLE IF NOT EXISTS assistant_list_items (
 
 CREATE INDEX IF NOT EXISTS idx_assistant_list_items_bookmark ON assistant_list_items(bookmark_id);
 
+-- The in-app "Ask Claude" chat (src/chat/): a conversation and its turns. A
+-- reply is stored only once it is written (with the owner's message, in one
+-- transaction), so a failed reply leaves nothing half-saved. Not library
+-- state: a reset keeps them, like the owner's other configuration.
+CREATE TABLE IF NOT EXISTS chat_conversations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  title      TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  text            TEXT NOT NULL,
+  model           TEXT,
+  effort          TEXT,
+  stopped         INTEGER NOT NULL DEFAULT 0,
+  tools           TEXT NOT NULL DEFAULT '[]',
+  created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, id);
+
 CREATE TABLE IF NOT EXISTS post_media (
   post_id      TEXT NOT NULL,
   media_key    TEXT NOT NULL,

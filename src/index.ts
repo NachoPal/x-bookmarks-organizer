@@ -17,7 +17,8 @@ import { LlmSummaryGenerator } from './summarize/summarizer';
 import { billingLabel, createLlmFactory } from './llm/factory';
 import { toRunner } from './llm/runner';
 import { getProvider } from './llm/registry';
-import { CLAUDE_CLI_PROVIDER_ID } from './llm/providers/claude-cli';
+import { CLAUDE_CLI_PROVIDER_ID, CLAUDE_TOKEN_KEY } from './llm/providers/claude-cli';
+import { sdkQuery } from './chat/claude';
 import type { ResolvedProviderConfig } from './llm/types';
 import { buildSettingsCatalog } from './settings/catalog';
 import { createModelBrowser } from './settings/model-browser';
@@ -519,6 +520,9 @@ async function cmdServe(baseConfig: Config, db: Database, store: CredentialStore
     // How a new summary is billed, so a per-token one is marked as paid on the
     // Summarize button itself (security review 2, #20).
     summarySpend: available ? await describeRoleSpend(llm, 'summary', catalog, modelBrowser) : undefined,
+    // The top bar's "Ask Claude" chat: Claude Code on the subscription login,
+    // with this app's MCP tools in-process. Its status is the probe below.
+    chat: { run: sdkQuery, oauthToken: () => store.get(CLAUDE_TOKEN_KEY).value },
     claudeCliCheck: () => {
       const provider = getProvider(CLAUDE_CLI_PROVIDER_ID);
       return provider

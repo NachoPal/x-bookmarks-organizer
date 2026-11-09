@@ -219,6 +219,76 @@ export interface LibraryStats {
   newestPostAt: string | null;
 }
 
+/** One saved "Ask Claude" conversation (`chat_conversations`). */
+export interface ChatConversation {
+  id: number;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A tool call a reply made, as its chip shows it (`ChatToolActivity` in `src/chat/claude.ts`). */
+export interface ChatToolRecord {
+  tool: string;
+  label: string;
+  status: 'done' | 'failed';
+  listId?: number;
+}
+
+/** One turn of a conversation (`chat_messages`). */
+export interface ChatMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  text: string;
+  /** The model and effort that wrote a reply; null on the owner's own messages. */
+  model: string | null;
+  effort: string | null;
+  /** A reply the owner stopped before it finished. */
+  stopped: boolean;
+  tools: ChatToolRecord[];
+  createdAt: string;
+}
+
+/** How long a conversation's title (its first message, one line) may be. */
+export const CHAT_TITLE_MAX_CHARS = 80;
+
+interface ChatMessageRow {
+  id: number;
+  role: 'user' | 'assistant';
+  text: string;
+  model: string | null;
+  effort: string | null;
+  stopped: number;
+  tools: string;
+  created_at: string;
+}
+
+function parseChatTools(raw: string): ChatToolRecord[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as ChatToolRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+const toChatMessage = (row: ChatMessageRow): ChatMessage => ({
+  id: row.id,
+  role: row.role,
+  text: row.text,
+  model: row.model,
+  effort: row.effort,
+  stopped: row.stopped === 1,
+  tools: parseChatTools(row.tools),
+  createdAt: row.created_at,
+});
+
+/** A conversation's title: its first message on one line, cut to {@link CHAT_TITLE_MAX_CHARS}. */
+export function chatTitleFor(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > CHAT_TITLE_MAX_CHARS ? `${line.slice(0, CHAT_TITLE_MAX_CHARS - 1)}…` : line || 'New chat';
+}
+
 const ASSISTANT_LIST_SELECT = `SELECT l.id, l.title, l.note, l.created_at, l.viewed_at, l.position,
        (SELECT COUNT(*) FROM assistant_list_items i WHERE i.list_id = l.id) AS count,
        (SELECT COUNT(*) FROM assistant_list_items i JOIN bookmarks b ON b.id = i.bookmark_id
@@ -2573,5 +2643,93 @@ export class Database {
       ? this.db.prepare('DELETE FROM bookmark_scores WHERE rubric_version = ?').run(rubricVersion)
           .changes
       : this.db.prepare('DELETE FROM bookmark_scores').run().changes;
+  }
+
+  // ---- "Ask Claude" chat ------------------------------------------------
+
+  /** Every saved conversation, most recently active first. */
+  listChatConversations(): ChatConversation[] {
+    const rows = this.db
+      .prepare('SELECT id, title, created_at, updated_at FROM chat_conversations ORDER BY updated_at DESC, id DESC')
+      .all() as { id: number; title: string; created_at: string; updated_at: string }[];
+    return rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at }));
+  }
+
+  getChatConversation(id: number): ChatConversation | undefined {
+    const r = this.db
+      .prepare('SELECT id, title, created_at, updated_at FROM chat_conversations WHERE id = ?')
+      .get(id) as { id: number; title: string; created_at: string; updated_at: string } | undefined;
+    return r ? { id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at } : undefined;
+  }
+
+  /** A conversation's turns, oldest first. */
+  getChatMessages(conversationId: number): ChatMessage[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, role, text, model, effort, stopped, tools, created_at
+         FROM chat_messages WHERE conversation_id = ? ORDER BY id ASC`,
+      )
+      .all(conversationId) as ChatMessageRow[];
+    return rows.map(toChatMessage);
+  }
+
+  /**
+   * Store one exchange - the owner's message and the reply to it - in ONE
+   * transaction, creating the conversation (titled after its first message)
+   * when `conversationId` is null. Answers the conversation as it now is and
+   * the two new messages; `undefined` when the conversation no longer exists.
+   */
+  saveChatExchange(
+    exchange: {
+      conversationId: number | null;
+      userText: string;
+      replyText: string;
+      model: string;
+      effort: string;
+      stopped: boolean;
+      tools: ChatToolRecord[];
+    },
+    when: string = new Date().toISOString(),
+  ): { conversation: ChatConversation; messages: ChatMessage[] } | undefined {
+    const ids = this.db.transaction(() => {
+      let conversationId = exchange.conversationId;
+      if (conversationId === null) {
+        conversationId = Number(
+          this.db
+            .prepare('INSERT INTO chat_conversations (title, created_at, updated_at) VALUES (?, ?, ?)')
+            .run(chatTitleFor(exchange.userText), when, when).lastInsertRowid,
+        );
+      } else if (
+        this.db.prepare('UPDATE chat_conversations SET updated_at = ? WHERE id = ?').run(when, conversationId).changes === 0
+      ) {
+        return undefined;
+      }
+      const insert = this.db.prepare(
+        `INSERT INTO chat_messages (conversation_id, role, text, model, effort, stopped, tools, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const userId = Number(insert.run(conversationId, 'user', exchange.userText, null, null, 0, '[]', when).lastInsertRowid);
+      const replyId = Number(
+        insert.run(
+          conversationId,
+          'assistant',
+          exchange.replyText,
+          exchange.model,
+          exchange.effort,
+          exchange.stopped ? 1 : 0,
+          JSON.stringify(exchange.tools),
+          when,
+        ).lastInsertRowid,
+      );
+      return { conversationId, userId, replyId };
+    })();
+    if (!ids) return undefined;
+    const messages = this.getChatMessages(ids.conversationId).filter((m) => m.id === ids.userId || m.id === ids.replyId);
+    return { conversation: this.getChatConversation(ids.conversationId)!, messages };
+  }
+
+  /** Delete a conversation and every turn in it; false when there was none. */
+  deleteChatConversation(id: number): boolean {
+    return this.db.prepare('DELETE FROM chat_conversations WHERE id = ?').run(id).changes > 0;
   }
 }
