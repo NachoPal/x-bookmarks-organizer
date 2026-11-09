@@ -20,8 +20,20 @@ export const CHAT_EFFORTS: readonly ChatEffort[] = CLAUDE_CLI_EFFORTS;
 export const DEFAULT_CHAT_MODEL = 'claude-sonnet-5-5';
 export const DEFAULT_CHAT_EFFORT: ChatEffort = 'medium';
 
+/** What each newest model is for in a conversation (the catalog's own hints are about the categorization passes). */
+const CHAT_HINTS: Record<string, string> = {
+  'claude-opus-5-5': 'Most capable, slowest',
+  'claude-sonnet-5-5': 'Balanced - the default',
+  'claude-haiku-5-5': 'Fastest, lightest on your quota',
+};
+
 export function chatModels(): ChatModel[] {
-  return CURATED_ANTHROPIC_MODELS.map((m) => ({ id: m.id, label: m.label, description: m.role }));
+  return CURATED_ANTHROPIC_MODELS.map((m) => ({
+    id: m.id,
+    // "Sonnet 5.5": the drawer's picker is narrow, and every choice is Claude.
+    label: m.label.replace(/^Claude\s+/, ''),
+    description: CHAT_HINTS[m.id] ?? m.role,
+  }));
 }
 
 export function isChatEffort(value: unknown): value is ChatEffort {

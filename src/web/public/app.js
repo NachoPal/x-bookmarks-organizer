@@ -11359,6 +11359,16 @@
     }, 60_000);
     void loadAssistantLists();
     initAssistantListStream();
+    // The "Ask Claude" drawer's "Open list" chip (chat.js): the same as the
+    // arrival toast's Open. The list may not be in the index yet when the
+    // chip is pressed (its stream event can trail the reply), so read it first.
+    document.addEventListener("xbo:open-list", async (e) => {
+      const id = e.detail && e.detail.id;
+      if (!Number.isInteger(id)) return;
+      if (!assistantLists.some((l) => l.id === id)) await loadAssistantLists();
+      if (assistantLists.some((l) => l.id === id)) openListFromToast(id);
+      else showToast("That list is no longer here.");
+    });
   }
 
   // ======================================================================

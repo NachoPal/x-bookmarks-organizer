@@ -198,6 +198,20 @@
      content pane, but deliberately UNDER --z-backdrop so the narrow drawer's
      scrim and the first-run scrim dim it along with what it scrolls. */
   --z-scroll-top: 30;
+  /* The "Ask Claude" drawer: over the posts and their backdrop, under the
+     top bar (whose popovers must still open over it) and the categories
+     drawer. Toasts sit just above it, so "Your assistant sent…" stays
+     visible while the chat that sent it is open. */
+  --z-chat: 45;
+  --z-toast: 46;
+  /* The chat drawer's width on a wide screen; full width on a phone. */
+  --chat-width: 27rem;
+  --chat-input-max-height: 12rem;
+  /* How far a toast rises on a phone with the full-screen chat open, to
+     clear its composer (message, pickers, Send, and an error above them):
+     chat.js measures the composer into --chat-composer-height; this is the
+     fallback before it has. */
+  --chat-composer-clearance: 8rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -623,6 +637,7 @@ body {
 
 .icon-btn.is-toggle[aria-pressed="true"],
 .icon-btn[aria-expanded="true"].settings-toggle,
+.icon-btn[aria-expanded="true"].chat-toggle,
 .icon-btn[aria-expanded="true"].search-toggle {
   background: var(--color-accent-soft);
   border-color: var(--color-accent-soft);
@@ -3721,7 +3736,7 @@ body[data-restoring] .topbar-prompt {
   left: 50%;
   bottom: calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
-  z-index: 40;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -6476,6 +6491,633 @@ body.is-card-dragging .tree-node {
   .rubric-add,
   .field-input,
   .field-textarea {
+    transition: none;
+  }
+}
+
+/* ============================================================
+   "Ask Claude" chat drawer (src/chat/, chat.js)
+   A non-modal panel on the right, hung off --header-offset like the
+   categories drawer so the top bar - and the bot toggle that closes it -
+   stays reachable. It OVERLAYS the posts rather than resizing the content
+   column: a resize would re-lay-out every mounted X embed (the #86 rule).
+   Full width at <=640px. Only transform/opacity animate.
+   ============================================================ */
+.chat-toggle {
+  position: relative;
+}
+.chat-toggle.is-busy {
+  color: var(--color-accent);
+  animation: rank-pulse 1.6s ease-in-out infinite;
+}
+.chat-drawer {
+  position: fixed;
+  top: var(--header-offset);
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-chat);
+  display: flex;
+  flex-direction: column;
+  width: min(var(--chat-width), 100vw);
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+  box-shadow: var(--shadow-lg);
+  animation: chat-in var(--motion-med) var(--ease);
+}
+.chat-drawer[hidden] {
+  display: none;
+}
+@keyframes chat-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--space-5));
+  }
+}
+@keyframes chat-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.chat-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.chat-header-btn:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+  background: transparent;
+}
+.chat-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 var(--space-1);
+}
+.chat-title {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: 700;
+  line-height: 1.25;
+}
+.chat-subtitle {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-main[hidden] {
+  display: none;
+}
+.chat-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.chat-log:focus-visible {
+  outline-offset: -2px;
+}
+.chat-msg {
+  min-width: 0;
+  margin: 0;
+}
+.chat-msg-user {
+  align-self: flex-end;
+  max-width: 85%;
+}
+.chat-bubble {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-sm);
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+  line-height: var(--leading-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-msg-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A reply's Markdown (sanitized by renderSummaryMarkdown): the summary
+   modal's prose rules, at the drawer's body size. */
+.chat-md {
+  color: var(--color-text);
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
+}
+.chat-md > *:first-child {
+  margin-top: 0;
+}
+.chat-md > *:last-child {
+  margin-bottom: 0;
+}
+.chat-md p {
+  margin: 0 0 var(--space-3);
+}
+.chat-md ul,
+.chat-md ol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding-inline-start: var(--space-5);
+}
+.chat-md li > ul,
+.chat-md li > ol {
+  margin: var(--space-2) 0 0;
+}
+.chat-md h3,
+.chat-md h4 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 1em;
+  line-height: 1.3;
+}
+.chat-md strong {
+  font-weight: 700;
+}
+.chat-md a {
+  color: var(--color-accent);
+  text-underline-offset: 2px;
+}
+.chat-md a:hover {
+  color: var(--color-accent-hover);
+}
+.chat-md code {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-bar);
+  background: var(--color-surface-2);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.chat-md pre {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  overflow-x: auto;
+}
+.chat-md pre code {
+  padding: 0;
+  background: none;
+}
+
+/* What Claude did with the app's tools: one chip per call, the icon AND the
+   words saying which (never color alone); a failed call adds "(failed)". */
+.chat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-height: 1.75rem;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  line-height: 1.3;
+}
+.chat-chip[data-kind="show"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
+.chat-chip[data-kind="failed"] {
+  border-color: var(--color-danger);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+.chat-chip-icon {
+  flex: 0 0 auto;
+  width: 0.95rem;
+  height: 0.95rem;
+}
+.chat-chip-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-chip-open {
+  flex: 0 0 auto;
+  min-height: 1.5rem;
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.chat-chip-open:hover {
+  color: var(--color-accent-hover);
+}
+.chat-chip-open:active {
+  background: var(--color-surface);
+}
+
+.chat-working {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.chat-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.chat-stopped {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* The empty conversation: what the chat is, and questions to start from. */
+.chat-log.is-empty {
+  justify-content: center;
+}
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 24rem;
+  margin: 0 auto;
+  text-align: center;
+}
+.chat-empty-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  margin-bottom: var(--space-2);
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.chat-empty-badge svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+.chat-empty-title {
+  margin: 0;
+  font-size: var(--text-h2);
+  line-height: 1.3;
+}
+.chat-empty-body {
+  margin: 0 0 var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+}
+.chat-examples {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-example {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-small);
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease);
+}
+.chat-example:hover {
+  border-color: var(--color-accent);
+  background: var(--color-surface-2);
+}
+.chat-example:active {
+  background: var(--color-border);
+}
+
+/* Claude Code cannot run: the probe's own words, with an icon (not color alone). */
+.chat-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-soft);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  text-align: left;
+}
+.chat-notice .chat-chip-icon {
+  margin-top: 0.15rem;
+  color: var(--color-danger);
+}
+.chat-notice p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.chat-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-5) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  text-align: center;
+}
+.chat-state-error {
+  color: var(--color-danger);
+}
+
+/* The composer: the message, the model/effort pick, and Send (or Stop). */
+.chat-composer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.chat-error {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  background: var(--color-danger-soft);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+}
+.chat-error[hidden] {
+  display: none;
+}
+.chat-input {
+  width: 100%;
+  min-height: 2.75rem;
+  max-height: var(--chat-input-max-height);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  line-height: var(--leading-body);
+  resize: none;
+  overflow-y: auto;
+  transition: border-color var(--motion-fast) var(--ease);
+}
+.chat-input::placeholder {
+  color: var(--color-text-disabled);
+}
+.chat-input:hover {
+  border-color: var(--color-accent);
+}
+.chat-input:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+}
+.chat-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.chat-pickers {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: var(--space-2);
+}
+.chat-select-shell {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.chat-action {
+  flex: 0 0 auto;
+  min-width: 5.5rem;
+}
+.chat-action[hidden] {
+  display: none;
+}
+/* Opacity alone leaves the accent fill reading as "go" (dark mode most of
+   all); a disabled Send wears the muted surface, like a disabled Rank now. */
+.chat-action:disabled {
+  opacity: 1;
+  border-color: var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+}
+.chat-stop-glyph {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+/* Saved conversations: open one, or delete it after a second, explicit press. */
+.chat-history {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-4) var(--space-3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.chat-history[hidden] {
+  display: none;
+}
+.chat-history-title {
+  margin: 0 var(--space-2) var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.chat-conversations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-conv {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 3rem;
+  border-radius: var(--radius-md);
+}
+.chat-conv.is-confirming {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-danger-soft);
+  font-size: var(--text-small);
+}
+.chat-conv-confirm {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-conv-delete-yes {
+  color: var(--color-danger);
+}
+.chat-conv-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease);
+}
+.chat-conv-open:hover:not(:disabled) {
+  background: var(--color-surface-2);
+}
+.chat-conv-open:active:not(:disabled) {
+  background: var(--color-border);
+}
+.chat-conv-open:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled);
+}
+/* The open conversation: weight and an outline, not a tint alone. */
+.chat-conv-open[aria-current="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.chat-conv-open[aria-current="true"] .chat-conv-title {
+  font-weight: 700;
+}
+.chat-conv-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-conv-when {
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+.chat-conv-delete {
+  color: var(--color-text-muted);
+}
+.chat-conv-delete:hover:not(:disabled) {
+  color: var(--color-danger);
+}
+.chat-conv-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.chat-conv-delete .chat-chip-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+/* With the chat open on a wide screen, toasts centre in the space beside it,
+   so "Your assistant sent…" never runs under the drawer's edge, and the
+   scroll-to-top button steps out from under it. */
+@media (min-width: 641px) {
+  body[data-chat-open] .toast-container {
+    left: calc((100vw - min(var(--chat-width), 100vw)) / 2);
+    width: min(28rem, calc(100vw - min(var(--chat-width), 100vw) - 2 * var(--space-4)));
+  }
+  body[data-chat-open] .scroll-top {
+    right: calc(min(var(--chat-width), 100vw) + var(--space-5) + env(safe-area-inset-right, 0px));
+  }
+}
+/* Where there is room, the posts make way for the drawer instead of sliding
+   under it: the column gains the drawer's width as padding. `.content-inner`
+   is a centred max-width block, so the cards only MOVE - they keep their
+   width (and their mounted X embeds are not re-laid-out) whenever the column
+   still holds --content-measure. No transition: this is not animated. */
+@media (min-width: 1180px) {
+  body[data-chat-open] .main-column {
+    padding-right: var(--chat-width);
+  }
+}
+
+@media (max-width: 640px) {
+  .chat-drawer {
+    width: 100%;
+    border-left: 0;
+    box-shadow: none;
+  }
+  body[data-chat-open] .toast-container {
+    bottom: calc(var(--chat-composer-height, var(--chat-composer-clearance)) + var(--space-3));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-drawer {
+    animation-name: chat-fade;
+  }
+  .chat-toggle.is-busy {
+    animation: none;
+  }
+  .chat-example,
+  .chat-conv-open,
+  .chat-input {
     transition: none;
   }
 }
