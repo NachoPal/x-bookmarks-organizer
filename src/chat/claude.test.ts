@@ -37,7 +37,6 @@ function fixed(messages: unknown[]): QueryFn {
 /** A query whose process fails to start. */
 function throwing(error: Error): QueryFn {
   return () =>
-    // eslint-disable-next-line require-yield
     (async function* () {
       throw error;
     })();
